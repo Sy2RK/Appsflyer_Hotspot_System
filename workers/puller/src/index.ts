@@ -1,0 +1,70 @@
+import { env } from '@shared/config/env.js';
+import { runPullCycle } from '@shared/utils/puller.js';
+import { logger } from '@api/common/logger/logger.js';
+import { writeOperationLog } from '@shared/utils/operationLog.js';
+
+let running = false;
+let firstCycle = true;
+
+async function tick(): Promise<void> {
+  if (running) {
+    logger.warn('puller_skip_overlap');
+    return;
+  }
+
+  running = true;
+  const backfillDays = firstCycle ? env.pullerBackfillDays : 1;
+
+  try {
+    const result = await runPullCycle(backfillDays, logger);
+    await writeOperationLog(
+      {
+        source: 'worker.puller',
+        action: 'scheduled_pull_cycle',
+        target_type: 'pull_cycle',
+        target_key: String(backfillDays),
+        status: 'success',
+        summary: `定时 Pull 完成，回填 ${backfillDays} 天`,
+        detail_json: result
+      },
+      logger
+    );
+  } catch (error) {
+    logger.error('puller_cycle_failed', {
+      backfill_days: backfillDays,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    await writeOperationLog(
+      {
+        source: 'worker.puller',
+        action: 'scheduled_pull_cycle',
+        target_type: 'pull_cycle',
+        target_key: String(backfillDays),
+        status: 'failed',
+        summary: `定时 Pull 失败，回填 ${backfillDays} 天`,
+        detail_json: {
+          backfill_days: backfillDays,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      },
+      logger
+    );
+  } finally {
+    firstCycle = false;
+    running = false;
+  }
+}
+
+async function bootstrap(): Promise<void> {
+  await tick();
+  setInterval(() => {
+    void tick();
+  }, env.pullerIntervalMs);
+}
+
+bootstrap().catch((error) => {
+  logger.error('puller_bootstrap_failed', {
+    error: error instanceof Error ? error.message : String(error)
+  });
+  process.exit(1);
+});

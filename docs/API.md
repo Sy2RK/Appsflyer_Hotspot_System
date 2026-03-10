@@ -1,0 +1,362 @@
+# API
+
+## 1) AppsFlyer Push Callback
+
+### `GET /appsflyer/api/v1/event/:appKey/:dataset/callback`
+用于 AppsFlyer callback URL 可达性验证。
+
+Response:
+```json
+{
+  "ok": true,
+  "appKey": "ai-video-plus",
+  "dataset": "ods_events_device_detail"
+}
+```
+
+### `POST /appsflyer/api/v1/event/:appKey/:dataset/callback`
+Headers:
+- `Authorization: <push_token>`
+- `Content-Type: application/json`
+
+Body:
+- AppsFlyer Push JSON payload（对象或对象数组）
+
+行为:
+1. 校验 `app_key + dataset` 是否存在
+2. 校验 `Authorization` 与该 app 配置 token 一致
+3. 标准化 payload 为 `NormalizedEvent`
+4. 生成 `event_uid`（优先 payload 唯一字段；否则 md5 规则）
+5. 幂等检查（event_uid）
+6. 写入 ClickHouse `raw_events`
+
+Response:
+- 成功: `204 No Content`
+- 鉴权失败: `401`
+- body 非 JSON: `400`
+
+---
+
+## 2) Internal API
+
+### `GET /ui`
+内置 Web 控制台（配置管理 + 告警与指标可视化）。
+
+### `GET /api/apps`
+返回 app 列表（不返回 push token），包含：
+- `display_name`
+- `ios_display_name`
+- `android_display_name`
+- `ios_pull_app_id`
+- `android_pull_app_id`
+- `pull_app_id`
+- 通知通道配置摘要（是否存在 app 级 Feishu / Webhook）
+
+### `POST /api/apps`
+新增或更新 app 配置（upsert）。
+
+Request:
+```json
+{
+  "display_name": "Zensi",
+  "ios_display_name": "Zensi iOS",
+  "android_display_name": "Zensi Android",
+  "app_key": "ai-video-plus",
+  "ios_pull_app_id": "id6746191879",
+  "android_pull_app_id": "com.demo.android.appid",
+  "pull_app_id": "id6746191879",
+  "dataset": "ods_events_device_detail",
+  "timezone": "Asia/Shanghai",
+  "push_auth_token": "optional-new-token",
+  "notify_feishu_app_id": "cli_xxx",
+  "notify_feishu_app_secret": "xxx",
+  "notify_feishu_chat_id": "oc_xxx",
+  "notify_webhook_url": "https://optional-webhook"
+}
+```
+
+说明:
+- `app_key` 必填。
+- `ios_pull_app_id` / `android_pull_app_id` / `pull_app_id` 三者至少填一个。
+- `ios_pull_app_id` 与 `android_pull_app_id` 不允许相同。
+- `pull_app_id` 为兼容字段，建议优先配置 iOS/Android 分字段。
+- `display_name` 仅用于展示；不填时默认使用 `app_key` 去掉 `-`（例如 `ai-screen-time-coach` -> `ai screen time coach`）。
+- `ios_display_name` / `android_display_name` 仅用于展示；未填时回退到 `display_name` 或 `app_key`。
+- 若不显式提交 `notify_feishu_app_secret`，后端不会覆盖已有 secret；留空默认回退 `.env` 全局 Feishu 配置。
+
+### `GET /api/rules?appKey=`
+按 app 查询规则。
+
+### `POST /api/rules`
+创建或更新规则。
+
+Request:
+```json
+{
+  "app_key": "ai-video-plus",
+  "name": "revenue-hotspot-rule",
+  "enabled": true,
+  "rule_json": {
+    "timezone": "Asia/Shanghai",
+    "silence_minutes": 30,
+    "metrics": [
+      {
+        "metric": "revenue",
+        "granularity": "hour",
+        "window": "last_1h",
+        "baseline": "avg_7d_same_hour",
+        "up_ratio": 2,
+        "down_ratio": 0.5,
+        "min_abs_delta": 50,
+        "severity": {"spike": "P1", "drop": "P0"},
+        "drilldown_dims": ["media_source", "country", "campaign", "attribution", "event_type"]
+      }
+    ]
+  }
+}
+```
+
+### `POST /api/rules/:id/enable`
+启用规则。
+
+### `POST /api/rules/:id/disable`
+停用规则。
+
+### `GET /api/alerts?appKey=&status=&severity=&from=&to=`
+查询告警。
+
+### `GET /api/alerts/:id`
+查询告警详情。
+
+### `GET /api/metrics?appKey=&metric=&from=&to=&source=push|pull&granularity=...&dims=...&eventName=&platform=`
+查询指标（支持 Push 小时级 + Pull 日级）。
+
+参数说明:
+- `source`:
+  - `push`（默认）: 查询 `metrics_hourly`
+  - `pull`: 查询 `metrics_daily`
+- 当 `source=push`:
+  - `granularity` 必须为 `hour`
+  - `metric`: `revenue` / `event_count` / `purchase_count`
+  - `dims`: `media_source,country,campaign,attribution,event_type,event_name,platform`
+  - `eventName`: 当 `metric=event_count` 且需指定事件时使用
+- 当 `source=pull`:
+  - `granularity` 必须为 `day`
+  - `metric`: `installs` / `clicks` / `total_cost`
+  - `dims`: `media_source,country,campaign,source,platform`
+- `platform` 可选：`ios|android|unknown`
+
+### `GET /api/pull-records?appKey=&from=&to=&platform=&mediaSource=&campaign=&page=&sort=`
+查询 Pull 明细记录（来自 `pull_aggregate_daily`）。
+
+参数说明:
+- `from` / `to` 必填，格式 `YYYY-MM-DD`
+- `appKey` 可选，精确过滤
+- `mediaSource` 可选，模糊过滤
+- `campaign` 可选，模糊过滤
+- `platform` 可选：`ios|android|unknown`
+- `page` 可选，默认 `1`
+- `pageSize` 固定为 `20`（服务端强制）
+- `sort` 白名单：`ingest_time_desc`（默认）/ `ingest_time_asc`
+
+响应:
+```json
+{
+  "ok": true,
+  "data": [
+    {
+      "ingest_time": "2026-03-03 18:38:57",
+      "date": "2026-03-02",
+      "app_key": "ai-seek",
+      "platform": "ios",
+      "media_source": "Apple Search Ads",
+      "campaign": "Novix_iTunes_us_1226_broad_BR_br",
+      "installs": 36,
+      "clicks": 93,
+      "total_cost": 42.9723,
+      "source_report": "daily_report_v5",
+      "raw_json": "{...}"
+    }
+  ],
+  "meta": {
+    "page": 1,
+    "pageSize": 20,
+    "total": 10,
+    "totalPages": 1,
+    "from": "2026-03-01",
+    "to": "2026-03-03"
+  }
+}
+```
+
+### `POST /api/pull-records/trigger`
+手动触发一次 Pull 读取（默认回填 1 天），返回读取详情，用于 WebUI 弹窗展示。
+
+Request:
+```json
+{
+  "backfillDays": 1
+}
+```
+
+### `DELETE /api/pull-records`
+按明细记录主维度删除 Pull 数据，并同步删除对应 `metrics_daily` 指标。
+
+Request:
+```json
+{
+  "ingest_time": "2026-03-03 18:38:57",
+  "date": "2026-03-02",
+  "app_key": "ai-seek",
+  "platform": "ios",
+  "media_source": "Apple Search Ads",
+  "campaign": "Novix_iTunes_us_1226_broad_BR_br",
+  "source_report": "daily_report_v5"
+}
+```
+
+Response:
+```json
+{
+  "ok": true,
+  "data": {
+    "started_at": "2026-03-03T11:10:00.000Z",
+    "ended_at": "2026-03-03T11:10:02.000Z",
+    "duration_ms": 2000,
+    "backfill_days": 1,
+    "apps": 3,
+    "success_count": 3,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "details": [
+      {
+        "app_key": "ai-seek",
+        "platform": "ios",
+        "date": "2026-03-02",
+        "status": "ok",
+        "rows": 2,
+        "metrics_rows": 6
+      }
+    ]
+  }
+}
+```
+
+### `GET /api/keywords/lifecycle?appKey=&platform=&from=&to=&stage=&keyword=&page=&pageSize=`
+查询关键词生命周期状态（分页）。
+
+参数说明:
+- `appKey` 可选
+- `platform` 可选：`ios|android|unknown`
+- `from` / `to` 可选，格式 `YYYY-MM-DD`
+- `stage` 可选：`new|learning|scaling|stable|declining|pause_candidate`
+- `keyword` 可选，模糊匹配
+- `page` 默认 `1`
+- `pageSize` 默认 `20`，最大 `100`
+
+### `GET /api/keywords/:keyword/trend?appKey=&platform=&days=&matchType=`
+查询关键词趋势（日级，来源 `keyword_daily_metrics`）。
+
+参数说明:
+- `appKey` 必填
+- `platform` 可选（推荐传入，避免 iOS/Android 混合）
+- `days` 可选，默认 `30`
+- `matchType` 可选
+
+### `POST /api/keywords/recompute`
+手动触发关键词生命周期重算。
+
+Request:
+```json
+{
+  "backfillDays": 30
+}
+```
+
+### `GET /api/budget/recommendations?appKey=&platform=&status=&from=&to=&page=`
+查询预算建议（分页）。
+
+参数说明:
+- `appKey` 可选
+- `platform` 可选：`ios|android|unknown`
+- `status` 可选：`pending|applied|rejected|expired`
+- `from` / `to` 可选，格式 `YYYY-MM-DD`
+- `page` 默认 `1`
+
+### `POST /api/budget/recommendations/:id/mark-applied`
+将建议标记为已执行（`status=applied`）。
+
+### `POST /api/budget/recommendations/:id/reject`
+将建议标记为已拒绝（`status=rejected`）。
+
+### `POST /api/budget/recommendations/recompute`
+手动触发预算建议生成（含 Qwen 文案增强）。
+
+预算建议当前关键字段:
+- `current_ecpi`: 当前官方 `average_ecpi`
+- `target_ecpi`: 同 app / 同平台近期关键词 eCPI 中位基线
+- `volume_tier`: `low|medium|high`
+
+规则摘要:
+- `low`: 最近 3 天激活 `< 15`，默认观察
+- `medium`: 最近 3 天激活 `15-30`
+- `high`: 最近 3 天激活 `> 30`
+- 单次建议幅度固定 `20%`
+
+### `GET /api/daily-brief/preview?reportDate=YYYY-MM-DD`
+生成每日报告预览，不发送。
+
+返回重点字段:
+- `title`
+- `summary`
+- `today_judgment`
+- `app_rows`
+- `budget_highlights`
+- `alert_highlights`
+- `action_items`
+- `render_mode`
+- `feishu_card_payload`
+- `text`
+
+### `POST /api/daily-brief/send`
+生成并发送每日报告到飞书。
+
+Request:
+```json
+{
+  "reportDate": "2026-03-09",
+  "force": true
+}
+```
+
+说明:
+- 当前日报推送默认使用 Feishu `interactive card`
+- 若卡片发送失败，会自动回退到纯文本发送
+- `force=true` 时即使当天发过也会再次发送
+
+### `GET /api/operation-logs?source=&status=&limit=`
+查询系统操作日志。
+
+参数说明:
+- `source` 可选：如 `api.daily_brief`、`worker.puller`
+- `status` 可选：`success|failed|skipped|info`
+- `limit` 默认 `50`
+
+用途:
+- 查看手动操作
+- 查看各 worker 定时执行结果
+- 追踪日报、Pull、预算、关键词重算等操作
+
+---
+
+## 3) 验收用例（MVP）
+
+1. `GET callback` 返回 `ok=true`
+2. `POST callback`（带 Authorization）写入 `raw_events`
+3. 5 分钟内 `metrics_hourly` 产生聚合
+4. 模拟异常（提升 revenue/purchase）触发 `alerts`
+5. 同 fingerprint 30 分钟内告警抑制
+6. 指标恢复后 open alert 变 resolved 并发送恢复通知
+7. `GET /api/daily-brief/preview` 可生成结构化日报预览
+8. `POST /api/daily-brief/send` 可发送飞书日报卡片
+9. `GET /api/operation-logs` 可查询操作与定时任务执行记录

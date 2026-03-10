@@ -1,0 +1,223 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: hotspot-clickhouse
+    restart: unless-stopped
+    ports:
+      - '8123:8123'
+      - '9000:9000'
+    environment:
+      CLICKHOUSE_DB: hotspot
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ''
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  postgres:
+    image: postgres:16
+    container_name: hotspot-postgres
+    restart: unless-stopped
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: hotspot
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hotspot-api
+    restart: unless-stopped
+    command: npm run start:api
+    env_file:
+      - ../.env
+    ports:
+      - '3000:3000'
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      TZ: Asia/Shanghai
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DB: hotspot
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
+      AGGREGATOR_LOOKBACK_HOURS: 6
+      AGGREGATOR_INTERVAL_MS: 300000
+      DETECTOR_INTERVAL_MS: 300000
+      PULLER_INTERVAL_MS: 86400000
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    depends_on:
+      - clickhouse
+      - postgres
+
+  aggregator:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hotspot-aggregator
+    restart: unless-stopped
+    command: npm run start:aggregator
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DB: hotspot
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
+      AGGREGATOR_LOOKBACK_HOURS: 6
+      AGGREGATOR_INTERVAL_MS: 300000
+    depends_on:
+      - clickhouse
+      - postgres
+
+  detector:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hotspot-detector
+    restart: unless-stopped
+    command: npm run start:detector
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DB: hotspot
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
+      DETECTOR_INTERVAL_MS: 300000
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    depends_on:
+      - clickhouse
+      - postgres
+
+  puller:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hotspot-puller
+    restart: unless-stopped
+    command: npm run start:puller
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DB: hotspot
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
+      PULLER_INTERVAL_MS: 86400000
+      PULLER_BACKFILL_DAYS: ${PULLER_BACKFILL_DAYS:-3}
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    depends_on:
+      - clickhouse
+      - postgres
+
+  keyword-engine:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hotspot-keyword-engine
+    restart: unless-stopped
+    command: npm run start:keyword-engine
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DB: hotspot
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
+      KEYWORD_ENGINE_INTERVAL_MS: ${KEYWORD_ENGINE_INTERVAL_MS:-86400000}
+      KEYWORD_ENGINE_INITIAL_BACKFILL_DAYS: ${KEYWORD_ENGINE_INITIAL_BACKFILL_DAYS:-30}
+      KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS: ${KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS:-3}
+    depends_on:
+      - clickhouse
+      - postgres
+
+  budget-advisor:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hotspot-budget-advisor
+    restart: unless-stopped
+    command: npm run start:budget-advisor
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DB: hotspot
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
+      BUDGET_ADVISOR_INTERVAL_MS: ${BUDGET_ADVISOR_INTERVAL_MS:-86400000}
+      BUDGET_ADVISOR_LOOKBACK_DAYS: ${BUDGET_ADVISOR_LOOKBACK_DAYS:-30}
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    depends_on:
+      - clickhouse
+      - postgres
+
+  daily-brief:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hotspot-daily-brief
+    restart: unless-stopped
+    command: npm run start:daily-brief
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DB: hotspot
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
+      DAILY_BRIEF_ENABLED: ${DAILY_BRIEF_ENABLED:-true}
+      DAILY_BRIEF_INTERVAL_MS: ${DAILY_BRIEF_INTERVAL_MS:-3600000}
+      DAILY_BRIEF_REPORT_HOUR: ${DAILY_BRIEF_REPORT_HOUR:-10}
+      DAILY_BRIEF_TITLE_PREFIX: ${DAILY_BRIEF_TITLE_PREFIX:-Hotspot 每日简报}
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    depends_on:
+      - clickhouse
+      - postgres
+
+volumes:
+  clickhouse-data:
+  postgres-data:

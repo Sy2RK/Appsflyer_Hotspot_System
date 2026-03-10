@@ -1,0 +1,406 @@
+# RUNBOOK
+
+## 1. 启动
+
+```bash
+cd hotspot-system
+cp .env.example .env
+# 如需全局兜底通知，可配置 FEISHU_APP_ID/FEISHU_APP_SECRET/FEISHU_CHAT_ID
+# 或 ALERT_WEBHOOK_URL（二选一或同时配置）
+# Pull 回填天数（默认 3）
+# PULLER_BACKFILL_DAYS=3
+# 关键词与预算建议 worker（默认每天）
+# KEYWORD_ENGINE_INTERVAL_MS=86400000
+# BUDGET_ADVISOR_INTERVAL_MS=86400000
+# 每日报告 worker（默认每小时检查一次，到指定小时后发送前一日报告）
+# DAILY_BRIEF_ENABLED=true
+# DAILY_BRIEF_INTERVAL_MS=3600000
+# DAILY_BRIEF_REPORT_HOUR=10
+# DAILY_BRIEF_TITLE_PREFIX=Hotspot 每日简报
+# Qwen（OpenAI兼容）
+# QWEN_BASE_URL=
+# QWEN_API_KEY=
+# QWEN_MODEL=qwen3.5-plus
+# QWEN_THINKING_ENABLED=true
+cd infra
+docker compose up -d --build
+```
+
+服务:
+- API: `http://localhost:3000`
+- Web UI: `http://localhost:3000/ui`
+- ClickHouse HTTP: `http://localhost:8123`
+- Postgres: `localhost:5432`
+
+> `infra/postgres/init.sql` 会预置 3 个 app：
+> - `ai-video-plus` -> `id6746191879`
+> - `ai-screen-time-coach` -> `id6756569023`
+> - `ai-seek` -> `id6752638454`
+> - 初始 token 为占位值，需上线前更新
+
+Web UI 新增能力:
+- 规则 DSL 表单编辑（并可与 JSON 双向同步）
+- 告警详情抽屉（查看 `top_contributors` 与原始 JSON）
+- 关键词生命周期页面（筛选、分页、趋势抽屉、手动重算）
+- 预算建议页面（筛选、分页、详情弹窗、状态流转、手动生成、eCPI 分级规则说明）
+- 每日报告页面（结构化预览、飞书 `interactive` 卡片发送、阈值说明）
+- 操作日志页面（查看手动操作与定时任务执行记录）
+- UI 文案默认中文（专有名词保留英文），规则见 `AGENTS.md`
+
+---
+
+## 2. 健康检查
+
+```bash
+curl http://localhost:3000/health
+```
+
+---
+
+## 3. 验证 Push Callback
+
+### 3.1 GET callback
+
+```bash
+curl "http://localhost:3000/appsflyer/api/v1/event/ai-video-plus/ods_events_device_detail/callback"
+```
+
+### 3.2 POST callback（带 Authorization）
+
+```bash
+curl -X POST "http://localhost:3000/appsflyer/api/v1/event/ai-video-plus/ods_events_device_detail/callback" \
+  -H "Authorization: <your-generated-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_time":"2026-02-13T10:10:00+08:00",
+    "event_name":"purchase",
+    "media_source":"Apple Search Ads",
+    "campaign":"ASA-CN-1",
+    "country_code":"US",
+    "platform":"ios",
+    "appsflyer_id":"af_001",
+    "event_revenue":"120.5",
+    "currency":"USD",
+    "event_value":{"order_id":"o_001","sku":"pro"}
+  }'
+```
+
+预期: HTTP `204`。
+
+---
+
+## 3.3 更新 3 个 app 的 token 与飞书机器人配置
+
+```sql
+UPDATE apps
+SET push_auth_token = '<generated_token>',
+    display_name = '<display_name_optional>',
+    notify_feishu_app_id = '<feishu_app_id>',
+    notify_feishu_app_secret = '<feishu_app_secret>',
+    notify_feishu_chat_id = '<feishu_chat_id>'
+WHERE app_key IN ('ai-video-plus', 'ai-screen-time-coach', 'ai-seek');
+```
+
+---
+
+## 4. 验证 raw_events 入库
+
+```bash
+curl -s "http://localhost:8123/?query=SELECT%20app_key,event_name,revenue,event_time,event_uid%20FROM%20hotspot.raw_events%20ORDER%20BY%20event_time%20DESC%20LIMIT%205"
+```
+
+---
+
+## 5. 验证小时聚合（aggregator 每 5 分钟）
+
+```bash
+curl -s "http://localhost:8123/?query=SELECT%20hour,app_key,metric,event_name,value%20FROM%20hotspot.metrics_hourly%20FINAL%20ORDER%20BY%20hour%20DESC%20LIMIT%2010"
+```
+
+聚合策略:
+- `metrics_hourly` 使用 `ReplacingMergeTree(version)`
+- 每轮重算最近 `N` 小时（默认 6 小时）
+- 通过 `FINAL` 读取最新版本，支持迟到事件修正
+
+---
+
+## 5.1 Pull 日级字段迁移（老环境必做）
+
+如果 ClickHouse 是旧数据卷（不是全新初始化），执行一次：
+
+```bash
+docker exec -i hotspot-clickhouse clickhouse-client -n < infra/clickhouse/init.sql
+```
+
+---
+
+## 5.2 验证 Pull 入库与日级指标
+
+重启 puller 让其加载新 token 与新回填参数：
+
+```bash
+cd hotspot-system/infra
+docker compose up -d puller
+docker compose logs -f --tail=200 puller
+```
+
+检查 `pull_aggregate_daily`：
+
+```bash
+curl -s "http://localhost:8123/?query=SELECT%20date,app_key,media_source,installs,clicks,total_cost,source_report%20FROM%20hotspot.pull_aggregate_daily%20ORDER%20BY%20date%20DESC%20LIMIT%2010"
+```
+
+检查 `metrics_daily`：
+
+```bash
+curl -s "http://localhost:8123/?query=SELECT%20date,app_key,metric,value%20FROM%20hotspot.metrics_daily%20FINAL%20ORDER%20BY%20date%20DESC%20LIMIT%2010"
+```
+
+验证 Pull API 查询：
+
+```bash
+curl "http://localhost:3000/api/metrics?appKey=ai-seek&metric=installs&source=pull&from=2026-03-01&to=2026-03-03&granularity=day"
+```
+
+---
+
+## 5.3 验证 Pull 明细列表接口
+
+```bash
+curl -G "http://localhost:3000/api/pull-records" \
+  --data-urlencode "from=2026-03-01" \
+  --data-urlencode "to=2026-03-03" \
+  --data-urlencode "appKey=ai-seek" \
+  --data-urlencode "page=1" \
+  --data-urlencode "sort=ingest_time_desc"
+```
+
+WebUI 查看路径：
+- `http://localhost:3000/ui`
+- 左侧导航点击 `Pull明细`
+- 默认显示最近 3 天数据，支持筛选、分页、行内展开 `raw_json`
+
+手动触发一次 Pull（API）：
+
+```bash
+curl -X POST "http://localhost:3000/api/pull-records/trigger" \
+  -H "Content-Type: application/json" \
+  -d '{"backfillDays":1}'
+```
+
+WebUI 手动触发：
+- 在 `Pull明细` 区块点击 `手动读取`
+- 读取完成后会弹出“读取详情”弹窗
+
+删除单条 Pull 明细：
+
+```bash
+curl -X DELETE "http://localhost:3000/api/pull-records" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ingest_time":"2026-03-03 18:38:57",
+    "date":"2026-03-02",
+    "app_key":"ai-seek",
+    "platform":"ios",
+    "media_source":"Apple Search Ads",
+    "campaign":"Novix_iTunes_us_1226_broad_BR_br",
+    "source_report":"daily_report_v5"
+  }'
+```
+
+---
+
+## 5.4 验证关键词生命周期链路
+
+手动重算（最近 30 天）：
+
+```bash
+curl -X POST "http://localhost:3000/api/keywords/recompute" \
+  -H "Content-Type: application/json" \
+  -d '{"backfillDays":30}'
+```
+
+查询生命周期列表：
+
+```bash
+curl -G "http://localhost:3000/api/keywords/lifecycle" \
+  --data-urlencode "appKey=ai-seek" \
+  --data-urlencode "page=1"
+```
+
+查询关键词趋势：
+
+```bash
+curl -G "http://localhost:3000/api/keywords/Novix_iTunes_us_1226_broad_BR_br/trend" \
+  --data-urlencode "appKey=ai-seek" \
+  --data-urlencode "days=30"
+```
+
+---
+
+## 5.5 验证预算建议链路（含 Qwen 文案增强）
+
+手动生成建议：
+
+```bash
+curl -X POST "http://localhost:3000/api/budget/recommendations/recompute" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+查询建议列表：
+
+```bash
+curl -G "http://localhost:3000/api/budget/recommendations" \
+  --data-urlencode "appKey=ai-seek" \
+  --data-urlencode "status=pending" \
+  --data-urlencode "page=1"
+```
+
+状态流转：
+
+```bash
+curl -X POST "http://localhost:3000/api/budget/recommendations/1/mark-applied"
+curl -X POST "http://localhost:3000/api/budget/recommendations/1/reject"
+```
+
+预算建议当前核心规则：
+- 核心口径优先使用 AppsFlyer Pull 返回的官方 `average_ecpi`
+- 按最近 3 天激活量分为 `low / medium / high`
+- 单次调价动作固定为 `+20% / -20%`
+- 仅在极端低效且进入 `pause_candidate` 时给出暂停建议
+
+---
+
+## 5.6 验证每日报告链路
+
+预览日报：
+
+```bash
+curl -G "http://localhost:3000/api/daily-brief/preview" \
+  --data-urlencode "reportDate=2026-03-09"
+```
+
+发送日报：
+
+```bash
+curl -X POST "http://localhost:3000/api/daily-brief/send" \
+  -H "Content-Type: application/json" \
+  -d '{"reportDate":"2026-03-09","force":true}'
+```
+
+说明：
+- 默认发送 Feishu `interactive` 卡片
+- 卡片失败会自动回退到纯文本发送
+- WebUI 路径：`总览 -> 每日简报`
+
+---
+
+## 5.7 验证操作日志
+
+```bash
+curl -G "http://localhost:3000/api/operation-logs" \
+  --data-urlencode "limit=20"
+```
+
+WebUI 路径：
+- 左侧导航点击 `操作日志`
+- 可按 `source / status / limit` 筛选
+
+常见来源：
+- `api.pull_records`
+- `api.keywords`
+- `api.budget`
+- `api.daily_brief`
+- `worker.puller`
+- `worker.keyword_engine`
+- `worker.budget_advisor`
+- `worker.daily_brief`
+
+---
+
+## 6. 规则与告警
+
+### 查询规则
+
+```bash
+curl "http://localhost:3000/api/rules?appKey=ai-video-plus"
+```
+
+### 创建规则
+
+```bash
+curl -X POST "http://localhost:3000/api/rules" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app_key":"ai-video-plus",
+    "name":"manual-rule",
+    "enabled":true,
+    "rule_json":{
+      "timezone":"Asia/Shanghai",
+      "silence_minutes":30,
+      "metrics":[{
+        "metric":"revenue",
+        "granularity":"hour",
+        "window":"last_1h",
+        "baseline":"avg_7d_same_hour",
+        "up_ratio":2,
+        "down_ratio":0.5,
+        "min_abs_delta":50,
+        "severity":{"spike":"P1","drop":"P0"},
+        "drilldown_dims":["media_source","country","campaign","attribution","event_type"]
+      }]
+    }
+  }'
+```
+
+### 查告警
+
+```bash
+curl "http://localhost:3000/api/alerts?appKey=ai-video-plus&status=open"
+```
+
+---
+
+## 7. 验收用例步骤
+
+1. `GET callback` 返回 `{ok:true}`
+2. `POST callback` 成功后，`raw_events` 能查到数据
+3. 最长 5 分钟后，`metrics_hourly FINAL` 出现对应小时记录
+4. 连续推入高 revenue/purchase 数据，detector 触发并写入 `alerts`
+5. 同一异常 fingerprint 在 30 分钟内不会重复发（抑制）
+6. 停止推高值后恢复正常区间，open 告警会被置为 `resolved`
+7. `GET /api/daily-brief/preview` 可生成结构化日报
+8. `POST /api/daily-brief/send` 可发送飞书交互卡片
+9. `GET /api/operation-logs` 可查询手动操作和定时任务执行记录
+
+---
+
+## 8. 运维排障
+
+查看容器日志:
+```bash
+cd hotspot-system/infra
+docker compose logs -f api
+docker compose logs -f aggregator
+docker compose logs -f detector
+docker compose logs -f puller
+docker compose logs -f keyword-engine
+docker compose logs -f budget-advisor
+docker compose logs -f daily-brief
+```
+
+常见问题:
+- `401 authorization_invalid`: 检查 apps 表中 `push_auth_token` 与 header 是否一致
+- `event_uid length mismatch`: 确保 event_uid 是 32 位 md5（当前实现已统一）
+- `metrics_hourly 为空`: 检查 `raw_events` 是否有数据，以及 aggregator 日志
+- `日报预览为空`: 检查报告日期是否晚于最新 Pull 日期
+- `每日卡片发送失败`: 检查 `.env` 或 app 级 Feishu 配置，并查看 `operation_logs`
+- `Pull 连续失败`: 区分 AppsFlyer 限流（`403 Limit reached`）与网络层 `fetch failed`
+
+生成高强度 push token（推荐 48 bytes）:
+```bash
+cd hotspot-system
+npm run token:gen
+# 或指定字节数：npm run token:gen -- 64
+```

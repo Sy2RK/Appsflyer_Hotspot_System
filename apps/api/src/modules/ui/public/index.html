@@ -1,0 +1,902 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hotspot 控制台</title>
+    <link rel="stylesheet" href="/ui/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="导航栏">
+        <div class="brand-block">
+          <p class="brand-kicker">AppsFlyer Hotspot</p>
+          <h1>监测控制台</h1>
+          <p class="brand-sub">归因数据监测与异常处置</p>
+        </div>
+
+        <nav id="sideNav" class="nav-list" aria-label="主导航">
+          <button class="nav-item is-active" data-target="section-overview" type="button">总览</button>
+          <button class="nav-item" data-target="section-apps" type="button">应用配置</button>
+          <button class="nav-item" data-target="section-rules" type="button">规则管理</button>
+          <button class="nav-item" data-target="section-alerts" type="button">告警列表</button>
+          <button class="nav-item" data-target="section-metrics" type="button">指标趋势</button>
+          <button class="nav-item" data-target="section-keywords" type="button">关键词生命周期</button>
+          <button class="nav-item" data-target="section-budget" type="button">预算建议</button>
+          <button class="nav-item" data-target="section-pull-records" type="button">Pull明细</button>
+          <button class="nav-item" data-target="section-operation-logs" type="button">操作日志</button>
+        </nav>
+
+      </aside>
+
+      <div class="main-shell">
+        <header class="topbar">
+          <div>
+            <p class="topbar-kicker">数据运行状态</p>
+            <h2>Hotspot 运营面板</h2>
+          </div>
+          <div class="topbar-actions">
+            <button id="refreshAllBtn" class="btn btn-secondary" type="button">刷新全部</button>
+            <span id="lastUpdated" class="hint">尚未加载</span>
+          </div>
+        </header>
+
+        <main class="content sections">
+          <section id="section-overview" class="section-panel" style="--delay: 0ms">
+            <div class="card-head">
+              <h3>运行总览</h3>
+              <p>快速查看应用、规则与告警状态。</p>
+            </div>
+            <div class="overview-grid">
+              <article class="overview-card">
+                <span class="overview-label">应用数</span>
+                <strong id="ovApps">0</strong>
+              </article>
+              <article class="overview-card">
+                <span class="overview-label">规则数</span>
+                <strong id="ovRules">0</strong>
+              </article>
+              <article class="overview-card">
+                <span class="overview-label">未恢复告警</span>
+                <strong id="ovOpenAlerts">0</strong>
+              </article>
+              <article class="overview-card">
+                <span class="overview-label">最近刷新</span>
+                <strong id="ovLatestRefresh">-</strong>
+              </article>
+            </div>
+
+            <div class="brief-panel">
+              <div class="card-head card-head-compact">
+                <h4>每日简报</h4>
+                <p>汇总 Pull、预算建议与未恢复告警，推送到飞书群聊。</p>
+              </div>
+              <form id="dailyBriefForm" class="inline-form daily-brief-form">
+                <label class="filter-field">
+                  <span class="field-label">报告日期</span>
+                  <input id="dailyBriefDateInput" name="reportDate" type="date" />
+                </label>
+                <div class="filter-actions">
+                  <button id="previewDailyBriefBtn" class="btn btn-secondary" type="submit">预览简报</button>
+                  <button id="sendDailyBriefBtn" class="btn btn-primary" type="button">发送到飞书</button>
+                </div>
+              </form>
+              <div id="dailyBriefStatus" class="hint">默认汇总前一天数据，并使用全局 Feishu 机器人配置发送。</div>
+            </div>
+          </section>
+
+          <section id="section-apps" class="section-panel" style="--delay: 50ms">
+            <div class="card-head">
+              <h3>应用配置</h3>
+              <p>管理 Push 鉴权、Pull app_id、Feishu/Webhook 通知参数。</p>
+            </div>
+
+            <form id="appForm" class="app-config-form">
+              <div class="form-grid app-fields-grid">
+                <label class="field">
+                  <span class="field-label">应用名称（display_name，可选）</span>
+                  <input name="display_name" />
+                </label>
+                <label class="field">
+                  <span class="field-label">iOS 名称（ios_display_name，可选）</span>
+                  <input name="ios_display_name" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Android 名称（android_display_name，可选）</span>
+                  <input name="android_display_name" />
+                </label>
+                <label class="field">
+                  <span class="field-label">应用 Key（app_key）</span>
+                  <input name="app_key" required />
+                </label>
+                <label class="field">
+                  <span class="field-label">iOS App ID（ios_pull_app_id）</span>
+                  <input name="ios_pull_app_id" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Android App ID（android_pull_app_id）</span>
+                  <input name="android_pull_app_id" />
+                </label>
+                <label class="field">
+                  <span class="field-label">兼容 App ID（pull_app_id，可选）</span>
+                  <input name="pull_app_id" />
+                </label>
+                <label class="field">
+                  <span class="field-label">数据集（dataset）</span>
+                  <input name="dataset" required value="ods_events_device_detail" />
+                </label>
+                <label class="field">
+                  <span class="field-label">时区（timezone）</span>
+                  <input name="timezone" required value="Asia/Shanghai" />
+                </label>
+                <label class="field token-field">
+                  <span class="field-label">推送鉴权 Token（push_auth_token）</span>
+                  <div class="field-control with-action">
+                    <input name="push_auth_token" />
+                    <button type="button" id="generateTokenBtn" class="btn btn-ghost btn-inline-action">生成</button>
+                  </div>
+                </label>
+              </div>
+
+              <section id="appFeishuCard" class="collapse-card">
+                <div class="feature-toggle-row">
+                  <div>
+                    <h4>应用级 Feishu 配置</h4>
+                    <p class="hint">默认关闭。未启用或字段留空时，将自动使用 `.env` 中的全局 Feishu 配置。</p>
+                  </div>
+                  <label class="toggle-switch" for="appFeishuEnabled">
+                    <input id="appFeishuEnabled" type="checkbox" />
+                    <span class="toggle-slider" aria-hidden="true"></span>
+                    <span class="toggle-text">启用应用级 Feishu</span>
+                  </label>
+                </div>
+                <div id="appFeishuSummary" class="collapse-summary hint"></div>
+                <div id="appFeishuBody" class="collapse-card-body">
+                  <div class="form-grid app-feishu-grid">
+                    <label class="field">
+                      <span class="field-label">Feishu App ID（notify_feishu_app_id）</span>
+                      <input name="notify_feishu_app_id" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Feishu App Secret（notify_feishu_app_secret）</span>
+                      <input name="notify_feishu_app_secret" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Feishu Chat ID（notify_feishu_chat_id）</span>
+                      <input name="notify_feishu_chat_id" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">备用 Webhook（notify_webhook_url，可选）</span>
+                      <input name="notify_webhook_url" />
+                    </label>
+                  </div>
+                </div>
+              </section>
+
+              <div class="actions">
+                <button id="appSubmitBtn" class="btn btn-primary" type="submit">保存应用配置</button>
+                <button id="appResetBtn" class="btn btn-ghost" type="button">新建 / 清空</button>
+              </div>
+            </form>
+
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>名称（display_name）</th>
+                    <th>iOS 名称</th>
+                    <th>Android 名称</th>
+                    <th>应用 Key（app_key）</th>
+                    <th>iOS App ID</th>
+                    <th>Android App ID</th>
+                    <th>兼容 App ID</th>
+                    <th>数据集（dataset）</th>
+                    <th>时区</th>
+                    <th>通知配置</th>
+                    <th>更新时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="appsTableBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="section-rules" class="section-panel" style="--delay: 100ms">
+            <div class="card-head">
+              <h3>规则管理</h3>
+              <p>支持 DSL 表单编辑，并可与 JSON 双向同步。</p>
+            </div>
+
+            <div class="split-layout">
+              <form id="ruleForm" class="stack">
+                <input type="hidden" name="id" />
+                <label>
+                  <span>app_key</span>
+                  <input name="app_key" required />
+                </label>
+                <label>
+                  <span>规则名称</span>
+                  <input name="name" required />
+                </label>
+
+                <div class="dsl-grid">
+                  <label>
+                    <span>规则时区</span>
+                    <input name="dsl_timezone" value="Asia/Shanghai" />
+                  </label>
+                  <label>
+                    <span>静默分钟</span>
+                    <input type="number" name="dsl_silence_minutes" value="30" min="1" />
+                  </label>
+                  <label>
+                    <span>指标类型 metric</span>
+                    <select name="dsl_metric">
+                      <option value="revenue">revenue</option>
+                      <option value="event_count">event_count</option>
+                      <option value="purchase_count">purchase_count</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>事件名 event_name（event_count 时）</span>
+                    <input name="dsl_event_name" />
+                  </label>
+                  <label>
+                    <span>窗口</span>
+                    <select name="dsl_window">
+                      <option value="last_1h">last_1h</option>
+                      <option value="last_2h">last_2h</option>
+                      <option value="last_3h">last_3h</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>基线</span>
+                    <select name="dsl_baseline">
+                      <option value="avg_7d_same_hour">avg_7d_same_hour</option>
+                      <option value="median_14d_same_hour">median_14d_same_hour</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>上升阈值 up_ratio</span>
+                    <input type="number" name="dsl_up_ratio" value="2" min="0" step="0.1" />
+                  </label>
+                  <label>
+                    <span>下降阈值 down_ratio</span>
+                    <input type="number" name="dsl_down_ratio" value="0.5" min="0" step="0.1" />
+                  </label>
+                  <label>
+                    <span>最小绝对差值 min_abs_delta</span>
+                    <input type="number" name="dsl_min_abs_delta" value="50" min="0" step="1" />
+                  </label>
+                  <label>
+                    <span>上升等级</span>
+                    <select name="dsl_sev_spike">
+                      <option value="P0">P0</option>
+                      <option value="P1" selected>P1</option>
+                      <option value="P2">P2</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>下降等级</span>
+                    <select name="dsl_sev_drop">
+                      <option value="P0" selected>P0</option>
+                      <option value="P1">P1</option>
+                      <option value="P2">P2</option>
+                    </select>
+                  </label>
+                </div>
+
+                <fieldset class="dim-group">
+                  <legend>下钻维度 drilldown_dims</legend>
+                  <label><input type="checkbox" name="dsl_dim" value="media_source" checked /> media_source</label>
+                  <label><input type="checkbox" name="dsl_dim" value="country" checked /> country</label>
+                  <label><input type="checkbox" name="dsl_dim" value="campaign" checked /> campaign</label>
+                  <label><input type="checkbox" name="dsl_dim" value="attribution" checked /> attribution</label>
+                  <label><input type="checkbox" name="dsl_dim" value="event_type" checked /> event_type</label>
+                </fieldset>
+
+                <div class="rule-json-actions">
+                  <button type="button" id="buildDslJsonBtn" class="btn btn-ghost">根据表单生成 JSON</button>
+                  <button type="button" id="loadDslFromJsonBtn" class="btn btn-ghost">根据 JSON 回填表单</button>
+                </div>
+
+                <textarea name="rule_json" rows="10"></textarea>
+                <button class="btn btn-primary" type="submit">保存规则</button>
+              </form>
+
+              <div>
+                <div class="card-head card-head-compact">
+                  <h4>已保存规则</h4>
+                  <p>支持启用/停用与回填编辑。</p>
+                </div>
+                <div id="rulesList" class="stack compact"></div>
+              </div>
+            </div>
+          </section>
+
+          <section id="section-alerts" class="section-panel" style="--delay: 150ms">
+            <div class="card-head">
+              <h3>告警列表</h3>
+              <p>按条件筛选并查看异常解释。</p>
+            </div>
+
+            <form id="alertsFilter" class="inline-form alerts-form">
+              <label class="filter-field">
+                <span class="field-label">应用</span>
+                <select name="appKey" id="alertsAppSelect"></select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">状态</span>
+                <select name="status">
+                  <option value="">全部状态</option>
+                  <option value="open">未恢复</option>
+                  <option value="resolved">已恢复</option>
+                </select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">等级</span>
+                <select name="severity">
+                  <option value="">全部等级</option>
+                  <option value="P0">P0</option>
+                  <option value="P1">P1</option>
+                  <option value="P2">P2</option>
+                </select>
+              </label>
+              <div class="filter-actions">
+                <button class="btn btn-secondary" type="submit">应用筛选</button>
+              </div>
+            </form>
+
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>创建时间</th>
+                    <th>应用</th>
+                    <th>等级</th>
+                    <th>状态</th>
+                    <th>指标</th>
+                    <th>偏差</th>
+                    <th>说明</th>
+                    <th>详情</th>
+                  </tr>
+                </thead>
+                <tbody id="alertsTableBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="section-metrics" class="section-panel" style="--delay: 200ms">
+            <div class="card-head">
+              <h3>指标趋势</h3>
+              <p id="metricsDesc">查看最近 72 小时趋势。</p>
+            </div>
+
+            <form id="metricsForm" class="inline-form metrics-form">
+              <label class="filter-field">
+                <span class="field-label">应用</span>
+                <select name="appKey" id="metricsAppSelect"></select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">平台</span>
+                <select name="platform" id="metricsPlatformSelect">
+                  <option value="">全部平台</option>
+                  <option value="ios">iOS</option>
+                  <option value="android">Android</option>
+                  <option value="unknown">unknown</option>
+                </select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">数据源</span>
+                <select name="source" id="metricsSourceSelect">
+                  <option value="push">Push（小时）</option>
+                  <option value="pull">Pull（日）</option>
+                </select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">指标</span>
+                <select name="metric" id="metricsMetricSelect">
+                  <option value="revenue">revenue</option>
+                  <option value="event_count">event_count</option>
+                  <option value="purchase_count">purchase_count</option>
+                </select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">事件名（event_name，可选）</span>
+                <input name="eventName" id="metricsEventNameInput" />
+              </label>
+              <div class="filter-actions">
+                <button class="btn btn-secondary" type="submit">加载最近 72 小时</button>
+              </div>
+            </form>
+
+            <div class="chart-surface">
+              <canvas id="metricsCanvas" width="640" height="260" aria-label="metrics chart"></canvas>
+              <div id="metricsTooltip" class="chart-tooltip hidden"></div>
+            </div>
+            <div id="metricsLegend" class="hint"></div>
+          </section>
+
+          <section id="section-keywords" class="section-panel" style="--delay: 250ms">
+            <div class="card-head">
+              <div class="card-head-row">
+                <div>
+                  <h3>关键词生命周期</h3>
+                  <p>按阶段跟踪关键词代理项（基于 campaign 解析）并支持趋势下钻。</p>
+                </div>
+                <button id="keywordRecomputeBtn" class="btn btn-primary" type="button">手动重算</button>
+              </div>
+            </div>
+
+            <form id="keywordFilter" class="inline-form keyword-form">
+              <label class="filter-field">
+                <span class="field-label">应用</span>
+                <select name="appKey" id="keywordAppSelect"></select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">平台</span>
+                <select name="platform" id="keywordPlatformSelect">
+                  <option value="">全部平台</option>
+                  <option value="ios">iOS</option>
+                  <option value="android">Android</option>
+                  <option value="unknown">unknown</option>
+                </select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">开始日期</span>
+                <input type="date" name="from" id="keywordFromInput" />
+              </label>
+              <label class="filter-field">
+                <span class="field-label">结束日期</span>
+                <input type="date" name="to" id="keywordToInput" />
+              </label>
+              <label class="filter-field">
+                <span class="field-label">阶段</span>
+                <select name="stage" id="keywordStageSelect">
+                  <option value="">全部阶段</option>
+                  <option value="new">新词</option>
+                  <option value="learning">学习期</option>
+                  <option value="scaling">放量期</option>
+                  <option value="stable">稳定期</option>
+                  <option value="declining">衰退期</option>
+                  <option value="pause_candidate">暂停候选</option>
+                </select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">关键词（keyword）</span>
+                <input name="keyword" id="keywordSearchInput" />
+              </label>
+              <div class="filter-actions">
+                <button class="btn btn-secondary" type="submit">查询</button>
+              </div>
+            </form>
+
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>应用 Key（app_key）</th>
+                    <th>平台（platform）</th>
+                    <th>关键词（keyword）</th>
+                    <th>匹配类型（match_type）</th>
+                    <th>阶段（stage）</th>
+                    <th>评分（stage_score）</th>
+                    <th>最新安装（last_installs）</th>
+                    <th>最新 CPI（last_cpi）</th>
+                    <th>最近更新（updated_at）</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="keywordsTableBody"></tbody>
+              </table>
+            </div>
+
+            <div class="table-pagination">
+              <button id="keywordPrevPageBtn" class="btn btn-ghost" type="button">上一页</button>
+              <span id="keywordPaginationInfo" class="hint">第 1/1 页 · 共 0 条</span>
+              <button id="keywordNextPageBtn" class="btn btn-ghost" type="button">下一页</button>
+            </div>
+          </section>
+
+          <section id="section-budget" class="section-panel" style="--delay: 300ms">
+            <div class="card-head">
+              <div class="card-head-row">
+                <div>
+                  <div class="title-with-help">
+                    <h3>预算建议</h3>
+                    <div class="help-group">
+                      <button
+                        id="budgetRuleHelpBtn"
+                        class="help-icon"
+                        type="button"
+                        aria-label="查看 eCPI 分级规则说明"
+                      >
+                        ?
+                      </button>
+                      <div id="budgetRuleHelpPanel" class="help-popover help-popover-floating">
+                        <h4>eCPI 分级规则</h4>
+                        <ul class="simple-list">
+                          <li>核心口径：优先使用 AppsFlyer Pull 返回的官方 eCPI（average_ecpi）。</li>
+                          <li>低量级：最近 3 天激活量 &lt; 15，默认观察，不自动调价。</li>
+                          <li>中量级：最近 3 天激活量 15-30。eCPI ≤ 目标 90% 时上调 20%，≥ 目标 115% 时下调 20%。</li>
+                          <li>高量级：最近 3 天激活量 &gt; 30。eCPI ≤ 目标时上调 20%，≥ 目标 120% 时下调 20%。</li>
+                          <li>目标 eCPI：按同应用、同平台、最近有效关键词的 eCPI 中位数自动计算。</li>
+                          <li>极端低效且已进入 pause_candidate 的关键词，才会给出暂停建议。</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                  <p>半自动预算调控建议（仅建议，不自动执行）。</p>
+                </div>
+                <button id="budgetRecomputeBtn" class="btn btn-primary" type="button">生成建议</button>
+              </div>
+            </div>
+
+            <form id="budgetFilter" class="inline-form budget-form">
+              <label class="filter-field">
+                <span class="field-label">应用</span>
+                <select name="appKey" id="budgetAppSelect"></select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">平台</span>
+                <select name="platform" id="budgetPlatformSelect">
+                  <option value="">全部平台</option>
+                  <option value="ios">iOS</option>
+                  <option value="android">Android</option>
+                  <option value="unknown">unknown</option>
+                </select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">开始日期</span>
+                <input type="date" name="from" id="budgetFromInput" />
+              </label>
+              <label class="filter-field">
+                <span class="field-label">结束日期</span>
+                <input type="date" name="to" id="budgetToInput" />
+              </label>
+              <label class="filter-field">
+                <span class="field-label">状态</span>
+                <select name="status" id="budgetStatusSelect">
+                  <option value="">全部状态</option>
+                  <option value="pending">待处理</option>
+                  <option value="applied">已执行</option>
+                  <option value="rejected">已拒绝</option>
+                  <option value="expired">已过期</option>
+                </select>
+              </label>
+              <div class="filter-actions">
+                <button class="btn btn-secondary" type="submit">查询</button>
+              </div>
+            </form>
+
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>日期（date）</th>
+                    <th>应用 Key（app_key）</th>
+                    <th>平台（platform）</th>
+                    <th>关键词（keyword）</th>
+                    <th>量级</th>
+                    <th>当前 eCPI（AF）</th>
+                    <th>目标 eCPI</th>
+                    <th>动作（action）</th>
+                    <th>调整比例（change_ratio）</th>
+                    <th>置信度（confidence）</th>
+                    <th>状态（status）</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="budgetTableBody"></tbody>
+              </table>
+            </div>
+
+            <div class="table-pagination">
+              <button id="budgetPrevPageBtn" class="btn btn-ghost" type="button">上一页</button>
+              <span id="budgetPaginationInfo" class="hint">第 1/1 页 · 共 0 条</span>
+              <button id="budgetNextPageBtn" class="btn btn-ghost" type="button">下一页</button>
+            </div>
+          </section>
+
+          <section id="section-pull-records" class="section-panel" style="--delay: 350ms">
+            <div class="card-head">
+              <div class="card-head-row">
+                <div>
+                  <h3>Pull 明细记录</h3>
+                  <p>展示每条 Pull 入库结果，可按条件筛选并查看原始 JSON。</p>
+                </div>
+                <button id="triggerPullBtn" class="btn btn-primary" type="button">手动读取</button>
+              </div>
+            </div>
+
+            <form id="pullRecordsFilter" class="inline-form pull-records-form">
+              <label class="filter-field">
+                <span>应用</span>
+                <select name="appKey" id="pullRecordsAppSelect"></select>
+              </label>
+              <label class="filter-field">
+                <span>平台</span>
+                <select name="platform" id="pullRecordsPlatformSelect">
+                  <option value="">全部平台</option>
+                  <option value="ios">iOS</option>
+                  <option value="android">Android</option>
+                  <option value="unknown">unknown</option>
+                </select>
+              </label>
+              <label class="filter-field">
+                <span>开始日期</span>
+                <input type="date" name="from" id="pullRecordsFromInput" required />
+              </label>
+              <label class="filter-field">
+                <span>结束日期</span>
+                <input type="date" name="to" id="pullRecordsToInput" required />
+              </label>
+              <label class="filter-field">
+                <span>媒体源</span>
+                <input name="mediaSource" id="pullRecordsMediaSourceInput" />
+              </label>
+              <label class="filter-field">
+                <span>活动</span>
+                <input name="campaign" id="pullRecordsCampaignInput" />
+              </label>
+              <div class="filter-actions">
+                <button class="btn btn-secondary" type="submit">查询</button>
+              </div>
+            </form>
+
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>入库时间（ingest_time，美国时间）</th>
+                    <th>日期（date）</th>
+                    <th>应用 Key（app_key）</th>
+                    <th>平台（platform）</th>
+                    <th>媒体源（media_source）</th>
+                    <th>活动（campaign）</th>
+                    <th>安装量（installs）</th>
+                    <th>点击量（clicks）</th>
+                    <th>成本（total_cost）</th>
+                    <th>来源报表（source_report）</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="pullRecordsTableBody"></tbody>
+              </table>
+            </div>
+
+            <div class="table-pagination">
+              <button id="pullPrevPageBtn" class="btn btn-ghost" type="button">上一页</button>
+              <span id="pullPaginationInfo" class="hint">第 1/1 页 · 共 0 条</span>
+              <button id="pullNextPageBtn" class="btn btn-ghost" type="button">下一页</button>
+            </div>
+          </section>
+
+          <section id="section-operation-logs" class="section-panel" style="--delay: 400ms">
+            <div class="card-head">
+              <h3>操作日志</h3>
+              <p>记录手动操作与关键定时任务执行结果，便于追溯每次变更与运行状态。</p>
+            </div>
+
+            <form id="operationLogsFilter" class="inline-form operation-logs-form">
+              <label class="filter-field">
+                <span class="field-label">来源</span>
+                <select id="operationLogsSourceSelect" name="source">
+                  <option value="">全部来源</option>
+                  <option value="api.apps">api.apps</option>
+                  <option value="api.rules">api.rules</option>
+                  <option value="api.pull_records">api.pull_records</option>
+                  <option value="api.keywords">api.keywords</option>
+                  <option value="api.budget">api.budget</option>
+                  <option value="api.daily_brief">api.daily_brief</option>
+                  <option value="worker.aggregator">worker.aggregator</option>
+                  <option value="worker.detector">worker.detector</option>
+                  <option value="worker.puller">worker.puller</option>
+                  <option value="worker.keyword_engine">worker.keyword_engine</option>
+                  <option value="worker.budget_advisor">worker.budget_advisor</option>
+                  <option value="worker.daily_brief">worker.daily_brief</option>
+                </select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">状态</span>
+                <select id="operationLogsStatusSelect" name="status">
+                  <option value="">全部状态</option>
+                  <option value="success">成功</option>
+                  <option value="failed">失败</option>
+                  <option value="skipped">跳过</option>
+                  <option value="info">信息</option>
+                </select>
+              </label>
+              <label class="filter-field">
+                <span class="field-label">数量</span>
+                <select id="operationLogsLimitSelect" name="limit">
+                  <option value="30">30 条</option>
+                  <option value="50" selected>50 条</option>
+                  <option value="100">100 条</option>
+                  <option value="200">200 条</option>
+                </select>
+              </label>
+              <div class="filter-actions">
+                <button class="btn btn-secondary" type="submit">查询日志</button>
+              </div>
+            </form>
+
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>来源</th>
+                    <th>动作</th>
+                    <th>目标</th>
+                    <th>状态</th>
+                    <th>摘要</th>
+                    <th>详情</th>
+                  </tr>
+                </thead>
+                <tbody id="operationLogsTableBody"></tbody>
+              </table>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <aside id="keywordDrawer" class="drawer" aria-hidden="true">
+      <div class="drawer-backdrop" id="keywordDrawerBackdrop"></div>
+      <div class="drawer-panel" role="dialog" aria-label="关键词详情">
+        <div class="drawer-head">
+          <h3>关键词详情</h3>
+          <button id="closeKeywordDrawerBtn" class="btn btn-ghost" type="button">关闭</button>
+        </div>
+        <div id="keywordDrawerMeta" class="hint"></div>
+        <div class="chart-surface">
+          <canvas id="keywordTrendCanvas" width="520" height="220" aria-label="keyword trend chart"></canvas>
+          <div id="keywordTooltip" class="chart-tooltip hidden"></div>
+        </div>
+        <div id="keywordTrendLegend" class="hint"></div>
+        <details>
+          <summary>原始趋势 JSON</summary>
+          <pre id="keywordTrendRaw"></pre>
+        </details>
+      </div>
+    </aside>
+
+    <aside id="alertDrawer" class="drawer" aria-hidden="true">
+      <div class="drawer-backdrop" id="alertDrawerBackdrop"></div>
+      <div class="drawer-panel" role="dialog" aria-label="告警详情">
+        <div class="drawer-head">
+          <h3>告警详情</h3>
+          <button id="closeAlertDrawerBtn" class="btn btn-ghost" type="button">关闭</button>
+        </div>
+        <div id="alertDrawerMeta" class="hint"></div>
+        <p id="alertDrawerExplanation"></p>
+        <h4>主要贡献来源</h4>
+        <div class="table-wrap drawer-table">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>维度</th>
+                <th>值</th>
+                <th>差值</th>
+                <th>占比</th>
+              </tr>
+            </thead>
+            <tbody id="alertContribBody"></tbody>
+          </table>
+        </div>
+        <details>
+          <summary>原始贡献 JSON</summary>
+          <pre id="alertContribRaw"></pre>
+        </details>
+      </div>
+    </aside>
+
+    <div id="pullResultModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="手动读取结果">
+      <div class="modal-backdrop" id="pullResultModalBackdrop"></div>
+      <div class="modal-panel">
+        <div class="modal-head">
+          <h3>读取详情</h3>
+          <button id="pullResultModalCloseBtn" class="btn btn-ghost" type="button">关闭</button>
+        </div>
+        <div id="pullResultSummary" class="hint"></div>
+        <pre id="pullResultDetail" class="pull-result-pre"></pre>
+      </div>
+    </div>
+
+    <div id="budgetDetailModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="预算建议详情">
+      <div class="modal-backdrop" id="budgetDetailModalBackdrop"></div>
+      <div class="modal-panel">
+        <div class="modal-head">
+          <h3 id="budgetDetailTitle">预算建议详情</h3>
+          <button id="closeBudgetDetailModalBtn" class="btn btn-ghost" type="button">关闭</button>
+        </div>
+        <div id="budgetDetailSummary" class="hint"></div>
+        <div class="detail-grid">
+          <p><strong>量级：</strong><span id="budgetDetailTier">-</span></p>
+          <p><strong>当前 eCPI：</strong><span id="budgetDetailEcpi">-</span></p>
+          <p><strong>目标 eCPI：</strong><span id="budgetDetailTargetEcpi">-</span></p>
+          <p><strong>当前成本：</strong><span id="budgetDetailCurrentCost">-</span></p>
+          <p><strong>建议预算：</strong><span id="budgetDetailSuggestedBudget">-</span></p>
+          <p><strong>调整比例：</strong><span id="budgetDetailChangeRatio">-</span></p>
+        </div>
+        <p><strong>风险等级：</strong><span id="budgetDetailRisk">-</span></p>
+        <h4>检查清单 checklist</h4>
+        <ul id="budgetDetailChecklist" class="simple-list"></ul>
+        <h4>解释要点 explanation_points</h4>
+        <ul id="budgetDetailPoints" class="simple-list"></ul>
+        <details>
+          <summary>原始摘要 JSON</summary>
+          <pre id="budgetDetailRaw"></pre>
+        </details>
+      </div>
+    </div>
+
+    <div id="dailyBriefModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="每日报告预览">
+      <div class="modal-backdrop" id="dailyBriefModalBackdrop"></div>
+      <div class="modal-panel daily-brief-modal-panel">
+        <div class="modal-head">
+          <h3 id="dailyBriefModalTitle">每日报告预览</h3>
+          <button id="dailyBriefModalCloseBtn" class="btn btn-ghost" type="button">关闭</button>
+        </div>
+        <div id="dailyBriefMeta" class="hint"></div>
+        <section id="dailyBriefPreview" class="daily-brief-preview">
+          <div class="daily-brief-hero">
+            <div>
+              <p class="daily-brief-kicker">Feishu 卡片预览</p>
+              <h4 id="dailyBriefHeroTitle">日报标题</h4>
+            </div>
+            <div id="dailyBriefRenderBadge" class="badge badge-open">interactive</div>
+          </div>
+
+          <div id="dailyBriefSummaryGrid" class="daily-brief-summary-grid"></div>
+
+          <section class="daily-brief-section">
+            <h5>🧭 今日判断</h5>
+            <p id="dailyBriefJudgment" class="daily-brief-judgment">-</p>
+          </section>
+
+          <section class="daily-brief-section">
+            <div class="title-with-help">
+              <h5>🛠️ 建议操作</h5>
+              <div class="help-group">
+                <button
+                  id="dailyBriefThresholdHelpBtn"
+                  class="help-icon"
+                  type="button"
+                  aria-label="查看日报预算动作阈值说明"
+                >
+                  ?
+                </button>
+                <div id="dailyBriefThresholdHelpPanel" class="help-popover help-popover-floating help-popover-compact">
+                  <h4>日报预算动作阈值</h4>
+                  <ul class="simple-list">
+                    <li>日报不再只展示 Top 5，而是展示所有超过阈值的预算动作。</li>
+                    <li>当前阈值：置信度 ≥ 80%，且 eCPI 相对目标偏离 ≥ 25%。</li>
+                    <li>为避免日报过长，单日报预算动作展示上限为 30 条。</li>
+                    <li>展示顺序按 eCPI 偏离程度与置信度综合排序。</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+            <div id="dailyBriefActions" class="daily-brief-action-list"></div>
+          </section>
+
+          <section class="daily-brief-section">
+            <h5>📦 重点内容预览</h5>
+            <div id="dailyBriefBody" class="daily-brief-body"></div>
+          </section>
+
+          <details class="daily-brief-raw">
+            <summary>原始飞书卡片 JSON</summary>
+            <pre id="dailyBriefRaw" class="pull-result-pre"></pre>
+          </details>
+        </section>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script type="module" src="/ui/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,38 @@
+{
+  "name": "hotspot-system",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:api": "tsx watch apps/api/src/main.ts",
+    "dev:aggregator": "tsx watch workers/aggregator/src/index.ts",
+    "dev:detector": "tsx watch workers/detector/src/index.ts",
+    "dev:puller": "tsx watch workers/puller/src/index.ts",
+    "dev:keyword-engine": "tsx watch workers/keyword-engine/src/index.ts",
+    "dev:budget-advisor": "tsx watch workers/budget-advisor/src/index.ts",
+    "dev:daily-brief": "tsx watch workers/daily-brief/src/index.ts",
+    "start:api": "tsx apps/api/src/main.ts",
+    "start:aggregator": "tsx workers/aggregator/src/index.ts",
+    "start:detector": "tsx workers/detector/src/index.ts",
+    "start:puller": "tsx workers/puller/src/index.ts",
+    "start:keyword-engine": "tsx workers/keyword-engine/src/index.ts",
+    "start:budget-advisor": "tsx workers/budget-advisor/src/index.ts",
+    "start:daily-brief": "tsx workers/daily-brief/src/index.ts",
+    "token:gen": "tsx scripts/generate-push-token.ts",
+    "lint": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clickhouse/client": "^1.11.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "pg": "^8.12.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,56 @@
+import express from 'express';
+import ingestRoutes from './modules/ingest/ingest.routes.js';
+import metricsRoutes from './modules/metrics/metrics.routes.js';
+import alertsRoutes from './modules/alerts/alerts.routes.js';
+import rulesRoutes from './modules/rules/rules.routes.js';
+import healthRoutes from './modules/health/health.routes.js';
+import appsRoutes from './modules/apps.routes.js';
+import pullRecordsRoutes from './modules/pullRecords/pullRecords.routes.js';
+import keywordsRoutes from './modules/keywords/keywords.routes.js';
+import budgetRoutes from './modules/budget/budget.routes.js';
+import dailyBriefRoutes from './modules/dailyBrief/dailyBrief.routes.js';
+import operationLogsRoutes from './modules/operationLogs/operationLogs.routes.js';
+import uiRoutes from './modules/ui/ui.routes.js';
+import { requestIdMiddleware } from './common/utils/request.js';
+import { logger } from './common/logger/logger.js';
+
+export function createApp(): express.Express {
+  const app = express();
+
+  app.disable('x-powered-by');
+  app.use(express.json({ limit: '1mb' }));
+  app.use(requestIdMiddleware);
+
+  app.use((req, _res, next) => {
+    logger.info('request_received', {
+      request_id: req.requestId,
+      method: req.method,
+      path: req.path
+    });
+    next();
+  });
+
+  app.use(ingestRoutes);
+  app.use(uiRoutes);
+  app.use(appsRoutes);
+  app.use(metricsRoutes);
+  app.use(pullRecordsRoutes);
+  app.use(keywordsRoutes);
+  app.use(budgetRoutes);
+  app.use(dailyBriefRoutes);
+  app.use(operationLogsRoutes);
+  app.use(alertsRoutes);
+  app.use(rulesRoutes);
+  app.use(healthRoutes);
+
+  app.use((error: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    logger.error('unhandled_error', {
+      request_id: req.requestId,
+      error: error.message
+    });
+
+    res.status(500).json({ ok: false, error: 'internal_error' });
+  });
+
+  return app;
+}
