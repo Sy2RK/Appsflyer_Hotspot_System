@@ -108,7 +108,7 @@ export async function explainBudgetRecommendationWithLlm(input: BudgetLlmInput):
     constraints: [
       '输出 JSON',
       '不要返回思考链路',
-      'summary_cn <= 200 中文字',
+      'summary_cn 尽量控制在 1-2 句话内，优先简洁，但不要因压缩长度而丢失关键判断依据',
       'checklist 为可执行检查项',
       '风险等级仅 low/medium/high'
     ],
@@ -138,7 +138,7 @@ export async function explainBudgetRecommendationWithLlm(input: BudgetLlmInput):
       {
         role: 'system',
         content:
-          '你是增长投放分析助手。仅输出 JSON，字段必须是 summary_cn,risk_level,checklist,explanation_points。禁止输出思考过程。'
+          '你是增长投放分析助手。仅输出 JSON，字段必须是 summary_cn,risk_level,checklist,explanation_points。禁止输出思考过程。summary_cn 保持简洁，但不要为了控字数截断关键信息。'
       },
       {
         role: 'user',

@@ -48,6 +48,17 @@ export const env = {
   detectorIntervalMs: optionalNumber('DETECTOR_INTERVAL_MS', 5 * 60 * 1000),
   pullerIntervalMs: optionalNumber('PULLER_INTERVAL_MS', 24 * 60 * 60 * 1000),
   pullerBackfillDays: optionalNumber('PULLER_BACKFILL_DAYS', 3),
+  pullerRunOnBoot: (process.env.PULLER_RUN_ON_BOOT ?? 'false').toLowerCase() === 'true',
+  pullerRequestIntervalMs: optionalNumber('PULLER_REQUEST_INTERVAL_MS', 1000),
+  pullerLockTtlMs: optionalNumber('PULLER_LOCK_TTL_MS', 15 * 60 * 1000),
+  pullerSameContentCooldownRecentMs: optionalNumber(
+    'PULLER_SAME_CONTENT_COOLDOWN_RECENT_MS',
+    2 * 60 * 60 * 1000
+  ),
+  pullerSameContentCooldownHistoricalMs: optionalNumber(
+    'PULLER_SAME_CONTENT_COOLDOWN_HISTORICAL_MS',
+    24 * 60 * 60 * 1000
+  ),
 
   keywordEngineIntervalMs: optionalNumber('KEYWORD_ENGINE_INTERVAL_MS', 24 * 60 * 60 * 1000),
   keywordEngineInitialBackfillDays: optionalNumber('KEYWORD_ENGINE_INITIAL_BACKFILL_DAYS', 30),

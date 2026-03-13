@@ -23,7 +23,7 @@
           <button class="nav-item" data-target="section-metrics" type="button">指标趋势</button>
           <button class="nav-item" data-target="section-keywords" type="button">关键词生命周期</button>
           <button class="nav-item" data-target="section-budget" type="button">预算建议</button>
-          <button class="nav-item" data-target="section-pull-records" type="button">Pull明细</button>
+          <button class="nav-item" data-target="section-pull-records" type="button">Pull 明细</button>
           <button class="nav-item" data-target="section-operation-logs" type="button">操作日志</button>
         </nav>
 
@@ -94,15 +94,15 @@
             <form id="appForm" class="app-config-form">
               <div class="form-grid app-fields-grid">
                 <label class="field">
-                  <span class="field-label">应用名称（display_name，可选）</span>
+                  <span class="field-label">应用名（display_name，可选）</span>
                   <input name="display_name" />
                 </label>
                 <label class="field">
-                  <span class="field-label">iOS 名称（ios_display_name，可选）</span>
+                  <span class="field-label">iOS端名称（ios_display_name，可选）</span>
                   <input name="ios_display_name" />
                 </label>
                 <label class="field">
-                  <span class="field-label">Android 名称（android_display_name，可选）</span>
+                  <span class="field-label">安卓端名称（android_display_name，可选）</span>
                   <input name="android_display_name" />
                 </label>
                 <label class="field">
@@ -212,7 +212,7 @@
               <form id="ruleForm" class="stack">
                 <input type="hidden" name="id" />
                 <label>
-                  <span>app_key</span>
+                  <span>应用 Key（app_key）</span>
                   <input name="app_key" required />
                 </label>
                 <label>
@@ -230,15 +230,15 @@
                     <input type="number" name="dsl_silence_minutes" value="30" min="1" />
                   </label>
                   <label>
-                    <span>指标类型 metric</span>
+                    <span>指标类型（metric）</span>
                     <select name="dsl_metric">
-                      <option value="revenue">revenue</option>
-                      <option value="event_count">event_count</option>
-                      <option value="purchase_count">purchase_count</option>
+                      <option value="revenue">收入（revenue）</option>
+                      <option value="event_count">事件数（event_count）</option>
+                      <option value="purchase_count">购买数（purchase_count）</option>
                     </select>
                   </label>
                   <label>
-                    <span>事件名 event_name（event_count 时）</span>
+                    <span>事件名（event_name，事件数 event_count 时）</span>
                     <input name="dsl_event_name" />
                   </label>
                   <label>
@@ -287,12 +287,12 @@
                 </div>
 
                 <fieldset class="dim-group">
-                  <legend>下钻维度 drilldown_dims</legend>
-                  <label><input type="checkbox" name="dsl_dim" value="media_source" checked /> media_source</label>
-                  <label><input type="checkbox" name="dsl_dim" value="country" checked /> country</label>
-                  <label><input type="checkbox" name="dsl_dim" value="campaign" checked /> campaign</label>
-                  <label><input type="checkbox" name="dsl_dim" value="attribution" checked /> attribution</label>
-                  <label><input type="checkbox" name="dsl_dim" value="event_type" checked /> event_type</label>
+                  <legend>下钻维度（drilldown_dims）</legend>
+                  <label><input type="checkbox" name="dsl_dim" value="media_source" checked /> 媒体源（media_source）</label>
+                  <label><input type="checkbox" name="dsl_dim" value="country" checked /> 国家（country）</label>
+                  <label><input type="checkbox" name="dsl_dim" value="campaign" checked /> 活动（campaign）</label>
+                  <label><input type="checkbox" name="dsl_dim" value="attribution" checked /> 归因类型（attribution）</label>
+                  <label><input type="checkbox" name="dsl_dim" value="event_type" checked /> 事件类型（event_type）</label>
                 </fieldset>
 
                 <div class="rule-json-actions">
@@ -383,22 +383,22 @@
                   <option value="">全部平台</option>
                   <option value="ios">iOS</option>
                   <option value="android">Android</option>
-                  <option value="unknown">unknown</option>
+                  <option value="unknown">未知（unknown）</option>
                 </select>
               </label>
-              <label class="filter-field">
-                <span class="field-label">数据源</span>
-                <select name="source" id="metricsSourceSelect">
+                <label class="filter-field">
+                  <span class="field-label">数据源</span>
+                  <select name="source" id="metricsSourceSelect">
                   <option value="push">Push（小时）</option>
-                  <option value="pull">Pull（日）</option>
-                </select>
-              </label>
+                  <option value="pull" selected>Pull（日）</option>
+                  </select>
+                </label>
               <label class="filter-field">
                 <span class="field-label">指标</span>
                 <select name="metric" id="metricsMetricSelect">
-                  <option value="revenue">revenue</option>
-                  <option value="event_count">event_count</option>
-                  <option value="purchase_count">purchase_count</option>
+                  <option value="revenue">收入（revenue）</option>
+                  <option value="event_count">事件数（event_count）</option>
+                  <option value="purchase_count">购买数（purchase_count）</option>
                 </select>
               </label>
               <label class="filter-field">
@@ -439,7 +439,7 @@
                   <option value="">全部平台</option>
                   <option value="ios">iOS</option>
                   <option value="android">Android</option>
-                  <option value="unknown">unknown</option>
+                  <option value="unknown">未知（unknown）</option>
                 </select>
               </label>
               <label class="filter-field">
@@ -543,7 +543,7 @@
                   <option value="">全部平台</option>
                   <option value="ios">iOS</option>
                   <option value="android">Android</option>
-                  <option value="unknown">unknown</option>
+                  <option value="unknown">未知（unknown）</option>
                 </select>
               </label>
               <label class="filter-field">
@@ -620,7 +620,7 @@
                   <option value="">全部平台</option>
                   <option value="ios">iOS</option>
                   <option value="android">Android</option>
-                  <option value="unknown">unknown</option>
+                  <option value="unknown">未知（unknown）</option>
                 </select>
               </label>
               <label class="filter-field">

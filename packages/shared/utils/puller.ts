@@ -1,6 +1,14 @@
 import { env } from '../config/env.js';
-import { listApps } from './repositories.js';
+import crypto from 'crypto';
+import {
+  getPullContentGuard,
+  listApps,
+  releasePullCycleLock,
+  tryAcquirePullCycleLock,
+  upsertPullContentGuard
+} from './repositories.js';
 import { chInsertJSON } from './clickhouse.js';
+import { md5Hex } from './hash.js';
 
 interface CsvRow {
   [key: string]: string;
@@ -52,7 +60,15 @@ export interface PullCycleDetail {
   app_key: string;
   date: string;
   platform?: string;
-  status: 'ok' | 'failed' | 'skipped_no_token' | 'skipped_missing_pull_app_id';
+  status:
+    | 'ok'
+    | 'failed'
+    | 'skipped_no_token'
+    | 'skipped_missing_pull_app_id'
+    | 'skipped_cycle_locked'
+    | 'skipped_recently_pulled'
+    | 'skipped_same_content_cooldown'
+    | 'skipped_rate_limited_after_403';
   rows: number;
   metrics_rows: number;
   error?: string;
@@ -78,6 +94,8 @@ export interface PullLogger {
 }
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const PULL_SOURCE_REPORT = 'daily_report_v5';
+const PULL_CYCLE_LOCK_NAME = 'pull_daily_report_v5_cycle';
 
 const HEADER_ALIASES: Record<string, string> = {
   date: 'date',
@@ -246,6 +264,25 @@ function buildDateList(backfillDays: number): string[] {
   return result;
 }
 
+function yesterdayDateString(): string {
+  return new Date(Date.now() - ONE_DAY_MS).toISOString().slice(0, 10);
+}
+
+function cooldownMsForReportDate(date: string): number {
+  return date >= yesterdayDateString()
+    ? env.pullerSameContentCooldownRecentMs
+    : env.pullerSameContentCooldownHistoricalMs;
+}
+
+function nextAllowedAtForReportDate(date: string): string {
+  return new Date(Date.now() + cooldownMsForReportDate(date)).toISOString();
+}
+
+function normalizePlatform(value: string): string {
+  const text = String(value || '').trim().toLowerCase();
+  return text || 'unknown';
+}
+
 function toPullRows(params: {
   appKey: string;
   date: string;
@@ -279,7 +316,7 @@ function toPullRows(params: {
       loyal_users_installs_ratio: toNumber(row.loyal_users_installs_ratio),
       total_cost: toNumber(row.total_cost),
       average_ecpi: toNumber(row.average_ecpi),
-      source_report: 'daily_report_v5',
+      source_report: PULL_SOURCE_REPORT,
       pull_window_from: params.date,
       pull_window_to: params.date,
       revenue: toNumber(row.revenue),
@@ -336,6 +373,53 @@ function toDailyMetricRows(rows: PullAggregateDailyRow[], version: number): Dail
   return Array.from(aggregate.values());
 }
 
+function buildPullContentSignature(rows: PullAggregateDailyRow[]): string {
+  const normalized = [...rows]
+    .sort((a, b) => {
+      return (
+        a.media_source.localeCompare(b.media_source) ||
+        a.country.localeCompare(b.country) ||
+        a.campaign.localeCompare(b.campaign) ||
+        a.platform.localeCompare(b.platform)
+      );
+    })
+    .map((row) =>
+      [
+        row.media_source,
+        row.country,
+        row.campaign,
+        Number(row.installs).toFixed(6),
+        Number(row.clicks).toFixed(6),
+        Number(row.total_cost).toFixed(6),
+        Number(row.average_ecpi).toFixed(6)
+      ].join('|')
+    )
+    .join('\n');
+
+  return md5Hex(normalized);
+}
+
+function isRateLimitError(errorText: string): boolean {
+  const lower = String(errorText || '').toLowerCase();
+  return lower.includes('status=403') && lower.includes('limit reached for daily-report');
+}
+
+function isCooldownActive(nextAllowedAt?: string | null): boolean {
+  if (!nextAllowedAt) {
+    return false;
+  }
+  const value = new Date(nextAllowedAt).getTime();
+  return Number.isFinite(value) && value > Date.now();
+}
+
+async function sleepMs(durationMs: number): Promise<void> {
+  const safeDuration = Math.max(0, Math.floor(durationMs));
+  if (safeDuration <= 0) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, safeDuration));
+}
+
 function buildPullUrl(appKey: string, pullAppId: string, date: string): string {
   const endpoint =
     process.env.APPSFLYER_PULL_ENDPOINT_TEMPLATE
@@ -352,7 +436,7 @@ async function pullAppDaily(
   pullAppId: string,
   date: string,
   platformHint: string
-): Promise<{ rows: number; metricsRows: number }> {
+): Promise<{ rows: number; metricsRows: number; signature: string }> {
   const url = buildPullUrl(appKey, pullAppId, date);
 
   const response = await fetch(url, {
@@ -374,15 +458,12 @@ async function pullAppDaily(
   const csv = await response.text();
   const parsedRows = parseCsv(csv);
   const pullRows = toPullRows({ appKey, date, rows: parsedRows, platformHint });
-  const version = Date.now();
-  const metricRows = toDailyMetricRows(pullRows, version);
-
-  await chInsertJSON('pull_aggregate_daily', pullRows);
-  await chInsertJSON('metrics_daily', metricRows);
+  const signature = buildPullContentSignature(pullRows);
 
   return {
     rows: pullRows.length,
-    metricsRows: metricRows.length
+    metricsRows: toDailyMetricRows(pullRows, Date.now()).length,
+    signature
   };
 }
 
@@ -392,121 +473,268 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
   const apps = await listApps();
   const dates = buildDateList(safeBackfillDays);
   const details: PullCycleDetail[] = [];
+  const lockOwnerId = crypto.randomUUID();
 
-  logInfo(logger, 'puller_cycle_started', {
-    apps: apps.length,
-    backfill_days: safeBackfillDays,
-    dates
-  });
-
-  for (const app of apps) {
-    const targets: Array<{ pullAppId: string; platform: string }> = [];
-    if (app.ios_pull_app_id) {
-      targets.push({ pullAppId: app.ios_pull_app_id, platform: 'ios' });
-    }
-    if (app.android_pull_app_id) {
-      targets.push({ pullAppId: app.android_pull_app_id, platform: 'android' });
-    }
-    if (targets.length === 0 && app.pull_app_id) {
-      targets.push({ pullAppId: app.pull_app_id, platform: 'unknown' });
-    }
-
-    if (targets.length === 0) {
-      details.push({
-        app_key: app.app_key,
-        date: '-',
-        status: 'skipped_missing_pull_app_id',
-        rows: 0,
-        metrics_rows: 0,
-        error: 'missing_pull_app_id'
-      });
-      logWarn(logger, 'puller_skip_missing_pull_app_id', { app_key: app.app_key });
-      continue;
-    }
-
-    for (const target of targets) {
-      for (const date of dates) {
-        if (!env.pullToken) {
-          details.push({
-            app_key: app.app_key,
-            date,
-            platform: target.platform,
-            status: 'skipped_no_token',
-            rows: 0,
-            metrics_rows: 0,
-            error: 'missing_pull_token'
-          });
-          logWarn(logger, 'puller_skipped_no_token', { app_key: app.app_key, platform: target.platform });
-          continue;
+  const lockAcquired = await tryAcquirePullCycleLock(PULL_CYCLE_LOCK_NAME, lockOwnerId, env.pullerLockTtlMs);
+  if (!lockAcquired) {
+    const endedAt = new Date();
+    return {
+      started_at: startedAt.toISOString(),
+      ended_at: endedAt.toISOString(),
+      duration_ms: endedAt.getTime() - startedAt.getTime(),
+      backfill_days: safeBackfillDays,
+      dates,
+      apps: apps.length,
+      success_count: 0,
+      failed_count: 0,
+      skipped_count: 1,
+      details: [
+        {
+          app_key: '*',
+          date: '-',
+          platform: 'unknown',
+          status: 'skipped_cycle_locked',
+          rows: 0,
+          metrics_rows: 0,
+          error: 'pull_cycle_running'
         }
+      ]
+    };
+  }
 
-        try {
-          const result = await pullAppDaily(app.app_key, target.pullAppId, date, target.platform);
-          details.push({
-            app_key: app.app_key,
-            date,
-            platform: target.platform,
-            status: 'ok',
-            rows: result.rows,
-            metrics_rows: result.metricsRows
-          });
-          logInfo(logger, 'puller_ingested', {
-            app_key: app.app_key,
-            date,
-            platform: target.platform,
-            rows: result.rows,
-            metrics_rows: result.metricsRows,
-            source: 'daily_report_v5'
-          });
-        } catch (error) {
-          const errorText = error instanceof Error ? error.message : String(error);
-          details.push({
-            app_key: app.app_key,
-            date,
-            platform: target.platform,
-            status: 'failed',
-            rows: 0,
-            metrics_rows: 0,
-            error: errorText
-          });
-          logError(logger, 'puller_app_day_failed', {
-            app_key: app.app_key,
-            date,
-            platform: target.platform,
-            error: errorText
-          });
+  try {
+    logInfo(logger, 'puller_cycle_started', {
+      apps: apps.length,
+      backfill_days: safeBackfillDays,
+      dates
+    });
+
+    for (const app of apps) {
+      const targets: Array<{ pullAppId: string; platform: string }> = [];
+      if (app.ios_pull_app_id) {
+        targets.push({ pullAppId: app.ios_pull_app_id, platform: 'ios' });
+      }
+      if (app.android_pull_app_id) {
+        targets.push({ pullAppId: app.android_pull_app_id, platform: 'android' });
+      }
+      if (targets.length === 0 && app.pull_app_id) {
+        targets.push({ pullAppId: app.pull_app_id, platform: 'unknown' });
+      }
+
+      if (targets.length === 0) {
+        details.push({
+          app_key: app.app_key,
+          date: '-',
+          status: 'skipped_missing_pull_app_id',
+          rows: 0,
+          metrics_rows: 0,
+          error: 'missing_pull_app_id'
+        });
+        logWarn(logger, 'puller_skip_missing_pull_app_id', { app_key: app.app_key });
+        continue;
+      }
+
+      for (const target of targets) {
+        let rateLimited = false;
+        const platform = normalizePlatform(target.platform);
+
+        for (const date of dates) {
+          if (rateLimited) {
+            details.push({
+              app_key: app.app_key,
+              date,
+              platform,
+              status: 'skipped_rate_limited_after_403',
+              rows: 0,
+              metrics_rows: 0,
+              error: 'rate_limited_after_403'
+            });
+            continue;
+          }
+
+          if (!env.pullToken) {
+            details.push({
+              app_key: app.app_key,
+              date,
+              platform,
+              status: 'skipped_no_token',
+              rows: 0,
+              metrics_rows: 0,
+              error: 'missing_pull_token'
+            });
+            logWarn(logger, 'puller_skipped_no_token', { app_key: app.app_key, platform });
+            continue;
+          }
+
+          const guard = await getPullContentGuard(app.app_key, platform, date, PULL_SOURCE_REPORT);
+          if (guard && isCooldownActive(guard.next_allowed_at)) {
+            const status =
+              guard.last_status === 'skipped_same_content_cooldown'
+                ? 'skipped_same_content_cooldown'
+                : 'skipped_recently_pulled';
+            details.push({
+              app_key: app.app_key,
+              date,
+              platform,
+              status,
+              rows: 0,
+              metrics_rows: 0,
+              error:
+                status === 'skipped_same_content_cooldown'
+                  ? `same_content_cooldown_until=${guard.next_allowed_at}`
+                  : `recently_pulled_until=${guard.next_allowed_at}`
+            });
+            continue;
+          }
+
+          try {
+            const url = buildPullUrl(app.app_key, target.pullAppId, date);
+            const response = await fetch(url, {
+              headers: {
+                Authorization: `Bearer ${env.pullToken}`
+              }
+            });
+
+            if (!response.ok) {
+              const errorBody = (await response.text().catch(() => ''))
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 120);
+              throw new Error(
+                errorBody ? `pull_api_failed status=${response.status} body=${errorBody}` : `pull_api_failed status=${response.status}`
+              );
+            }
+
+            const csv = await response.text();
+            const parsedRows = parseCsv(csv);
+            const pullRows = toPullRows({ appKey: app.app_key, date, rows: parsedRows, platformHint: platform });
+            const signature = buildPullContentSignature(pullRows);
+            const metricRows = toDailyMetricRows(pullRows, Date.now());
+
+            if (guard?.content_signature && guard.content_signature === signature) {
+              const nextAllowedAt = nextAllowedAtForReportDate(date);
+              await upsertPullContentGuard({
+                app_key: app.app_key,
+                platform,
+                report_date: date,
+                source_report: PULL_SOURCE_REPORT,
+                content_signature: signature,
+                last_status: 'skipped_same_content_cooldown',
+                last_error: null,
+                next_allowed_at: nextAllowedAt
+              });
+              details.push({
+                app_key: app.app_key,
+                date,
+                platform,
+                status: 'skipped_same_content_cooldown',
+                rows: 0,
+                metrics_rows: 0,
+                error: `same_content_cooldown_until=${nextAllowedAt}`
+              });
+              logInfo(logger, 'puller_skip_same_content_cooldown', {
+                app_key: app.app_key,
+                date,
+                platform,
+                next_allowed_at: nextAllowedAt
+              });
+            } else {
+              await chInsertJSON('pull_aggregate_daily', pullRows);
+              await chInsertJSON('metrics_daily', metricRows);
+              await upsertPullContentGuard({
+                app_key: app.app_key,
+                platform,
+                report_date: date,
+                source_report: PULL_SOURCE_REPORT,
+                content_signature: signature,
+                last_status: 'ok',
+                last_error: null,
+                next_allowed_at: nextAllowedAtForReportDate(date)
+              });
+              details.push({
+                app_key: app.app_key,
+                date,
+                platform,
+                status: 'ok',
+                rows: pullRows.length,
+                metrics_rows: metricRows.length
+              });
+              logInfo(logger, 'puller_ingested', {
+                app_key: app.app_key,
+                date,
+                platform,
+                rows: pullRows.length,
+                metrics_rows: metricRows.length,
+                source: PULL_SOURCE_REPORT
+              });
+            }
+          } catch (error) {
+            const errorText = error instanceof Error ? error.message : String(error);
+            if (isRateLimitError(errorText)) {
+              rateLimited = true;
+            }
+            await upsertPullContentGuard({
+              app_key: app.app_key,
+              platform,
+              report_date: date,
+              source_report: PULL_SOURCE_REPORT,
+              content_signature: guard?.content_signature ?? '',
+              last_status: 'failed',
+              last_error: errorText,
+              next_allowed_at: null
+            });
+            details.push({
+              app_key: app.app_key,
+              date,
+              platform,
+              status: 'failed',
+              rows: 0,
+              metrics_rows: 0,
+              error: errorText
+            });
+            logError(logger, 'puller_app_day_failed', {
+              app_key: app.app_key,
+              date,
+              platform,
+              error: errorText
+            });
+          }
+
+          await sleepMs(env.pullerRequestIntervalMs);
         }
       }
     }
+
+    const endedAt = new Date();
+    const successCount = details.filter((item) => item.status === 'ok').length;
+    const failedCount = details.filter((item) => item.status === 'failed').length;
+    const skippedCount = details.filter((item) => item.status.startsWith('skipped_')).length;
+
+    const summary: PullCycleResult = {
+      started_at: startedAt.toISOString(),
+      ended_at: endedAt.toISOString(),
+      duration_ms: endedAt.getTime() - startedAt.getTime(),
+      backfill_days: safeBackfillDays,
+      dates,
+      apps: apps.length,
+      success_count: successCount,
+      failed_count: failedCount,
+      skipped_count: skippedCount,
+      details
+    };
+
+    logInfo(logger, 'puller_cycle_finished', {
+      apps: apps.length,
+      backfill_days: safeBackfillDays,
+      dates,
+      success_count: successCount,
+      failed_count: failedCount,
+      skipped_count: skippedCount,
+      duration_ms: summary.duration_ms
+    });
+
+    return summary;
+  } finally {
+    await releasePullCycleLock(PULL_CYCLE_LOCK_NAME, lockOwnerId);
   }
-
-  const endedAt = new Date();
-  const successCount = details.filter((item) => item.status === 'ok').length;
-  const failedCount = details.filter((item) => item.status === 'failed').length;
-  const skippedCount = details.filter((item) => item.status.startsWith('skipped_')).length;
-
-  const summary: PullCycleResult = {
-    started_at: startedAt.toISOString(),
-    ended_at: endedAt.toISOString(),
-    duration_ms: endedAt.getTime() - startedAt.getTime(),
-    backfill_days: safeBackfillDays,
-    dates,
-    apps: apps.length,
-    success_count: successCount,
-    failed_count: failedCount,
-    skipped_count: skippedCount,
-    details
-  };
-
-  logInfo(logger, 'puller_cycle_finished', {
-    apps: apps.length,
-    backfill_days: safeBackfillDays,
-    dates,
-    success_count: successCount,
-    failed_count: failedCount,
-    skipped_count: skippedCount,
-    duration_ms: summary.duration_ms
-  });
-
-  return summary;
 }

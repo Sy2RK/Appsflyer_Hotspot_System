@@ -549,6 +549,19 @@ textarea::placeholder {
   color: transparent;
 }
 
+input:disabled,
+select:disabled,
+textarea:disabled {
+  background: #f3f7fb;
+  color: #7d92aa;
+  cursor: not-allowed;
+}
+
+input[aria-disabled-note='true'] {
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
 .field-control {
   display: block;
   min-width: 0;

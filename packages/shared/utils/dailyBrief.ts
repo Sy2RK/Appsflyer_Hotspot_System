@@ -32,6 +32,11 @@ interface DailyBriefBudgetHighlight {
   current_ecpi: number;
   target_ecpi: number;
   confidence: number;
+  reason_code: string;
+  llm_summary?: {
+    summary_cn?: string;
+  } | null;
+  reason_summary?: string;
 }
 
 interface DailyBriefAlertHighlight {
@@ -184,7 +189,7 @@ async function queryAppMetrics(reportDate: string): Promise<DailyBriefAppMetrics
 
 async function queryPendingBudgetHighlights(reportDate: string): Promise<DailyBriefBudgetHighlight[]> {
   const result = await pgQuery<DailyBriefBudgetHighlight>(
-    `SELECT app_key, platform, keyword, action, change_ratio, current_ecpi, target_ecpi, confidence
+    `SELECT app_key, platform, keyword, action, change_ratio, current_ecpi, target_ecpi, confidence, reason_code, llm_summary
        FROM budget_recommendations
       WHERE date = $1::date
         AND status = 'pending'
@@ -254,6 +259,50 @@ function isSignificantBudgetHighlight(row: DailyBriefBudgetHighlight): boolean {
   );
 }
 
+function normalizeBudgetReasonText(value: string): string {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/^建议(提高|降低|暂停|保持)预算[，,、]?\s*/u, '')
+    .replace(/^建议(提高|降低|暂停|保持)[，,、]?\s*/u, '')
+    .replace(/^当前\s*/u, '当前')
+    .trim()
+    .replace(/[。；;，,]\s*$/u, '');
+}
+
+function buildBudgetAdjustmentReason(row: DailyBriefBudgetHighlight): string {
+  const llmSummary = normalizeBudgetReasonText(String(row.llm_summary?.summary_cn || ''));
+  if (llmSummary) {
+    return llmSummary;
+  }
+
+  const current = Number(row.current_ecpi) || 0;
+  const target = Math.max(Number(row.target_ecpi) || 0, 0.01);
+  const deltaRatio = ((current - target) / target) * 100;
+  const confidence = Math.round((Number(row.confidence) || 0) * 100);
+
+  if (row.action === 'increase') {
+    if (String(row.reason_code).includes('below_target')) {
+      return `当前 eCPI 低于目标约 ${Math.abs(deltaRatio).toFixed(0)}%，获量效率优于基线，可继续放量验证。`;
+    }
+    return `当前 eCPI 明显低于目标，说明该词获取安装效率较好，建议适度放量观察。`;
+  }
+
+  if (row.action === 'decrease') {
+    if (String(row.reason_code).includes('above_target')) {
+      return `当前 eCPI 高于目标约 ${Math.abs(deltaRatio).toFixed(0)}%，继续维持现预算会抬高整体获客成本。`;
+    }
+    return `当前 eCPI 偏高且效率弱于基线，建议先收缩预算，观察成本回落情况。`;
+  }
+
+  if (row.action === 'pause') {
+    return `当前成本明显高于目标且转化支撑不足，继续投放的边际收益偏低，建议暂停观察。`;
+  }
+
+  return confidence >= 90
+    ? '当前偏离已经比较明确，可优先执行并在次日复核结果。'
+    : '当前信号尚可，但建议小幅试探后结合次日数据继续复核。';
+}
+
 function cardMarkdown(content: string): { tag: 'lark_md'; content: string } {
   return { tag: 'lark_md', content };
 }
@@ -311,7 +360,7 @@ function buildActionItems(params: {
       priority: row.action === 'pause' ? 'P0' : 'P2',
       category: 'budget',
       title: `${appName} / ${row.platform || 'unknown'} 建议${action}关键词预算 ${ratio}`,
-      detail: `关键词 ${row.keyword} 当前 eCPI ${formatUsd(row.current_ecpi)}，目标 ${formatUsd(row.target_ecpi)}，置信度 ${(row.confidence * 100).toFixed(0)}%。执行前确认最近 24 小时未重复调价。`
+      detail: `关键词 ${row.keyword} 当前 eCPI ${formatUsd(row.current_ecpi)}，目标 ${formatUsd(row.target_ecpi)}，置信度 ${(row.confidence * 100).toFixed(0)}%。${row.reason_summary || buildBudgetAdjustmentReason(row)} 执行前确认最近 24 小时未重复调价。`
     });
   }
 
@@ -381,7 +430,7 @@ function buildDailyBriefInteractiveCard(params: {
       ? params.budgetHighlights
           .map(
             (row) =>
-              `${actionEmoji(row.action)} **${params.displayNameMap.get(row.app_key) || row.app_key}** / ${row.platform || 'unknown'}\n${row.keyword}\n${actionLabel(row.action)} ${Math.abs(row.change_ratio * 100).toFixed(0)}% ｜ 当前 eCPI ${formatUsd(row.current_ecpi)} ｜ 目标 ${formatUsd(row.target_ecpi)} ｜ 置信度 ${(row.confidence * 100).toFixed(0)}%`
+              `${actionEmoji(row.action)} **${params.displayNameMap.get(row.app_key) || row.app_key}** / ${row.platform || 'unknown'}\n${row.keyword}\n${actionLabel(row.action)} ${Math.abs(row.change_ratio * 100).toFixed(0)}% ｜ 当前 eCPI ${formatUsd(row.current_ecpi)} ｜ 目标 ${formatUsd(row.target_ecpi)} ｜ 置信度 ${(row.confidence * 100).toFixed(0)}%\n理由：${row.reason_summary || buildBudgetAdjustmentReason(row)}`
           )
           .join('\n\n')
       : '暂无待处理预算动作。';
@@ -507,6 +556,11 @@ export async function buildDailyBriefPreview(reportDate = getDailyBriefDefaultRe
   };
   summary.blended_ecpi = summary.total_installs > 0 ? summary.total_cost / summary.total_installs : 0;
 
+  const normalizedBudgetHighlights = budgetHighlights.map((row) => ({
+    ...row,
+    reason_summary: buildBudgetAdjustmentReason(row)
+  }));
+
   const alertRows: DailyBriefAlertHighlight[] = alertHighlights.map((row) => ({
     app_key: row.app_key,
     severity: row.severity,
@@ -518,7 +572,7 @@ export async function buildDailyBriefPreview(reportDate = getDailyBriefDefaultRe
 
   const actionItems = buildActionItems({
     appRows,
-    budgetHighlights,
+    budgetHighlights: normalizedBudgetHighlights,
     alertRows,
     displayNameMap,
     summary
@@ -529,7 +583,7 @@ export async function buildDailyBriefPreview(reportDate = getDailyBriefDefaultRe
     title: `${env.dailyBriefTitlePrefix}｜${reportDate}`,
     summary,
     appRows,
-    budgetHighlights,
+    budgetHighlights: normalizedBudgetHighlights,
     alertRows,
     actionItems,
     displayNameMap,
@@ -569,10 +623,10 @@ export async function buildDailyBriefPreview(reportDate = getDailyBriefDefaultRe
 
   if (budgetHighlights.length > 0) {
     lines.push('');
-    lines.push(`【预算动作（超过阈值，共 ${budgetHighlights.length} 条）】`);
-    for (const row of budgetHighlights) {
+    lines.push(`【预算动作（超过阈值，共 ${normalizedBudgetHighlights.length} 条）】`);
+    for (const row of normalizedBudgetHighlights) {
       lines.push(
-        `- ${displayNameMap.get(row.app_key) || row.app_key} / ${row.platform || 'unknown'} / ${row.keyword}：${actionLabel(row.action)} ${Math.abs(row.change_ratio * 100).toFixed(0)}%，当前 eCPI ${formatUsd(row.current_ecpi)}，目标 ${formatUsd(row.target_ecpi)}，置信度 ${(row.confidence * 100).toFixed(0)}%`
+        `- ${displayNameMap.get(row.app_key) || row.app_key} / ${row.platform || 'unknown'} / ${row.keyword}：${actionLabel(row.action)} ${Math.abs(row.change_ratio * 100).toFixed(0)}%，当前 eCPI ${formatUsd(row.current_ecpi)}，目标 ${formatUsd(row.target_ecpi)}，置信度 ${(row.confidence * 100).toFixed(0)}%。${row.reason_summary}`
       );
     }
   }
@@ -610,7 +664,7 @@ export async function buildDailyBriefPreview(reportDate = getDailyBriefDefaultRe
     summary,
     app_rows: appRows,
     apps: appRows,
-    budget_highlights: budgetHighlights,
+    budget_highlights: normalizedBudgetHighlights,
     alert_highlights: alertRows,
     action_items: actionItems
   };

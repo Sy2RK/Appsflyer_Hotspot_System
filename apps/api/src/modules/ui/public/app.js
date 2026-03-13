@@ -25,15 +25,15 @@ const state = {
 };
 
 const PUSH_METRIC_OPTIONS = [
-  { value: 'revenue', label: 'revenue' },
-  { value: 'event_count', label: 'event_count' },
-  { value: 'purchase_count', label: 'purchase_count' }
+  { value: 'revenue', label: '收入（revenue）' },
+  { value: 'event_count', label: '事件数（event_count）' },
+  { value: 'purchase_count', label: '购买数（purchase_count）' }
 ];
 
 const PULL_METRIC_OPTIONS = [
-  { value: 'installs', label: 'installs' },
-  { value: 'clicks', label: 'clicks' },
-  { value: 'total_cost', label: 'total_cost' }
+  { value: 'installs', label: '安装量（installs）' },
+  { value: 'clicks', label: '点击量（clicks）' },
+  { value: 'total_cost', label: '成本（total_cost）' }
 ];
 
 const defaultRule = {
@@ -295,19 +295,38 @@ function asNumber(value, fallback = 0) {
 }
 
 function statusLabel(status) {
-  if (status === 'open') return '未恢复';
-  if (status === 'resolved') return '已恢复';
+  if (status === 'open') return '未恢复（open）';
+  if (status === 'resolved') return '已恢复（resolved）';
+  if (status === 'ok') return '成功';
+  if (status === 'failed') return '失败';
+  if (status === 'skipped') return '已跳过';
+  if (status === 'skipped_cycle_locked') return '任务占用，已跳过';
+  if (status === 'skipped_recently_pulled') return '刚拉过，已跳过';
+  if (status === 'skipped_same_content_cooldown') return '内容未变，进入冷却';
+  if (status === 'skipped_rate_limited_after_403') return '命中限流，后续已跳过';
   return status || '-';
 }
 
 function metricLabel(metric) {
-  if (metric === 'revenue') return '收入 (revenue)';
-  if (metric === 'event_count') return '事件数 (event_count)';
-  if (metric === 'purchase_count') return '购买数 (purchase_count)';
-  if (metric === 'installs') return '安装量 (installs)';
-  if (metric === 'clicks') return '点击量 (clicks)';
-  if (metric === 'total_cost') return '成本 (total_cost)';
+  if (metric === 'revenue') return '收入（revenue）';
+  if (metric === 'event_count') return '事件数（event_count）';
+  if (metric === 'purchase_count') return '购买数（purchase_count）';
+  if (metric === 'installs') return '安装量（installs）';
+  if (metric === 'clicks') return '点击量（clicks）';
+  if (metric === 'total_cost') return '成本（total_cost）';
   return metric || '-';
+}
+
+function platformLabel(platform) {
+  if (platform === 'ios') return 'iOS';
+  if (platform === 'android') return 'Android';
+  if (platform === 'unknown') return '未知（unknown）';
+  return platform || '-';
+}
+
+function matchTypeLabel(matchType) {
+  if (matchType === 'unknown') return '未知（unknown）';
+  return matchType || '-';
 }
 
 function displayNameOfApp(app) {
@@ -342,10 +361,10 @@ function actionLabel(action) {
 
 function budgetStatusLabel(status) {
   const mapping = {
-    pending: '待处理',
-    applied: '已执行',
-    rejected: '已拒绝',
-    expired: '已过期'
+    pending: '待处理（pending）',
+    applied: '已执行（applied）',
+    rejected: '已拒绝（rejected）',
+    expired: '已过期（expired）'
   };
   return mapping[status] || status || '-';
 }
@@ -583,15 +602,20 @@ function setMetricsMode(source) {
     .map((item) => `<option value="${item.value}">${item.label}</option>`)
     .join('');
 
-  el.metricsEventNameInput.value = '';
-  el.metricsEventNameInput.disabled = isPull;
-
   if (isPull) {
+    el.metricsEventNameInput.value = 'Pull（每日）下不可用';
+    el.metricsEventNameInput.placeholder = '';
+    el.metricsEventNameInput.disabled = true;
+    el.metricsEventNameInput.setAttribute('aria-disabled-note', 'true');
     el.metricsDesc.textContent = '查看最近 14 天 Pull 日级趋势。';
     if (submitBtn) {
       submitBtn.textContent = '加载最近 14 天';
     }
   } else {
+    el.metricsEventNameInput.value = '';
+    el.metricsEventNameInput.placeholder = '例如 purchase';
+    el.metricsEventNameInput.disabled = false;
+    el.metricsEventNameInput.removeAttribute('aria-disabled-note');
     el.metricsDesc.textContent = '查看最近 72 小时趋势。';
     if (submitBtn) {
       submitBtn.textContent = '加载最近 72 小时';
@@ -1339,7 +1363,7 @@ function renderPullRecordsTable() {
         <td class="table-cell-mono">${escapeHtml(fmtTime(row.ingest_time))}</td>
         <td>${escapeHtml(row.date)}</td>
         <td class="table-cell-mono">${escapeHtml(row.app_key)}</td>
-        <td>${escapeHtml(row.platform || 'unknown')}</td>
+        <td>${escapeHtml(platformLabel(row.platform || 'unknown'))}</td>
         <td>${escapeHtml(row.media_source)}</td>
         <td class="table-cell-wrap">${escapeHtml(row.campaign)}</td>
         <td>${toFixed2(row.installs)}</td>
@@ -1397,13 +1421,13 @@ function renderPullTriggerResult(result) {
 
   const lines = details.map((item) => {
     const appKey = item.app_key || '-';
-    const platform = item.platform || 'unknown';
+    const platform = platformLabel(item.platform || 'unknown');
     const date = item.date || '-';
-    const status = item.status || '-';
+    const status = item.status ? statusLabel(item.status) : '-';
     const rows = Number(item.rows || 0);
     const metricsRows = Number(item.metrics_rows || 0);
-    const error = item.error ? ` · error=${item.error}` : '';
-    return `app=${appKey} · platform=${platform} · date=${date} · status=${status} · rows=${rows} · metrics_rows=${metricsRows}${error}`;
+    const error = item.error ? ` · 错误（error）=${item.error}` : '';
+    return `应用（app）=${appKey} · 平台（platform）=${platform} · 日期（date）=${date} · 状态（status）=${status} · 记录数（rows）=${rows} · 指标行数（metrics_rows）=${metricsRows}${error}`;
   });
   el.pullResultDetail.textContent = lines.length > 0 ? lines.join('\n') : '无读取明细';
 }
@@ -1468,7 +1492,7 @@ function renderDailyBriefBody(report) {
         budgets.length > 0
           ? budgets.map(
               (row) =>
-                `${actionLabel(row.action)} ${Math.abs((Number(row.change_ratio) || 0) * 100).toFixed(0)}% ｜ ${row.app_key} / ${row.platform || 'unknown'} / ${row.keyword} ｜ 当前 eCPI $${toFixed2(row.current_ecpi)} ｜ 目标 $${toFixed2(row.target_ecpi)}`
+                `${actionLabel(row.action)} ${Math.abs((Number(row.change_ratio) || 0) * 100).toFixed(0)}% ｜ ${row.app_key} / ${platformLabel(row.platform || 'unknown')} / ${row.keyword} ｜ 当前 eCPI $${toFixed2(row.current_ecpi)} ｜ 目标 $${toFixed2(row.target_ecpi)} ｜ 理由 ${String(row.reason_summary || '').trim() || '暂无补充说明'}`
             )
           : ['当前没有待处理预算动作。']
     },
@@ -1478,7 +1502,7 @@ function renderDailyBriefBody(report) {
         alerts.length > 0
           ? alerts.map(
               (row) =>
-                `${row.app_key} / ${row.severity} / ${row.metric} ｜ Δ ${toFixed2(row.delta_value)} ｜ ${String(row.explanation || '').slice(0, 64) || '-'}`
+                `${row.app_key} / ${row.severity} / ${metricLabel(row.metric)} ｜ Δ ${toFixed2(row.delta_value)} ｜ ${String(row.explanation || '').slice(0, 64) || '-'}`
             )
           : ['当前没有未恢复告警。']
     }
@@ -1514,7 +1538,8 @@ function renderDailyBriefModal(payload, mode) {
     (notify?.ok ? ` · Feishu 状态 ${notify.status || 200}` : '') +
     (skipped ? ' · 当日已发送，本次跳过' : '');
   el.dailyBriefHeroTitle.textContent = String(report.title || 'Hotspot 每日简报');
-  el.dailyBriefRenderBadge.textContent = renderMode === 'text_fallback' ? 'text fallback' : 'interactive';
+  el.dailyBriefRenderBadge.textContent =
+    renderMode === 'text_fallback' ? '文本回退（text_fallback）' : '交互卡片（interactive）';
   el.dailyBriefRenderBadge.className =
     `badge ${renderMode === 'text_fallback' ? 'badge-P1' : 'badge-open'}`;
   el.dailyBriefSummaryGrid.innerHTML = dailyBriefSummaryItems(summary)
@@ -1706,7 +1731,19 @@ async function triggerPullOnce() {
     setPullResultModalOpen(true);
     state.pullPage = 1;
     await loadPullRecords(undefined, 1);
-    showToast('手动读取完成');
+    const result = body.data || {};
+    const successCount = Number(result.success_count || 0);
+    const failedCount = Number(result.failed_count || 0);
+    const skippedCount = Number(result.skipped_count || 0);
+    if (successCount > 0 && failedCount === 0 && skippedCount === 0) {
+      showToast('手动读取完成');
+    } else if (successCount === 0 && failedCount === 0 && skippedCount > 0) {
+      showToast('本次未发起实际读取，已命中跳过策略');
+    } else if (successCount > 0) {
+      showToast('手动读取完成，部分条目已跳过或失败');
+    } else {
+      showToast('手动读取完成，但全部失败或被跳过', true);
+    }
   } finally {
     el.triggerPullBtn.disabled = false;
     el.triggerPullBtn.textContent = originalText;
@@ -1726,9 +1763,9 @@ function renderKeywordTable() {
       (row) => `
       <tr>
         <td class="table-cell-mono">${escapeHtml(row.app_key)}</td>
-        <td>${escapeHtml(row.platform || 'unknown')}</td>
+        <td>${escapeHtml(platformLabel(row.platform || 'unknown'))}</td>
         <td class="table-cell-wrap">${escapeHtml(row.keyword)}</td>
-        <td>${escapeHtml(row.match_type || 'unknown')}</td>
+        <td>${escapeHtml(matchTypeLabel(row.match_type || 'unknown'))}</td>
         <td><span class="badge badge-stage-${escapeHtml(row.current_stage)}">${lifecycleStageLabel(row.current_stage)}</span></td>
         <td>${toFixed2(row.stage_score)}</td>
         <td>${toFixed2(row.last_installs)}</td>
@@ -1817,9 +1854,9 @@ async function openKeywordTrend(row) {
   drawLineChart(el.keywordTrendCanvas, chartRows);
 
   el.keywordDrawerMeta.textContent =
-    `应用=${row.app_key} · 平台=${row.platform || 'unknown'} · 关键词=${row.keyword} · 匹配=${row.match_type || 'unknown'} · 阶段=${lifecycleStageLabel(row.current_stage)} · days_in_stage=${row.days_in_stage}`;
+    `应用=${row.app_key} · 平台（platform）=${platformLabel(row.platform || 'unknown')} · 关键词（keyword）=${row.keyword} · 匹配类型（match_type）=${matchTypeLabel(row.match_type || 'unknown')} · 阶段（stage）=${lifecycleStageLabel(row.current_stage)} · 阶段天数（days_in_stage）=${row.days_in_stage}`;
   const last = trendRows.at(-1);
-  el.keywordTrendLegend.textContent = `数据点=${trendRows.length} · 最新 installs=${toFixed2(last?.installs)} · 最新 cpi=${toFixed2(last?.cpi)}`;
+  el.keywordTrendLegend.textContent = `数据点=${trendRows.length} · 最新安装量（installs）=${toFixed2(last?.installs)} · 最新 CPI（cpi）=${toFixed2(last?.cpi)}`;
   el.keywordTrendRaw.textContent = JSON.stringify(trendRows, null, 2);
   setKeywordDrawerOpen(true);
 }
@@ -1869,7 +1906,7 @@ function renderBudgetTable() {
       <tr>
         <td>${escapeHtml(row.date)}</td>
         <td class="table-cell-mono">${escapeHtml(row.app_key)}</td>
-        <td>${escapeHtml(row.platform || 'unknown')}</td>
+        <td>${escapeHtml(platformLabel(row.platform || 'unknown'))}</td>
         <td class="table-cell-wrap">${escapeHtml(row.keyword)}</td>
         <td>${escapeHtml(volumeTierLabel(row.volume_tier))}</td>
         <td class="table-cell-tight">${toFixed2(row.current_ecpi)}</td>
@@ -1945,7 +1982,7 @@ function openBudgetDetail(row) {
   const checklist = Array.isArray(llmSummary.checklist) ? llmSummary.checklist : [];
   const points = Array.isArray(llmSummary.explanation_points) ? llmSummary.explanation_points : [];
 
-  el.budgetDetailTitle.textContent = `预算建议详情 · ${row.app_key} · ${row.platform || 'unknown'} · ${row.keyword}`;
+  el.budgetDetailTitle.textContent = `预算建议详情 · ${row.app_key} · ${platformLabel(row.platform || 'unknown')} · ${row.keyword}`;
   el.budgetDetailSummary.textContent = String(llmSummary.summary_cn || `reason_code=${row.reason_code}`);
   el.budgetDetailTier.textContent = volumeTierLabel(row.volume_tier);
   el.budgetDetailEcpi.textContent = toFixed2(row.current_ecpi);
@@ -2186,7 +2223,7 @@ async function bootstrap() {
   });
 
   try {
-    setMetricsMode('push');
+    setMetricsMode('pull');
     await refreshAll();
   } catch (error) {
     showToast(error.message || '初始化失败', true);
@@ -2235,7 +2272,7 @@ el.alertDrawerBackdrop.addEventListener('click', () => setDrawerOpen(false));
 
 el.metricsForm.addEventListener('submit', (e) => loadMetrics(e).catch((err) => showToast(err.message || '指标加载失败', true)));
 el.metricsSourceSelect.addEventListener('change', () => {
-  const source = el.metricsSourceSelect.value || 'push';
+  const source = el.metricsSourceSelect.value || 'pull';
   setMetricsMode(source);
 });
 el.pullRecordsFilter.addEventListener('submit', (e) =>

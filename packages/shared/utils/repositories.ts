@@ -55,6 +55,40 @@ export interface UpsertAppInput {
   replace_notify_feishu_app_secret?: boolean;
 }
 
+export interface PullCycleLockRecord {
+  name: string;
+  owner_id: string;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PullContentGuardRecord {
+  app_key: string;
+  platform: string;
+  report_date: string;
+  source_report: string;
+  content_signature: string;
+  last_status: string;
+  last_error: string | null;
+  attempted_at: string;
+  next_allowed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpsertPullContentGuardInput {
+  app_key: string;
+  platform: string;
+  report_date: string;
+  source_report: string;
+  content_signature?: string;
+  last_status: string;
+  last_error?: string | null;
+  attempted_at?: string;
+  next_allowed_at?: string | null;
+}
+
 export async function claimIngestDedupKeys(
   rows: Array<{ event_uid: string; app_key: string }>
 ): Promise<Set<string>> {
@@ -81,6 +115,79 @@ export async function releaseIngestDedupKeys(eventUids: string[]): Promise<void>
   }
 
   await pgQuery(`DELETE FROM ingest_dedup_keys WHERE event_uid = ANY($1::text[])`, [eventUids]);
+}
+
+export async function tryAcquirePullCycleLock(name: string, ownerId: string, ttlMs: number): Promise<boolean> {
+  const result = await pgQuery<{ name: string }>(
+    `INSERT INTO pull_cycle_locks (name, owner_id, expires_at)
+     VALUES ($1, $2, NOW() + ($3 * INTERVAL '1 millisecond'))
+     ON CONFLICT (name) DO UPDATE
+        SET owner_id = EXCLUDED.owner_id,
+            expires_at = EXCLUDED.expires_at,
+            updated_at = NOW()
+      WHERE pull_cycle_locks.expires_at <= NOW()
+     RETURNING name`,
+    [name, ownerId, Math.max(1000, Math.floor(ttlMs))]
+  );
+
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function releasePullCycleLock(name: string, ownerId: string): Promise<void> {
+  await pgQuery(`DELETE FROM pull_cycle_locks WHERE name = $1 AND owner_id = $2`, [name, ownerId]);
+}
+
+export async function getPullContentGuard(
+  appKey: string,
+  platform: string,
+  reportDate: string,
+  sourceReport: string
+): Promise<PullContentGuardRecord | null> {
+  const result = await pgQuery<PullContentGuardRecord>(
+    `SELECT app_key, platform, report_date, source_report, content_signature, last_status, last_error,
+            attempted_at, next_allowed_at, created_at, updated_at
+       FROM pull_content_guards
+      WHERE app_key = $1
+        AND platform = $2
+        AND report_date = $3::date
+        AND source_report = $4
+      LIMIT 1`,
+    [appKey, platform, reportDate, sourceReport]
+  );
+
+  return result.rows[0] ?? null;
+}
+
+export async function upsertPullContentGuard(input: UpsertPullContentGuardInput): Promise<PullContentGuardRecord> {
+  const result = await pgQuery<PullContentGuardRecord>(
+    `INSERT INTO pull_content_guards (
+      app_key, platform, report_date, source_report, content_signature, last_status, last_error, attempted_at, next_allowed_at
+    ) VALUES (
+      $1, $2, $3::date, $4, COALESCE($5, ''), $6, NULLIF($7, ''), COALESCE($8::timestamptz, NOW()), $9::timestamptz
+    )
+    ON CONFLICT (app_key, platform, report_date, source_report) DO UPDATE SET
+      content_signature = COALESCE($5, pull_content_guards.content_signature),
+      last_status = EXCLUDED.last_status,
+      last_error = EXCLUDED.last_error,
+      attempted_at = EXCLUDED.attempted_at,
+      next_allowed_at = EXCLUDED.next_allowed_at,
+      updated_at = NOW()
+    RETURNING app_key, platform, report_date, source_report, content_signature, last_status, last_error,
+              attempted_at, next_allowed_at, created_at, updated_at`,
+    [
+      input.app_key,
+      input.platform,
+      input.report_date,
+      input.source_report,
+      input.content_signature ?? '',
+      input.last_status,
+      input.last_error ?? '',
+      input.attempted_at ?? null,
+      input.next_allowed_at ?? null
+    ]
+  );
+
+  return result.rows[0];
 }
 
 export async function listApps(): Promise<AppConfigRecord[]> {

@@ -217,6 +217,35 @@ CREATE TABLE IF NOT EXISTS operation_logs (
 CREATE INDEX IF NOT EXISTS idx_operation_logs_lookup
   ON operation_logs (created_at DESC, source, status);
 
+CREATE TABLE IF NOT EXISTS pull_cycle_locks (
+  name TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pull_cycle_locks_expires_at
+  ON pull_cycle_locks (expires_at);
+
+CREATE TABLE IF NOT EXISTS pull_content_guards (
+  app_key TEXT NOT NULL,
+  platform TEXT NOT NULL DEFAULT 'unknown',
+  report_date DATE NOT NULL,
+  source_report TEXT NOT NULL DEFAULT 'daily_report_v5',
+  content_signature TEXT NOT NULL DEFAULT '',
+  last_status TEXT NOT NULL DEFAULT 'unknown',
+  last_error TEXT,
+  attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  next_allowed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (app_key, platform, report_date, source_report)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pull_content_guards_next_allowed
+  ON pull_content_guards (next_allowed_at);
+
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -264,6 +293,18 @@ EXECUTE FUNCTION set_updated_at();
 DROP TRIGGER IF EXISTS trg_daily_brief_dispatches_updated_at ON daily_brief_dispatches;
 CREATE TRIGGER trg_daily_brief_dispatches_updated_at
 BEFORE UPDATE ON daily_brief_dispatches
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_pull_cycle_locks_updated_at ON pull_cycle_locks;
+CREATE TRIGGER trg_pull_cycle_locks_updated_at
+BEFORE UPDATE ON pull_cycle_locks
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_pull_content_guards_updated_at ON pull_content_guards;
+CREATE TRIGGER trg_pull_content_guards_updated_at
+BEFORE UPDATE ON pull_content_guards
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 

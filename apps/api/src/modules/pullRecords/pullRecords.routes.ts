@@ -12,7 +12,6 @@ const SORTS = new Map<string, string>([
   ['ingest_time_desc', 'ingest_time DESC'],
   ['ingest_time_asc', 'ingest_time ASC']
 ]);
-let manualPullRunning = false;
 
 function isDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -36,6 +35,26 @@ function normalizePage(raw: unknown): number {
 function normalizeNumeric(raw: unknown): number {
   const num = Number(raw);
   return Number.isFinite(num) ? num : 0;
+}
+
+function summarizePullCycleStatus(result: {
+  success_count?: number;
+  failed_count?: number;
+  skipped_count?: number;
+}): 'success' | 'failed' | 'info' | 'skipped' {
+  const successCount = Number(result.success_count || 0);
+  const failedCount = Number(result.failed_count || 0);
+  const skippedCount = Number(result.skipped_count || 0);
+  if (successCount > 0 && failedCount === 0 && skippedCount === 0) {
+    return 'success';
+  }
+  if (successCount === 0 && failedCount === 0 && skippedCount > 0) {
+    return 'skipped';
+  }
+  if (successCount === 0 && failedCount > 0 && skippedCount === 0) {
+    return 'failed';
+  }
+  return 'info';
 }
 
 router.get('/api/pull-records', async (req, res) => {
@@ -237,16 +256,11 @@ router.delete('/api/pull-records', async (req, res) => {
 });
 
 router.post('/api/pull-records/trigger', async (req, res) => {
-  if (manualPullRunning) {
-    return res.status(409).json({ ok: false, error: 'pull_cycle_running' });
-  }
-
   const body = (req.body ?? {}) as Record<string, unknown>;
   const rawDays = Number(body.backfillDays);
   const backfillDays =
     Number.isFinite(rawDays) && rawDays > 0 ? Math.min(7, Math.max(1, Math.floor(rawDays))) : 1;
 
-  manualPullRunning = true;
   try {
     const result = await runPullCycle(backfillDays, logger);
     await writeOperationLog(
@@ -255,7 +269,7 @@ router.post('/api/pull-records/trigger', async (req, res) => {
         action: 'manual_pull_trigger',
         target_type: 'pull_cycle',
         target_key: String(backfillDays),
-        status: 'success',
+        status: summarizePullCycleStatus(result),
         summary: `手动触发 Pull，回填 ${backfillDays} 天`,
         detail_json: result
       },
@@ -283,8 +297,6 @@ router.post('/api/pull-records/trigger', async (req, res) => {
       logger
     );
     return res.status(500).json({ ok: false, error: 'manual_pull_failed' });
-  } finally {
-    manualPullRunning = false;
   }
 });
 

@@ -6,6 +6,19 @@ import { writeOperationLog } from '@shared/utils/operationLog.js';
 let running = false;
 let firstCycle = true;
 
+function summarizePullCycleStatus(result: { success_count: number; failed_count: number; skipped_count: number }): 'success' | 'failed' | 'info' | 'skipped' {
+  if (result.success_count > 0 && result.failed_count === 0 && result.skipped_count === 0) {
+    return 'success';
+  }
+  if (result.success_count === 0 && result.failed_count === 0 && result.skipped_count > 0) {
+    return 'skipped';
+  }
+  if (result.success_count === 0 && result.failed_count > 0 && result.skipped_count === 0) {
+    return 'failed';
+  }
+  return 'info';
+}
+
 async function tick(): Promise<void> {
   if (running) {
     logger.warn('puller_skip_overlap');
@@ -23,7 +36,7 @@ async function tick(): Promise<void> {
         action: 'scheduled_pull_cycle',
         target_type: 'pull_cycle',
         target_key: String(backfillDays),
-        status: 'success',
+        status: summarizePullCycleStatus(result),
         summary: `定时 Pull 完成，回填 ${backfillDays} 天`,
         detail_json: result
       },
@@ -56,7 +69,11 @@ async function tick(): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
-  await tick();
+  if (env.pullerRunOnBoot) {
+    await tick();
+  } else {
+    logger.info('puller_skip_boot_cycle', { run_on_boot: false });
+  }
   setInterval(() => {
     void tick();
   }, env.pullerIntervalMs);
