@@ -5,8 +5,10 @@ import {
   AsaKeywordRecommendationRow,
   AsaKeywordRouteRecord,
   AsaKeywordStateRow,
+  BitableExportConfigRecord,
   BudgetRecommendationRow,
   BudgetRecommendationStatus,
+  BitableExportSourceType,
   DailyBriefDispatchRecord,
   DailyBriefRouteRecord,
   KeywordExtractRuleRecord,
@@ -1051,6 +1053,133 @@ export async function listEnabledDailyBriefRoutes(): Promise<DailyBriefRouteReco
     ...row,
     media_sources: Array.isArray(row.media_sources) ? row.media_sources.map((item) => String(item)) : []
   }));
+}
+
+function normalizeSelectedFields(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+export async function listBitableExportConfigs(): Promise<BitableExportConfigRecord[]> {
+  const result = await pgQuery<BitableExportConfigRecord>(
+    `SELECT id, source_type, enabled, target_table_id, target_table_name, chat_id, selected_fields,
+            last_status, last_error, last_synced_at, last_record_count, created_at, updated_at
+       FROM bitable_export_configs
+      ORDER BY source_type ASC`
+  );
+  return result.rows.map((row) => ({
+    ...row,
+    selected_fields: normalizeSelectedFields(row.selected_fields)
+  }));
+}
+
+export async function getBitableExportConfig(
+  sourceType: BitableExportSourceType
+): Promise<BitableExportConfigRecord | null> {
+  const result = await pgQuery<BitableExportConfigRecord>(
+    `SELECT id, source_type, enabled, target_table_id, target_table_name, chat_id, selected_fields,
+            last_status, last_error, last_synced_at, last_record_count, created_at, updated_at
+       FROM bitable_export_configs
+      WHERE source_type = $1
+      LIMIT 1`,
+    [sourceType]
+  );
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+  return {
+    ...row,
+    selected_fields: normalizeSelectedFields(row.selected_fields)
+  };
+}
+
+export async function upsertBitableExportConfig(input: {
+  source_type: BitableExportSourceType;
+  enabled?: boolean;
+  target_table_id?: string | null;
+  target_table_name?: string | null;
+  chat_id?: string | null;
+  selected_fields?: string[];
+}): Promise<BitableExportConfigRecord> {
+  const result = await pgQuery<BitableExportConfigRecord>(
+    `INSERT INTO bitable_export_configs (
+      source_type, enabled, target_table_id, target_table_name, chat_id, selected_fields
+    ) VALUES (
+      $1, COALESCE($2, false), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6
+    )
+    ON CONFLICT (source_type) DO UPDATE SET
+      enabled = COALESCE($2, bitable_export_configs.enabled),
+      target_table_id = COALESCE(NULLIF($3, ''), bitable_export_configs.target_table_id),
+      target_table_name = COALESCE(NULLIF($4, ''), bitable_export_configs.target_table_name),
+      chat_id = CASE
+        WHEN $5 IS NULL THEN bitable_export_configs.chat_id
+        ELSE NULLIF($5, '')
+      END,
+      selected_fields = CASE
+        WHEN $6::jsonb = '[]'::jsonb AND COALESCE(jsonb_array_length(bitable_export_configs.selected_fields), 0) > 0
+          THEN bitable_export_configs.selected_fields
+        ELSE $6::jsonb
+      END,
+      updated_at = NOW()
+    RETURNING id, source_type, enabled, target_table_id, target_table_name, chat_id, selected_fields,
+              last_status, last_error, last_synced_at, last_record_count, created_at, updated_at`,
+    [
+      input.source_type,
+      typeof input.enabled === 'boolean' ? input.enabled : null,
+      input.target_table_id ?? '',
+      input.target_table_name ?? '',
+      input.chat_id === undefined ? null : input.chat_id,
+      JSON.stringify(input.selected_fields ?? [])
+    ]
+  );
+  return {
+    ...result.rows[0],
+    selected_fields: normalizeSelectedFields(result.rows[0]?.selected_fields)
+  };
+}
+
+export async function updateBitableExportSyncResult(input: {
+  source_type: BitableExportSourceType;
+  target_table_id?: string | null;
+  target_table_name?: string | null;
+  last_status: 'idle' | 'success' | 'failed';
+  last_error?: string | null;
+  last_synced_at?: string | null;
+  last_record_count?: number;
+}): Promise<BitableExportConfigRecord> {
+  const result = await pgQuery<BitableExportConfigRecord>(
+    `INSERT INTO bitable_export_configs (
+      source_type, enabled, target_table_id, target_table_name, selected_fields, last_status, last_error, last_synced_at, last_record_count
+    ) VALUES (
+      $1, FALSE, NULLIF($2, ''), NULLIF($3, ''), '[]'::jsonb, $4, NULLIF($5, ''), $6::timestamptz, COALESCE($7, 0)
+    )
+    ON CONFLICT (source_type) DO UPDATE SET
+      target_table_id = COALESCE(NULLIF($2, ''), bitable_export_configs.target_table_id),
+      target_table_name = COALESCE(NULLIF($3, ''), bitable_export_configs.target_table_name),
+      last_status = $4,
+      last_error = NULLIF($5, ''),
+      last_synced_at = $6::timestamptz,
+      last_record_count = COALESCE($7, bitable_export_configs.last_record_count),
+      updated_at = NOW()
+    RETURNING id, source_type, enabled, target_table_id, target_table_name, chat_id, selected_fields,
+              last_status, last_error, last_synced_at, last_record_count, created_at, updated_at`,
+    [
+      input.source_type,
+      input.target_table_id ?? '',
+      input.target_table_name ?? '',
+      input.last_status,
+      input.last_error ?? '',
+      input.last_synced_at ?? null,
+      input.last_record_count ?? 0
+    ]
+  );
+  return {
+    ...result.rows[0],
+    selected_fields: normalizeSelectedFields(result.rows[0]?.selected_fields)
+  };
 }
 
 export interface CreateOperationLogInput {

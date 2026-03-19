@@ -365,3 +365,21 @@ export interface AsaKeywordRouteRecord {
   created_at: string;
   updated_at: string;
 }
+
+export type BitableExportSourceType = 'pull_daily' | 'asa_raw';
+
+export interface BitableExportConfigRecord {
+  id: number;
+  source_type: BitableExportSourceType;
+  enabled: boolean;
+  target_table_id: string | null;
+  target_table_name: string | null;
+  chat_id: string | null;
+  selected_fields: string[];
+  last_status: 'idle' | 'success' | 'failed';
+  last_error: string | null;
+  last_synced_at: string | null;
+  last_record_count: number;
+  created_at: string;
+  updated_at: string;
+}

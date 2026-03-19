@@ -275,6 +275,34 @@ services:
       - clickhouse
       - postgres
 
+  bitable-export:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hotspot-bitable-export
+    restart: unless-stopped
+    command: npm run start:bitable-export
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DB: hotspot
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
+      FEISHU_BITABLE_ENABLED: ${FEISHU_BITABLE_ENABLED:-true}
+      FEISHU_BITABLE_SCHEDULE_HOUR: ${FEISHU_BITABLE_SCHEDULE_HOUR:-10}
+      FEISHU_BITABLE_SCHEDULE_MINUTE: ${FEISHU_BITABLE_SCHEDULE_MINUTE:-5}
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    depends_on:
+      - clickhouse
+      - postgres
+
 volumes:
   clickhouse-data:
   postgres-data:

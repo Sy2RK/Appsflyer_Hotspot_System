@@ -99,6 +99,27 @@
               </div>
               <div id="dailyBriefStatus" class="hint">默认汇总前一天数据，并使用全局 Feishu 机器人配置发送。</div>
             </div>
+
+            <div class="bitable-panel">
+              <div class="card-head card-head-compact bitable-panel-head">
+                <div>
+                  <h4>原始数据表格推送</h4>
+                  <p>复用现有 Feishu 机器人，把 Pull 明细和 ASA Raw 导入多维表格，并向指定群聊发送导入结果。</p>
+                </div>
+                <label class="filter-field bitable-report-date-field">
+                  <span class="field-label">手动导出日期</span>
+                  <input id="bitableExportReportDateInput" type="date" />
+                </label>
+              </div>
+
+              <div id="bitableExportCards" class="bitable-export-grid"></div>
+
+              <div class="bitable-note-card">
+                <strong>运行说明</strong>
+                <p>每日 10:05（Asia/Shanghai）自动执行。Pull 复用当前 Base 中的既有表；ASA Raw 会在同一 Base 下自动创建 / 复用独立表。</p>
+                <p>字段顺序按系统目录固定输出。每次导入会先清理对应日期旧记录，再做整日全量覆盖，避免重复。</p>
+              </div>
+            </div>
           </section>
 
           <section id="section-apps" class="section-panel" style="--delay: 50ms">
@@ -909,12 +930,14 @@
                   <option value="api.keywords">api.keywords</option>
                   <option value="api.budget">api.budget</option>
                   <option value="api.daily_brief">api.daily_brief</option>
+                  <option value="api.bitable_export">api.bitable_export</option>
                   <option value="worker.aggregator">worker.aggregator</option>
                   <option value="worker.detector">worker.detector</option>
                   <option value="worker.puller">worker.puller</option>
                   <option value="worker.keyword_engine">worker.keyword_engine</option>
                   <option value="worker.budget_advisor">worker.budget_advisor</option>
                   <option value="worker.daily_brief">worker.daily_brief</option>
+                  <option value="worker.bitable_export">worker.bitable_export</option>
                 </select>
               </label>
               <label class="filter-field">

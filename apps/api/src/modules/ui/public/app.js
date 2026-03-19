@@ -7,6 +7,7 @@ const state = {
   budgetRows: [],
   asaKeywordRows: [],
   asaStageConfigs: [],
+  bitableExportSources: [],
   operationLogs: [],
   editingAppKey: '',
   ruleTotalCount: 0,
@@ -84,6 +85,8 @@ const el = {
   dailyBriefMediaSourcesSummary: document.getElementById('dailyBriefMediaSourcesSummary'),
   dailyBriefSelectAllMediaBtn: document.getElementById('dailyBriefSelectAllMediaBtn'),
   dailyBriefClearMediaBtn: document.getElementById('dailyBriefClearMediaBtn'),
+  bitableExportReportDateInput: document.getElementById('bitableExportReportDateInput'),
+  bitableExportCards: document.getElementById('bitableExportCards'),
 
   appForm: document.getElementById('appForm'),
   appSubmitBtn: document.getElementById('appSubmitBtn'),
@@ -1611,6 +1614,14 @@ function setDefaultDailyBriefDate() {
   el.dailyBriefDateInput.value = toLocalDate(reportDate);
 }
 
+function setDefaultBitableExportDate() {
+  const now = new Date();
+  const reportDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  if (el.bitableExportReportDateInput) {
+    el.bitableExportReportDateInput.value = toLocalDate(reportDate);
+  }
+}
+
 function getSelectedDailyBriefMediaSources() {
   return Array.from(state.dailyBriefSelectedMediaSources || []);
 }
@@ -1914,6 +1925,223 @@ async function sendDailyBriefOnce() {
   } finally {
     el.sendDailyBriefBtn.disabled = false;
     el.sendDailyBriefBtn.textContent = originalText;
+  }
+}
+
+function bitableExportStatusLabel(status) {
+  const mapping = {
+    idle: '未执行',
+    success: '成功',
+    failed: '失败'
+  };
+  return mapping[status] || status || '-';
+}
+
+function bitableExportStatusBadgeClass(status) {
+  if (status === 'success') return 'badge-open';
+  if (status === 'failed') return 'badge-P0';
+  return 'badge-P2';
+}
+
+function renderBitableExportCards() {
+  const sources = Array.isArray(state.bitableExportSources) ? state.bitableExportSources : [];
+  if (!el.bitableExportCards) {
+    return;
+  }
+
+  if (sources.length === 0) {
+    el.bitableExportCards.innerHTML = '<div class="hint">正在加载多维表格导出配置...</div>';
+    return;
+  }
+
+  el.bitableExportCards.innerHTML = sources
+    .map((source) => {
+      const config = source.config || {};
+      const selected = Array.isArray(config.selected_fields) ? config.selected_fields : [];
+      const targetTableName = String(config.target_table_name || source.label || '-').trim();
+      const targetTableId = String(config.target_table_id || '').trim();
+      const tableUrl = String(source.table_url || '').trim();
+      const lastStatus = String(config.last_status || 'idle');
+      const lastError = String(config.last_error || '').trim();
+      const chatId = String(config.chat_id || '').trim();
+      const isEnabled = config.enabled === true;
+
+      return `
+        <article class="bitable-export-card" data-source-type="${escapeHtml(source.source_type)}">
+          <div class="bitable-export-card-head">
+            <div>
+              <h5>${escapeHtml(source.label)}</h5>
+              <p>${escapeHtml(source.target_table_hint || '')}</p>
+            </div>
+            <label class="toggle-switch bitable-toggle">
+              <input type="checkbox" data-role="enabled" ${isEnabled ? 'checked' : ''} />
+              <span class="toggle-slider" aria-hidden="true"></span>
+              <span class="toggle-text">启用自动导出</span>
+            </label>
+          </div>
+
+          <div class="bitable-export-target">
+            <div class="bitable-export-target-main">
+              <span class="bitable-export-target-label">目标表</span>
+              <strong>${escapeHtml(targetTableName || '-')}</strong>
+            </div>
+            <div class="bitable-export-target-meta">
+              <span class="table-cell-mono">${escapeHtml(targetTableId || '首次执行时自动确认')}</span>
+              ${
+                tableUrl
+                  ? `<a class="btn btn-ghost btn-compact" href="${escapeHtml(tableUrl)}" target="_blank" rel="noreferrer">打开表格</a>`
+                  : ''
+              }
+            </div>
+          </div>
+
+          <div class="bitable-export-config-grid">
+            <label class="filter-field">
+              <span class="field-label">群聊 Chat ID</span>
+              <input type="text" data-role="chat-id" value="${escapeHtml(chatId)}" placeholder="oc_xxx / chat_id" />
+            </label>
+          </div>
+
+          <div class="bitable-export-field-block">
+            <div class="bitable-export-field-head">
+              <strong>字段列选择</strong>
+              <span class="hint">已选 ${selected.length}/${(source.fields || []).length} 列</span>
+            </div>
+            <div class="bitable-field-grid">
+              ${(Array.isArray(source.fields) ? source.fields : [])
+                .map(
+                  (field) => `
+                    <label class="bitable-field-chip">
+                      <input
+                        type="checkbox"
+                        data-role="selected-field"
+                        value="${escapeHtml(field.key)}"
+                        ${selected.includes(field.key) ? 'checked' : ''}
+                      />
+                      <span>${escapeHtml(field.label)}</span>
+                    </label>
+                  `
+                )
+                .join('')}
+            </div>
+          </div>
+
+          <div class="bitable-export-status">
+            <div class="bitable-export-status-row">
+              <span>最近状态</span>
+              <strong><span class="badge ${bitableExportStatusBadgeClass(lastStatus)}">${escapeHtml(
+                bitableExportStatusLabel(lastStatus)
+              )}</span></strong>
+            </div>
+            <div class="bitable-export-status-row">
+              <span>最近同步</span>
+              <strong>${escapeHtml(fmtTime(config.last_synced_at))}</strong>
+            </div>
+            <div class="bitable-export-status-row">
+              <span>最近记录数</span>
+              <strong>${escapeHtml(String(config.last_record_count || 0))}</strong>
+            </div>
+            <div class="bitable-export-status-row">
+              <span>最近错误</span>
+              <strong class="${lastError ? 'bitable-error-text' : ''}">${escapeHtml(lastError || '无')}</strong>
+            </div>
+          </div>
+
+          <div class="bitable-export-actions">
+            <button class="btn btn-secondary" type="button" data-role="save-config">保存配置</button>
+            <button class="btn btn-primary" type="button" data-role="run-export">立即导入并推送</button>
+          </div>
+        </article>
+      `;
+    })
+    .join('');
+}
+
+function findBitableExportCard(sourceType) {
+  return el.bitableExportCards?.querySelector(`.bitable-export-card[data-source-type="${sourceType}"]`) || null;
+}
+
+function collectBitableExportCardPayload(sourceType) {
+  const card = findBitableExportCard(sourceType);
+  if (!(card instanceof HTMLElement)) {
+    throw new Error('未找到对应的数据源卡片');
+  }
+
+  const enabledInput = card.querySelector('[data-role="enabled"]');
+  const chatIdInput = card.querySelector('[data-role="chat-id"]');
+  const selectedFieldInputs = Array.from(card.querySelectorAll('[data-role="selected-field"]:checked'));
+
+  return {
+    enabled: enabledInput instanceof HTMLInputElement ? enabledInput.checked : false,
+    chatId: chatIdInput instanceof HTMLInputElement ? String(chatIdInput.value || '').trim() : '',
+    selectedFields: selectedFieldInputs
+      .map((input) => (input instanceof HTMLInputElement ? String(input.value || '').trim() : ''))
+      .filter(Boolean)
+  };
+}
+
+function refreshBitableFieldCount(card) {
+  if (!(card instanceof HTMLElement)) {
+    return;
+  }
+  const checked = card.querySelectorAll('[data-role="selected-field"]:checked').length;
+  const total = card.querySelectorAll('[data-role="selected-field"]').length;
+  const label = card.querySelector('.bitable-export-field-head .hint');
+  if (label) {
+    label.textContent = `已选 ${checked}/${total} 列`;
+  }
+}
+
+async function loadBitableExportConfigs() {
+  const body = await api('/api/bitable-exports/configs');
+  const data = body.data || {};
+  state.bitableExportSources = Array.isArray(data.sources) ? data.sources : [];
+  renderBitableExportCards();
+}
+
+async function saveBitableExportCard(sourceType) {
+  const payload = collectBitableExportCardPayload(sourceType);
+  const body = await api(`/api/bitable-exports/configs/${encodeURIComponent(sourceType)}`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+  const next = body.data || null;
+  state.bitableExportSources = (state.bitableExportSources || []).map((item) =>
+    item.source_type === sourceType ? next : item
+  );
+  renderBitableExportCards();
+  showToast(`${sourceType === 'pull_daily' ? 'Pull 明细表' : 'ASA Raw 表'} 配置已保存`);
+}
+
+async function runBitableExportCard(sourceType) {
+  const reportDate = String(el.bitableExportReportDateInput?.value || '').trim();
+  if (!reportDate) {
+    throw new Error('请先选择手动导出日期');
+  }
+
+  const button = findBitableExportCard(sourceType)?.querySelector('[data-role="run-export"]');
+  const originalText = button instanceof HTMLButtonElement ? button.textContent || '立即导入并推送' : '';
+  if (button instanceof HTMLButtonElement) {
+    button.disabled = true;
+    button.textContent = '导入中...';
+  }
+
+  try {
+    const body = await api('/api/bitable-exports/run', {
+      method: 'POST',
+      body: JSON.stringify({ sourceType, reportDate })
+    });
+    const result = body.data || {};
+    await loadBitableExportConfigs();
+    await loadOperationLogs();
+    showToast(
+      `${result.label || (sourceType === 'pull_daily' ? 'Pull 明细表' : 'ASA Raw 表')} 已导入 ${result.record_count || 0} 行`
+    );
+  } finally {
+    if (button instanceof HTMLButtonElement) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   }
 }
 
@@ -2864,6 +3092,7 @@ async function refreshAll() {
   await loadAsaKeywords(undefined, 1);
   await loadOperationLogs();
   await loadDailyBriefMediaSources(true);
+  await loadBitableExportConfigs();
 
   const now = new Date();
   el.lastUpdated.textContent = `更新时间 ${now.toLocaleTimeString()}`;
@@ -2878,6 +3107,7 @@ async function bootstrap() {
   setDefaultBudgetDateRange();
   setDefaultAsaDateRange();
   setDefaultDailyBriefDate();
+  setDefaultBitableExportDate();
   syncAppFeishuSection();
   applyUniformFieldLabels();
   setActiveNav('section-overview');
@@ -3091,6 +3321,35 @@ el.dailyBriefClearMediaBtn.addEventListener('click', () => {
 el.sendDailyBriefBtn.addEventListener('click', () =>
   sendDailyBriefOnce().catch((err) => showToast(err.message || '日报发送失败', true))
 );
+el.bitableExportCards?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) {
+    return;
+  }
+  const card = target.closest('.bitable-export-card');
+  if (!(card instanceof HTMLElement)) {
+    return;
+  }
+  const sourceType = String(card.dataset.sourceType || '').trim();
+  if (!sourceType) {
+    return;
+  }
+  if (target.dataset.role === 'save-config') {
+    saveBitableExportCard(sourceType).catch((err) => showToast(err.message || '配置保存失败', true));
+    return;
+  }
+  if (target.dataset.role === 'run-export') {
+    runBitableExportCard(sourceType).catch((err) => showToast(err.message || '导出执行失败', true));
+  }
+});
+el.bitableExportCards?.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+  const card = target.closest('.bitable-export-card');
+  refreshBitableFieldCount(card);
+});
 el.dailyBriefModalCloseBtn.addEventListener('click', () => setDailyBriefModalOpen(false));
 el.dailyBriefModalBackdrop.addEventListener('click', () => setDailyBriefModalOpen(false));
 

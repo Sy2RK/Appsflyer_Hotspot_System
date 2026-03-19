@@ -33,14 +33,33 @@ export function hasReachedDailyHour(targetHour: number, timeZone: string, now = 
   return getTzParts(now, timeZone).hour >= targetHour;
 }
 
+export function hasReachedDailyTime(
+  targetHour: number,
+  targetMinute: number,
+  timeZone: string,
+  now = new Date()
+): boolean {
+  const parts = getTzParts(now, timeZone);
+  return parts.hour > targetHour || (parts.hour === targetHour && parts.minute >= targetMinute);
+}
+
 export function msUntilNextDailyHour(targetHour: number, timeZone: string, now = new Date()): number {
+  return msUntilNextDailyTime(targetHour, 0, timeZone, now);
+}
+
+export function msUntilNextDailyTime(
+  targetHour: number,
+  targetMinute: number,
+  timeZone: string,
+  now = new Date()
+): number {
   const start = new Date(now.getTime() + 60 * 1000);
   start.setUTCSeconds(0, 0);
 
   for (let minuteOffset = 0; minuteOffset < 60 * 48; minuteOffset += 1) {
     const candidate = new Date(start.getTime() + minuteOffset * 60 * 1000);
     const parts = getTzParts(candidate, timeZone);
-    if (parts.hour === targetHour && parts.minute === 0) {
+    if (parts.hour === targetHour && parts.minute === targetMinute) {
       return Math.max(candidate.getTime() - now.getTime(), 1000);
     }
   }
@@ -49,17 +68,26 @@ export function msUntilNextDailyHour(targetHour: number, timeZone: string, now =
 }
 
 export function nextDailyHourLocalString(targetHour: number, timeZone: string, now = new Date()): string {
+  return nextDailyTimeLocalString(targetHour, 0, timeZone, now);
+}
+
+export function nextDailyTimeLocalString(
+  targetHour: number,
+  targetMinute: number,
+  timeZone: string,
+  now = new Date()
+): string {
   const start = new Date(now.getTime() + 60 * 1000);
   start.setUTCSeconds(0, 0);
 
   for (let minuteOffset = 0; minuteOffset < 60 * 48; minuteOffset += 1) {
     const candidate = new Date(start.getTime() + minuteOffset * 60 * 1000);
     const parts = getTzParts(candidate, timeZone);
-    if (parts.hour === targetHour && parts.minute === 0) {
+    if (parts.hour === targetHour && parts.minute === targetMinute) {
       return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')} ${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')} (${timeZone})`;
     }
   }
 
   const parts = getTzParts(now, timeZone);
-  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')} ${String(targetHour).padStart(2, '0')}:00 (${timeZone})`;
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')} ${String(targetHour).padStart(2, '0')}:${String(targetMinute).padStart(2, '0')} (${timeZone})`;
 }

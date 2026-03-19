@@ -9,6 +9,7 @@ import pullRecordsRoutes from './modules/pullRecords/pullRecords.routes.js';
 import keywordsRoutes from './modules/keywords/keywords.routes.js';
 import budgetRoutes from './modules/budget/budget.routes.js';
 import dailyBriefRoutes from './modules/dailyBrief/dailyBrief.routes.js';
+import bitableExportsRoutes from './modules/bitableExports/bitableExports.routes.js';
 import operationLogsRoutes from './modules/operationLogs/operationLogs.routes.js';
 import asaKeywordsRoutes from './modules/asaKeywords/asaKeywords.routes.js';
 import uiRoutes from './modules/ui/ui.routes.js';
@@ -39,6 +40,7 @@ export function createApp(): express.Express {
   app.use(keywordsRoutes);
   app.use(budgetRoutes);
   app.use(dailyBriefRoutes);
+  app.use(bitableExportsRoutes);
   app.use(asaKeywordsRoutes);
   app.use(operationLogsRoutes);
   app.use(alertsRoutes);

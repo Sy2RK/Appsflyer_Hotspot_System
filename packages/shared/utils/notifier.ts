@@ -48,7 +48,7 @@ function resolveFeishuConfig(override?: AlertChannelConfig): {
   return { appId, appSecret, chatId };
 }
 
-async function getFeishuTenantAccessToken(
+export async function getFeishuTenantAccessToken(
   override?: AlertChannelConfig
 ): Promise<{ ok: true; accessToken: string } | { ok: false; status?: number; error: string }> {
   const feishu = resolveFeishuConfig(override);

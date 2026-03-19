@@ -397,11 +397,86 @@ Request:
 - 若卡片发送失败，会自动回退到纯文本发送
 - `force=true` 时即使当天发过也会再次发送
 
+### `GET /api/bitable-exports/configs`
+查询 Feishu 多维表格导出配置快照。
+
+返回：
+- `sources`: 两类导出源配置
+  - `pull_daily`
+  - `asa_raw`
+
+每个 source 包含：
+- `label`
+- `fields`
+- `config`
+- `table_url`
+- `target_table_hint`
+
+说明：
+- `pull_daily` 固定复用已存在的 Pull 表
+- `asa_raw` 固定在同一 Base 下自动创建 / 复用 `ASA Raw 明细`
+- 第一版不开放 Base / Table ID 前端编辑
+
+### `POST /api/bitable-exports/configs/:sourceType`
+保存某个原始数据表格推送配置。
+
+Path 参数：
+- `sourceType`: `pull_daily | asa_raw`
+
+Request:
+```json
+{
+  "enabled": true,
+  "chatId": "oc_xxx",
+  "selectedFields": [
+    "date",
+    "app_key",
+    "platform"
+  ]
+}
+```
+
+说明：
+- `enabled=true` 且 `chatId` 非空时，才会被每日 `10:05` 定时任务纳入执行
+- `selectedFields` 仅允许选择后端固定字段目录中的列
+
+### `POST /api/bitable-exports/run`
+手动执行一次原始数据导出到 Feishu 多维表格，并向指定群聊发送结果通知。
+
+Request:
+```json
+{
+  "sourceType": "pull_daily",
+  "reportDate": "2026-03-18"
+}
+```
+
+返回重点字段：
+- `source_type`
+- `report_date`
+- `table_id`
+- `table_name`
+- `table_url`
+- `selected_fields`
+- `deleted_count`
+- `record_count`
+- `notify`
+
+说明：
+- 每次都按 `reportDate` 先删后写，保证同一天在目标表中不会重复
+- 群通知使用与现有日报相同的 Feishu bot
+- `pull_daily`：
+  - 数据来自 `pull_aggregate_daily`
+  - 目标表为固定 `tblARnjXQhrXquyh`
+- `asa_raw`：
+  - 数据来自 `asa_raw_installs + asa_raw_in_app_events`
+  - 目标表会在同一 Base 下自动创建 / 复用
+
 ### `GET /api/operation-logs?source=&status=&limit=`
 查询系统操作日志。
 
 参数说明:
-- `source` 可选：如 `api.daily_brief`、`worker.puller`
+- `source` 可选：如 `api.daily_brief`、`worker.puller`、`api.bitable_export`、`worker.bitable_export`
 - `status` 可选：`success|failed|skipped|info`
 - `limit` 默认 `50`
 
@@ -422,4 +497,5 @@ Request:
 6. 指标恢复后 open alert 变 resolved 并发送恢复通知
 7. `GET /api/daily-brief/preview` 可生成结构化日报预览
 8. `POST /api/daily-brief/send` 可发送飞书日报卡片
-9. `GET /api/operation-logs` 可查询操作与定时任务执行记录
+9. `GET /api/bitable-exports/configs` / `POST /api/bitable-exports/run` 可执行原始数据多维表格导出
+10. `GET /api/operation-logs` 可查询操作与定时任务执行记录

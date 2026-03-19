@@ -327,6 +327,29 @@
 - `created_at`
 - `updated_at`
 
+### `bitable_export_configs`
+- Feishu 多维表格原始数据导出配置与最近同步状态
+
+字段:
+- `id`
+- `source_type` (`pull_daily|asa_raw`)
+- `enabled`
+- `target_table_id`
+- `target_table_name`
+- `chat_id`
+- `selected_fields` (jsonb)
+- `last_status` (`idle|success|failed`)
+- `last_error`
+- `last_synced_at`
+- `last_record_count`
+- `created_at`
+- `updated_at`
+
+说明：
+- `pull_daily` 固定复用现有 Pull 表 `tblARnjXQhrXquyh`
+- `asa_raw` 在同一 Base 下自动创建 / 复用 `ASA Raw 明细`
+- 该表只保存导出配置与同步结果，不保存实际导出数据
+
 ### `operation_logs`
 - 统一记录 API 手动操作与 worker 定时任务执行结果
 

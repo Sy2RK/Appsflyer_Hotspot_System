@@ -335,6 +335,231 @@ h4 {
   padding: 14px;
 }
 
+.bitable-panel {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #fbfdff 0%, #f5fafe 100%);
+  padding: 14px;
+  display: grid;
+  gap: 14px;
+}
+
+.bitable-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.bitable-report-date-field {
+  width: min(100%, 220px);
+  flex: 0 0 auto;
+}
+
+.bitable-export-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.bitable-export-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #d5e5f2;
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(246, 251, 255, 0.94) 100%);
+  box-shadow: 0 12px 28px rgba(10, 38, 64, 0.05);
+}
+
+.bitable-export-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bitable-export-card-head h5 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.bitable-export-card-head p {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.bitable-toggle {
+  flex: 0 0 auto;
+}
+
+.bitable-export-target {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #dae8f4;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.bitable-export-target-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.bitable-export-target-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.bitable-export-target-main strong {
+  font-size: 15px;
+  color: #12395d;
+}
+
+.bitable-export-target-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.bitable-export-config-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.bitable-export-field-block {
+  display: grid;
+  gap: 10px;
+}
+
+.bitable-export-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.bitable-export-field-head strong {
+  font-size: 14px;
+}
+
+.bitable-field-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 6px;
+}
+
+.bitable-field-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.bitable-field-chip input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.bitable-field-chip span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 1px solid #d3e3ef;
+  background: #f9fcff;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.bitable-field-chip span:hover {
+  transform: translateY(-1px);
+  border-color: #a9dced;
+  color: var(--accent-strong);
+}
+
+.bitable-field-chip input:checked + span {
+  border-color: #8fd5e8;
+  background: linear-gradient(135deg, #e7fafe 0%, #eef8ff 100%);
+  color: var(--accent-strong);
+  box-shadow: 0 8px 16px rgba(14, 165, 198, 0.08);
+}
+
+.bitable-export-status {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid #dbe8f3;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.bitable-export-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.bitable-export-status-row span:first-child {
+  color: var(--text-secondary);
+}
+
+.bitable-export-status-row strong {
+  min-width: 0;
+  text-align: right;
+}
+
+.bitable-error-text {
+  color: var(--danger);
+}
+
+.bitable-export-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.bitable-export-actions .btn {
+  width: 100%;
+  min-height: 42px;
+}
+
+.bitable-note-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px dashed #c8dceb;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fcfeff 0%, #f3f9ff 100%);
+}
+
+.bitable-note-card strong {
+  font-size: 14px;
+  color: #12395d;
+}
+
+.bitable-note-card p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .media-source-card {
   margin-top: 12px;
   padding: 12px;
@@ -1699,6 +1924,10 @@ pre {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .bitable-export-grid {
+    grid-template-columns: 1fr;
+  }
+
   .split-layout {
     grid-template-columns: 1fr;
   }
@@ -1774,6 +2003,23 @@ pre {
   .topbar-actions {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .bitable-panel-head,
+  .bitable-export-card-head,
+  .bitable-export-target,
+  .bitable-export-field-head,
+  .bitable-export-status-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .bitable-report-date-field {
+    width: 100%;
+  }
+
+  .bitable-export-actions {
+    grid-template-columns: 1fr;
   }
 
   .form-grid,

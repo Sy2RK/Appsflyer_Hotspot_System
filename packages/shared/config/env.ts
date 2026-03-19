@@ -41,6 +41,11 @@ export const env = {
   feishuAppId: process.env.FEISHU_APP_ID ?? '',
   feishuAppSecret: process.env.FEISHU_APP_SECRET ?? '',
   feishuChatId: process.env.FEISHU_CHAT_ID ?? '',
+  feishuBitableAppToken: process.env.FEISHU_BITABLE_APP_TOKEN ?? '',
+  feishuBitableBaseUrl: process.env.FEISHU_BITABLE_BASE_URL ?? '',
+  feishuBitablePullTableId: process.env.FEISHU_BITABLE_PULL_TABLE_ID ?? '',
+  feishuBitablePullViewId: process.env.FEISHU_BITABLE_PULL_VIEW_ID ?? '',
+  feishuBitableAsaTableName: process.env.FEISHU_BITABLE_ASA_TABLE_NAME ?? 'ASA Raw 明细',
   pullToken: process.env.APPSFLYER_PULL_TOKEN ?? '',
   masterApiToken:
     process.env.APPSFLYER_MASTER_API_TOKEN ??
@@ -96,6 +101,9 @@ export const env = {
   asaDailyBriefEnabled: (process.env.ASA_DAILY_BRIEF_ENABLED ?? 'true').toLowerCase() !== 'false',
   asaDailyBriefIntervalMs: optionalNumber('ASA_DAILY_BRIEF_INTERVAL_MS', 60 * 60 * 1000),
   asaDailyBriefReportHour: optionalNumber('ASA_DAILY_BRIEF_REPORT_HOUR', 10),
+  feishuBitableEnabled: (process.env.FEISHU_BITABLE_ENABLED ?? 'true').toLowerCase() !== 'false',
+  feishuBitableScheduleHour: optionalNumber('FEISHU_BITABLE_SCHEDULE_HOUR', 10),
+  feishuBitableScheduleMinute: optionalNumber('FEISHU_BITABLE_SCHEDULE_MINUTE', 5),
   dailyBriefEnabled: (process.env.DAILY_BRIEF_ENABLED ?? 'true').toLowerCase() !== 'false',
   dailyBriefIntervalMs: optionalNumber('DAILY_BRIEF_INTERVAL_MS', 60 * 60 * 1000),
   dailyBriefReportHour: optionalNumber('DAILY_BRIEF_REPORT_HOUR', 10),

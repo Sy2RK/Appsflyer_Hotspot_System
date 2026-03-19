@@ -254,6 +254,25 @@ CREATE TABLE IF NOT EXISTS operation_logs (
 CREATE INDEX IF NOT EXISTS idx_operation_logs_lookup
   ON operation_logs (created_at DESC, source, status);
 
+CREATE TABLE IF NOT EXISTS bitable_export_configs (
+  id BIGSERIAL PRIMARY KEY,
+  source_type TEXT NOT NULL UNIQUE CHECK (source_type IN ('pull_daily', 'asa_raw')),
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  target_table_id TEXT,
+  target_table_name TEXT,
+  chat_id TEXT,
+  selected_fields JSONB NOT NULL DEFAULT '[]'::jsonb,
+  last_status TEXT NOT NULL DEFAULT 'idle' CHECK (last_status IN ('idle', 'success', 'failed')),
+  last_error TEXT,
+  last_synced_at TIMESTAMPTZ,
+  last_record_count INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_bitable_export_configs_lookup
+  ON bitable_export_configs (enabled, source_type, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS pull_cycle_locks (
   name TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL,
@@ -450,6 +469,12 @@ EXECUTE FUNCTION set_updated_at();
 DROP TRIGGER IF EXISTS trg_pull_cycle_locks_updated_at ON pull_cycle_locks;
 CREATE TRIGGER trg_pull_cycle_locks_updated_at
 BEFORE UPDATE ON pull_cycle_locks
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_bitable_export_configs_updated_at ON bitable_export_configs;
+CREATE TRIGGER trg_bitable_export_configs_updated_at
+BEFORE UPDATE ON bitable_export_configs
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 
