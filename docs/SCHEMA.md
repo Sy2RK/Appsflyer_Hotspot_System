@@ -76,6 +76,53 @@
 - `source_report`
 - `version`
 
+### `asa_raw_installs`
+- ASA Raw Data 安装明细（仅 `Apple Search Ads`）
+- 引擎: `MergeTree`
+- 分区: `toYYYYMM(install_date)`
+- 排序: `(app_key, platform, install_date, keyword, campaign, event_uid)`
+
+字段:
+- `install_date`, `install_time`, `ingest_time`
+- `app_key`, `platform`
+- `keyword`, `campaign`, `adset`, `country`
+- `cost_value`, `currency`
+- `event_uid`, `raw_json`
+
+### `asa_raw_in_app_events`
+- ASA Raw Data 收入事件明细（仅 `Apple Search Ads`）
+- 引擎: `MergeTree`
+- 分区: `toYYYYMM(install_date)`
+- 排序: `(app_key, platform, install_date, keyword, campaign, event_time, event_uid)`
+
+字段:
+- `install_date`, `install_time`, `event_time`, `ingest_time`
+- `app_key`, `platform`
+- `keyword`, `campaign`, `adset`, `country`
+- `event_name`
+- `event_revenue_usd`
+- `cost_value`, `currency`
+- `event_uid`, `raw_json`
+
+### `asa_keyword_daily_metrics_v2`
+- ASA 真实 keyword 日级事实表
+- 引擎: `ReplacingMergeTree(version)`
+- 分区: `toYYYYMM(date)`
+- 排序: `(app_key, platform, date, keyword, campaign, adset)`
+
+口径:
+- `keyword / campaign / adset / 收入事件`: Raw Data
+- `cost / installs / average_ecpi`: Master API
+- ASA 专项不再使用 `country` 作为主维度
+
+字段:
+- `date`, `app_key`, `platform`
+- `keyword`, `campaign`, `adset`
+- `installs`, `total_cost`, `purchase_count`
+- `revenue_d0`, `revenue_d7`
+- `ecpi`, `average_ecpi`, `cpp`, `d7_roas`
+- `version`
+
 ---
 
 ## 2) Postgres
@@ -182,12 +229,75 @@
 - `current_cost`
 - `current_ecpi`
 - `target_ecpi`
+- `primary_metric`
+- `metric_mode`
+- `current_roas`
+- `target_roas`
 - `volume_tier` (`low|medium|high`)
 - `expected_installs_delta`
 - `confidence`
 - `reason_code`
 - `llm_summary`
 - `status` (`pending|applied|rejected|expired`)
+- `created_at`, `updated_at`
+
+### `product_stage_configs`
+- `app + platform` 的人工产品阶段配置
+
+字段:
+- `id`
+- `app_key`
+- `platform`
+- `stage` (`rising|stable`)
+- `enabled`
+- `created_at`, `updated_at`
+
+### `asa_keyword_states`
+- ASA keyword 状态快照
+
+字段:
+- `id`
+- `app_key`, `platform`
+- `keyword`, `campaign`, `adset`
+- `current_stage`
+- `stage_score`
+- `first_seen_date`, `last_seen_date`
+- `current_ecpi`, `current_cpp`, `current_d7_roas`
+- `target_ecpi`, `target_cpp`, `target_d7_roas`
+- `installs_7d`, `total_cost_7d`, `purchase_count_7d`, `revenue_d7_7d`
+- `trend_json`
+- `created_at`, `updated_at`
+
+### `asa_keyword_recommendations`
+- ASA keyword 专项建议
+
+字段:
+- `id`
+- `app_key`, `platform`
+- `keyword`, `campaign`, `adset`
+- `date`
+- `action` (`increase|decrease|hold|pause`)
+- `change_ratio`
+- `primary_metric` (`ecpi|d7_roas_cpp`)
+- `current_ecpi`, `current_cpp`, `current_d7_roas`
+- `target_ecpi`, `target_cpp`, `target_d7_roas`
+- `reason_code`
+- `llm_summary`
+- `status` (`pending|sent|applied|rejected|expired`)
+- `created_at`, `updated_at`
+
+### `asa_keyword_routes`
+- ASA keyword 专项 Feishu 推送路由
+
+字段:
+- `id`
+- `route_name`
+- `app_key`, `platform`
+- `notify_feishu_app_id`
+- `notify_feishu_app_secret`
+- `notify_feishu_chat_id`
+- `priority`
+- `enabled`
 - `created_at`, `updated_at`
 
 ### `llm_audit_logs`

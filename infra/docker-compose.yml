@@ -189,6 +189,63 @@ services:
       - clickhouse
       - postgres
 
+  asa-keywords:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hotspot-asa-keywords
+    restart: unless-stopped
+    command: npm run start:asa-keywords
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DB: hotspot
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
+      ASA_KEYWORD_INTERVAL_MS: ${ASA_KEYWORD_INTERVAL_MS:-86400000}
+      ASA_KEYWORD_BACKFILL_DAYS: ${ASA_KEYWORD_BACKFILL_DAYS:-14}
+      ASA_KEYWORD_RUN_ON_BOOT: ${ASA_KEYWORD_RUN_ON_BOOT:-false}
+      ASA_KEYWORD_REQUEST_INTERVAL_MS: ${ASA_KEYWORD_REQUEST_INTERVAL_MS:-1200}
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    depends_on:
+      - clickhouse
+      - postgres
+
+  asa-daily-brief:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hotspot-asa-daily-brief
+    restart: unless-stopped
+    command: npm run start:asa-daily-brief
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DB: hotspot
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
+      ASA_DAILY_BRIEF_ENABLED: ${ASA_DAILY_BRIEF_ENABLED:-true}
+      ASA_DAILY_BRIEF_INTERVAL_MS: ${ASA_DAILY_BRIEF_INTERVAL_MS:-3600000}
+      ASA_DAILY_BRIEF_REPORT_HOUR: ${ASA_DAILY_BRIEF_REPORT_HOUR:-10}
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    depends_on:
+      - clickhouse
+      - postgres
+
   daily-brief:
     build:
       context: ..

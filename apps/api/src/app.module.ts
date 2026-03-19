@@ -10,6 +10,7 @@ import keywordsRoutes from './modules/keywords/keywords.routes.js';
 import budgetRoutes from './modules/budget/budget.routes.js';
 import dailyBriefRoutes from './modules/dailyBrief/dailyBrief.routes.js';
 import operationLogsRoutes from './modules/operationLogs/operationLogs.routes.js';
+import asaKeywordsRoutes from './modules/asaKeywords/asaKeywords.routes.js';
 import uiRoutes from './modules/ui/ui.routes.js';
 import { requestIdMiddleware } from './common/utils/request.js';
 import { logger } from './common/logger/logger.js';
@@ -38,6 +39,7 @@ export function createApp(): express.Express {
   app.use(keywordsRoutes);
   app.use(budgetRoutes);
   app.use(dailyBriefRoutes);
+  app.use(asaKeywordsRoutes);
   app.use(operationLogsRoutes);
   app.use(alertsRoutes);
   app.use(rulesRoutes);

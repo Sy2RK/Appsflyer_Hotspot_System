@@ -2,30 +2,9 @@ import { Router } from 'express';
 import { listApps, upsertAppConfig } from '@shared/utils/repositories.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 import { logger } from '../common/logger/logger.js';
+import { resolveDisplayName, resolvePlatformDisplayName } from '@shared/utils/displayName.js';
 
 const router = Router();
-
-function resolveDisplayName(appKey: string, displayName?: string | null): string {
-  const raw = typeof displayName === 'string' ? displayName.trim() : '';
-  if (raw) {
-    return raw;
-  }
-  return appKey.replace(/-/g, ' ').trim();
-}
-
-function resolvePlatformDisplayName(
-  appKey: string,
-  fallbackDisplayName: string,
-  rawValue: string | null | undefined,
-  platformSuffix: 'iOS' | 'Android'
-): string {
-  const value = typeof rawValue === 'string' ? rawValue.trim() : '';
-  if (value) {
-    return value;
-  }
-  const base = fallbackDisplayName || resolveDisplayName(appKey);
-  return `${base} ${platformSuffix}`.trim();
-}
 
 router.get('/api/apps', async (_req, res) => {
   const apps = await listApps();

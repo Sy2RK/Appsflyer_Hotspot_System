@@ -5,6 +5,9 @@ import { LlmExplainResult } from '../types/models.js';
 export interface BudgetLlmInput {
   appKey: string;
   platform: string;
+  mediaSource: string;
+  primaryMetric: 'ecpi' | 'roas';
+  metricMode: 'active' | 'roas_pending_revenue';
   keyword: string;
   matchType: string;
   action: 'increase' | 'decrease' | 'hold' | 'pause';
@@ -45,11 +48,12 @@ function fallbackExplain(input: BudgetLlmInput): LlmExplainResult {
           : '建议保持预算，继续观察短期波动。';
 
   return {
-    summary_cn: `${direction} 当前 eCPI=${input.currentEcpi.toFixed(2)}，目标 eCPI=${input.targetEcpi.toFixed(2)}，量级=${input.volumeTier}，置信度=${Math.round(input.confidence * 100)}%。`,
+    summary_cn: `${direction} 媒体源=${input.mediaSource}，当前 eCPI=${input.currentEcpi.toFixed(2)}，目标 eCPI=${input.targetEcpi.toFixed(2)}，量级=${input.volumeTier}，置信度=${Math.round(input.confidence * 100)}%。`,
     risk_level: input.action === 'increase' ? 'medium' : input.action === 'pause' ? 'high' : 'low',
     checklist: ['检查最近 3 天激活量是否稳定', '确认 AppsFlyer eCPI 与投放后台口径一致', '复核最近 3 天数据延迟'],
     explanation_points: [
       `reason_code=${input.reasonCode}`,
+      `media_source=${input.mediaSource} / primary_metric=${input.primaryMetric} / metric_mode=${input.metricMode}`,
       `ecpi=${input.currentEcpi.toFixed(2)} / target=${input.targetEcpi.toFixed(2)} / tier=${input.volumeTier}`,
       `change_ratio=${(input.changeRatio * 100).toFixed(1)}%`,
       `current_cost=${input.currentCost.toFixed(2)}, suggested_budget=${input.suggestedBudget.toFixed(2)}`

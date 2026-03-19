@@ -2,12 +2,18 @@ import { pgQuery } from './postgres.js';
 import {
   AlertRecord,
   AppConfigRecord,
+  AsaKeywordRecommendationRow,
+  AsaKeywordRouteRecord,
+  AsaKeywordStateRow,
   BudgetRecommendationRow,
   BudgetRecommendationStatus,
   DailyBriefDispatchRecord,
+  DailyBriefRouteRecord,
   KeywordExtractRuleRecord,
   KeywordLifecycleStateRow,
-  OperationLogRecord
+  OperationLogRecord,
+  ProductStage,
+  ProductStageConfigRecord
 } from '../types/models.js';
 
 export interface RuleRecord {
@@ -743,6 +749,7 @@ export interface BudgetRecommendationFilter {
 export interface UpsertBudgetRecommendationInput {
   app_key: string;
   platform: string;
+  media_source: string;
   keyword: string;
   match_type: string;
   date: string;
@@ -752,6 +759,10 @@ export interface UpsertBudgetRecommendationInput {
   current_cost: number;
   current_ecpi: number;
   target_ecpi: number;
+  primary_metric: 'ecpi' | 'roas';
+  metric_mode: 'active' | 'roas_pending_revenue';
+  current_roas?: number | null;
+  target_roas?: number | null;
   volume_tier: string;
   expected_installs_delta: number;
   confidence: number;
@@ -765,19 +776,25 @@ export async function upsertBudgetRecommendation(
 ): Promise<BudgetRecommendationRow> {
   const result = await pgQuery<BudgetRecommendationRow>(
     `INSERT INTO budget_recommendations (
-      app_key, platform, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
-      current_ecpi, target_ecpi, volume_tier, expected_installs_delta, confidence, reason_code, llm_summary, status
+      app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
+      current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas,
+      volume_tier, expected_installs_delta, confidence, reason_code, llm_summary, status
     ) VALUES (
-      $1, $2, $3, $4, $5::date, $6, $7, $8, $9,
-      $10, $11, $12, $13, $14, $15, $16, COALESCE($17, 'pending')
+      $1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10,
+      $11, $12, $13, $14, $15, $16,
+      $17, $18, $19, $20, $21, COALESCE($22, 'pending')
     )
-    ON CONFLICT (app_key, platform, keyword, match_type, date) DO UPDATE SET
+    ON CONFLICT (app_key, platform, media_source, keyword, match_type, date) DO UPDATE SET
       action = EXCLUDED.action,
       change_ratio = EXCLUDED.change_ratio,
       suggested_budget = EXCLUDED.suggested_budget,
       current_cost = EXCLUDED.current_cost,
       current_ecpi = EXCLUDED.current_ecpi,
       target_ecpi = EXCLUDED.target_ecpi,
+      primary_metric = EXCLUDED.primary_metric,
+      metric_mode = EXCLUDED.metric_mode,
+      current_roas = EXCLUDED.current_roas,
+      target_roas = EXCLUDED.target_roas,
       volume_tier = EXCLUDED.volume_tier,
       expected_installs_delta = EXCLUDED.expected_installs_delta,
       confidence = EXCLUDED.confidence,
@@ -788,11 +805,13 @@ export async function upsertBudgetRecommendation(
         ELSE EXCLUDED.status
       END,
       updated_at = NOW()
-    RETURNING id, app_key, platform, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
-              current_ecpi, target_ecpi, volume_tier, expected_installs_delta, confidence, reason_code, llm_summary, status, created_at, updated_at`,
+    RETURNING id, app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
+              current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, volume_tier,
+              expected_installs_delta, confidence, reason_code, llm_summary, status, created_at, updated_at`,
     [
       input.app_key,
       input.platform,
+      input.media_source,
       input.keyword,
       input.match_type,
       input.date,
@@ -802,6 +821,10 @@ export async function upsertBudgetRecommendation(
       input.current_cost,
       input.current_ecpi,
       input.target_ecpi,
+      input.primary_metric,
+      input.metric_mode,
+      input.current_roas ?? null,
+      input.target_roas ?? null,
       input.volume_tier,
       input.expected_installs_delta,
       input.confidence,
@@ -856,8 +879,9 @@ export async function queryBudgetRecommendations(
   const listValues = [...values, pageSize, offset];
 
   const rowsResult = await pgQuery<BudgetRecommendationRow>(
-    `SELECT id, app_key, platform, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
-            current_ecpi, target_ecpi, volume_tier, expected_installs_delta, confidence, reason_code, llm_summary, status, created_at, updated_at
+    `SELECT id, app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
+            current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, volume_tier,
+            expected_installs_delta, confidence, reason_code, llm_summary, status, created_at, updated_at
        FROM budget_recommendations
        ${where}
       ORDER BY date DESC, updated_at DESC, id DESC
@@ -884,8 +908,9 @@ export async function setBudgetRecommendationStatus(
         SET status = $1,
             updated_at = NOW()
       WHERE id = $2
-      RETURNING id, app_key, platform, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
-                current_ecpi, target_ecpi, volume_tier, expected_installs_delta, confidence, reason_code, llm_summary, status, created_at, updated_at`,
+      RETURNING id, app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
+                current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, volume_tier,
+                expected_installs_delta, confidence, reason_code, llm_summary, status, created_at, updated_at`,
     [status, id]
   );
   return result.rows[0] ?? null;
@@ -933,17 +958,19 @@ export async function insertLlmAuditLog(input: LlmAuditLogInput): Promise<void> 
 export async function getDailyBriefDispatch(
   reportDate: string,
   kind = 'ops_daily',
-  channel = 'feishu'
+  channel = 'feishu',
+  routeKey = 'all'
 ): Promise<DailyBriefDispatchRecord | null> {
   const result = await pgQuery<DailyBriefDispatchRecord>(
-    `SELECT id, report_date, kind, channel, title, content, payload_json, status, manual_triggered,
+    `SELECT id, report_date, kind, channel, route_key, title, content, payload_json, status, manual_triggered,
             last_error, sent_at, created_at, updated_at
        FROM daily_brief_dispatches
       WHERE report_date = $1::date
         AND kind = $2
         AND channel = $3
+        AND route_key = $4
       LIMIT 1`,
-    [reportDate, kind, channel]
+    [reportDate, kind, channel, routeKey]
   );
   return result.rows[0] ?? null;
 }
@@ -952,6 +979,7 @@ export interface UpsertDailyBriefDispatchInput {
   report_date: string;
   kind?: string;
   channel?: string;
+  route_key?: string;
   title: string;
   content: string;
   payload_json: unknown;
@@ -966,11 +994,11 @@ export async function upsertDailyBriefDispatch(
 ): Promise<DailyBriefDispatchRecord> {
   const result = await pgQuery<DailyBriefDispatchRecord>(
     `INSERT INTO daily_brief_dispatches (
-      report_date, kind, channel, title, content, payload_json, status, manual_triggered, last_error, sent_at
+      report_date, kind, channel, route_key, title, content, payload_json, status, manual_triggered, last_error, sent_at
     ) VALUES (
-      $1::date, $2, $3, $4, $5, $6, $7, COALESCE($8, false), NULLIF($9, ''), $10::timestamptz
+      $1::date, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, false), NULLIF($10, ''), $11::timestamptz
     )
-    ON CONFLICT (report_date, kind, channel) DO UPDATE SET
+    ON CONFLICT (report_date, kind, channel, route_key) DO UPDATE SET
       title = EXCLUDED.title,
       content = EXCLUDED.content,
       payload_json = EXCLUDED.payload_json,
@@ -979,12 +1007,13 @@ export async function upsertDailyBriefDispatch(
       last_error = EXCLUDED.last_error,
       sent_at = EXCLUDED.sent_at,
       updated_at = NOW()
-    RETURNING id, report_date, kind, channel, title, content, payload_json, status, manual_triggered,
+    RETURNING id, report_date, kind, channel, route_key, title, content, payload_json, status, manual_triggered,
               last_error, sent_at, created_at, updated_at`,
     [
       input.report_date,
       input.kind ?? 'ops_daily',
       input.channel ?? 'feishu',
+      input.route_key ?? 'all',
       input.title,
       input.content,
       JSON.stringify(input.payload_json ?? {}),
@@ -995,6 +1024,33 @@ export async function upsertDailyBriefDispatch(
     ]
   );
   return result.rows[0];
+}
+
+export interface UpsertDailyBriefRouteInput {
+  enabled?: boolean;
+  route_name: string;
+  media_sources: string[];
+  app_key?: string | null;
+  platform?: string | null;
+  notify_feishu_app_id?: string | null;
+  notify_feishu_app_secret?: string | null;
+  notify_feishu_chat_id?: string | null;
+  priority?: number;
+}
+
+export async function listEnabledDailyBriefRoutes(): Promise<DailyBriefRouteRecord[]> {
+  const result = await pgQuery<DailyBriefRouteRecord>(
+    `SELECT id, enabled, route_name, media_sources, app_key, platform,
+            notify_feishu_app_id, notify_feishu_app_secret, notify_feishu_chat_id,
+            priority, created_at, updated_at
+       FROM daily_brief_routes
+      WHERE enabled = TRUE
+      ORDER BY priority ASC, id ASC`
+  );
+  return result.rows.map((row) => ({
+    ...row,
+    media_sources: Array.isArray(row.media_sources) ? row.media_sources.map((item) => String(item)) : []
+  }));
 }
 
 export interface CreateOperationLogInput {
@@ -1057,6 +1113,444 @@ export async function listOperationLogs(filter: OperationLogFilter = {}): Promis
       ORDER BY created_at DESC, id DESC
       LIMIT $${values.length}`,
     values
+  );
+  return result.rows;
+}
+
+export async function listProductStageConfigs(): Promise<ProductStageConfigRecord[]> {
+  const result = await pgQuery<ProductStageConfigRecord>(
+    `SELECT id, app_key, platform, stage, enabled, created_at, updated_at
+       FROM product_stage_configs
+      ORDER BY app_key ASC, platform ASC`
+  );
+  return result.rows;
+}
+
+export async function getProductStageConfig(
+  appKey: string,
+  platform: string
+): Promise<ProductStageConfigRecord | null> {
+  const result = await pgQuery<ProductStageConfigRecord>(
+    `SELECT id, app_key, platform, stage, enabled, created_at, updated_at
+       FROM product_stage_configs
+      WHERE app_key = $1 AND platform = $2
+      LIMIT 1`,
+    [appKey, platform]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function upsertProductStageConfig(input: {
+  app_key: string;
+  platform: string;
+  stage: ProductStage;
+  enabled?: boolean;
+}): Promise<ProductStageConfigRecord> {
+  const result = await pgQuery<ProductStageConfigRecord>(
+    `INSERT INTO product_stage_configs (app_key, platform, stage, enabled)
+     VALUES ($1, $2, $3, COALESCE($4, TRUE))
+     ON CONFLICT (app_key, platform) DO UPDATE SET
+       stage = EXCLUDED.stage,
+       enabled = EXCLUDED.enabled,
+       updated_at = NOW()
+     RETURNING id, app_key, platform, stage, enabled, created_at, updated_at`,
+    [input.app_key, input.platform, input.stage, input.enabled ?? true]
+  );
+  return result.rows[0];
+}
+
+export interface AsaKeywordStateFilter {
+  appKey?: string;
+  platform?: string;
+  stage?: ProductStage;
+  keyword?: string;
+  from?: string;
+  to?: string;
+  page: number;
+  pageSize: number;
+}
+
+export async function queryAsaKeywordStates(filter: AsaKeywordStateFilter): Promise<{
+  rows: AsaKeywordStateRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}> {
+  const values: unknown[] = [];
+  const clauses: string[] = [];
+
+  if (filter.appKey) {
+    values.push(filter.appKey);
+    clauses.push(`app_key = $${values.length}`);
+  }
+  if (filter.platform) {
+    values.push(filter.platform);
+    clauses.push(`platform = $${values.length}`);
+  }
+  if (filter.stage) {
+    values.push(filter.stage);
+    clauses.push(`current_stage = $${values.length}`);
+  }
+  if (filter.keyword) {
+    values.push(`%${filter.keyword.toLowerCase()}%`);
+    clauses.push(`(LOWER(keyword) LIKE $${values.length} OR LOWER(campaign) LIKE $${values.length} OR LOWER(adset) LIKE $${values.length})`);
+  }
+  if (filter.from) {
+    values.push(filter.from);
+    clauses.push(`last_seen_date >= $${values.length}::date`);
+  }
+  if (filter.to) {
+    values.push(filter.to);
+    clauses.push(`last_seen_date <= $${values.length}::date`);
+  }
+
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const countResult = await pgQuery<{ total: string }>(
+    `SELECT to_char(count(*), 'FM999999999999999') AS total
+       FROM asa_keyword_states
+       ${where}`,
+    values
+  );
+  const total = Number(countResult.rows[0]?.total ?? 0);
+  const totalPages = Math.max(1, Math.ceil(total / filter.pageSize));
+  const page = Math.min(filter.page, totalPages);
+  const offset = (page - 1) * filter.pageSize;
+  const listValues = [...values, filter.pageSize, offset];
+
+  const rowsResult = await pgQuery<AsaKeywordStateRow>(
+    `SELECT id, app_key, platform, keyword, campaign, adset, current_stage, stage_score, first_seen_date, last_seen_date,
+            current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+            installs_7d, total_cost_7d, purchase_count_7d, revenue_d7_7d, trend_json, created_at, updated_at
+       FROM asa_keyword_states
+       ${where}
+      ORDER BY updated_at DESC, id DESC
+      LIMIT $${listValues.length - 1}
+      OFFSET $${listValues.length}`,
+    listValues
+  );
+
+  return { rows: rowsResult.rows, total, page, pageSize: filter.pageSize, totalPages };
+}
+
+export async function upsertAsaKeywordState(input: {
+  app_key: string;
+  platform: string;
+  keyword: string;
+  campaign: string;
+  adset: string;
+  current_stage: ProductStage;
+  stage_score: number;
+  first_seen_date: string;
+  last_seen_date: string;
+  current_ecpi: number;
+  current_cpp: number;
+  current_d7_roas: number;
+  target_ecpi: number;
+  target_cpp: number;
+  target_d7_roas: number;
+  installs_7d: number;
+  total_cost_7d: number;
+  purchase_count_7d: number;
+  revenue_d7_7d: number;
+  trend_json: unknown;
+}): Promise<AsaKeywordStateRow> {
+  const result = await pgQuery<AsaKeywordStateRow>(
+    `INSERT INTO asa_keyword_states (
+      app_key, platform, keyword, campaign, adset, current_stage, stage_score, first_seen_date, last_seen_date,
+      current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+      installs_7d, total_cost_7d, purchase_count_7d, revenue_d7_7d, trend_json
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8::date, $9::date, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+    )
+    ON CONFLICT (app_key, platform, keyword, campaign, adset) DO UPDATE SET
+      current_stage = EXCLUDED.current_stage,
+      stage_score = EXCLUDED.stage_score,
+      first_seen_date = LEAST(asa_keyword_states.first_seen_date, EXCLUDED.first_seen_date),
+      last_seen_date = GREATEST(asa_keyword_states.last_seen_date, EXCLUDED.last_seen_date),
+      current_ecpi = EXCLUDED.current_ecpi,
+      current_cpp = EXCLUDED.current_cpp,
+      current_d7_roas = EXCLUDED.current_d7_roas,
+      target_ecpi = EXCLUDED.target_ecpi,
+      target_cpp = EXCLUDED.target_cpp,
+      target_d7_roas = EXCLUDED.target_d7_roas,
+      installs_7d = EXCLUDED.installs_7d,
+      total_cost_7d = EXCLUDED.total_cost_7d,
+      purchase_count_7d = EXCLUDED.purchase_count_7d,
+      revenue_d7_7d = EXCLUDED.revenue_d7_7d,
+      trend_json = EXCLUDED.trend_json,
+      updated_at = NOW()
+    RETURNING id, app_key, platform, keyword, campaign, adset, current_stage, stage_score, first_seen_date, last_seen_date,
+              current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+              installs_7d, total_cost_7d, purchase_count_7d, revenue_d7_7d, trend_json, created_at, updated_at`,
+    [
+      input.app_key,
+      input.platform,
+      input.keyword,
+      input.campaign,
+      input.adset,
+      input.current_stage,
+      input.stage_score,
+      input.first_seen_date,
+      input.last_seen_date,
+      input.current_ecpi,
+      input.current_cpp,
+      input.current_d7_roas,
+      input.target_ecpi,
+      input.target_cpp,
+      input.target_d7_roas,
+      input.installs_7d,
+      input.total_cost_7d,
+      input.purchase_count_7d,
+      input.revenue_d7_7d,
+      JSON.stringify(input.trend_json ?? {})
+    ]
+  );
+  return result.rows[0];
+}
+
+export async function deleteStaleAsaKeywordStates(
+  appKey: string,
+  platform: string,
+  scopes: Array<{ keyword: string; campaign: string; adset: string }>
+): Promise<void> {
+  if (!scopes.length) {
+    await pgQuery(`DELETE FROM asa_keyword_states WHERE app_key = $1 AND platform = $2`, [appKey, platform]);
+    return;
+  }
+  await pgQuery(
+    `WITH keep AS (
+        SELECT keyword, campaign, adset
+        FROM jsonb_to_recordset($3::jsonb) AS x(keyword text, campaign text, adset text)
+      )
+      DELETE FROM asa_keyword_states s
+      WHERE s.app_key = $1
+        AND s.platform = $2
+        AND NOT EXISTS (
+          SELECT 1
+          FROM keep k
+          WHERE k.keyword = s.keyword
+            AND k.campaign = s.campaign
+            AND k.adset = s.adset
+        )`,
+    [appKey, platform, JSON.stringify(scopes)]
+  );
+}
+
+export async function replaceAsaKeywordRecommendationsForDate(
+  appKey: string,
+  platform: string,
+  date: string
+): Promise<void> {
+  await pgQuery(
+    `UPDATE asa_keyword_recommendations
+        SET status = 'expired',
+            updated_at = NOW()
+      WHERE app_key = $1
+        AND platform = $2
+        AND date = $3::date
+        AND status = 'pending'`,
+    [appKey, platform, date]
+  );
+}
+
+export async function upsertAsaKeywordRecommendation(input: {
+  app_key: string;
+  platform: string;
+  keyword: string;
+  campaign: string;
+  adset: string;
+  date: string;
+  action: 'increase' | 'decrease' | 'hold' | 'pause';
+  change_ratio: number;
+  primary_metric: 'ecpi' | 'd7_roas_cpp';
+  current_ecpi: number;
+  current_cpp: number;
+  current_d7_roas: number;
+  target_ecpi: number;
+  target_cpp: number;
+  target_d7_roas: number;
+  reason_code: string;
+  llm_summary: unknown;
+  status?: 'pending' | 'sent' | 'applied' | 'rejected' | 'expired';
+}): Promise<AsaKeywordRecommendationRow> {
+  const result = await pgQuery<AsaKeywordRecommendationRow>(
+    `INSERT INTO asa_keyword_recommendations (
+      app_key, platform, keyword, campaign, adset, date, action, change_ratio, primary_metric,
+      current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+      reason_code, llm_summary, status
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6::date, $7, $8, $9,
+      $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, 'pending')
+    )
+    ON CONFLICT (app_key, platform, keyword, campaign, adset, date) DO UPDATE SET
+      action = EXCLUDED.action,
+      change_ratio = EXCLUDED.change_ratio,
+      primary_metric = EXCLUDED.primary_metric,
+      current_ecpi = EXCLUDED.current_ecpi,
+      current_cpp = EXCLUDED.current_cpp,
+      current_d7_roas = EXCLUDED.current_d7_roas,
+      target_ecpi = EXCLUDED.target_ecpi,
+      target_cpp = EXCLUDED.target_cpp,
+      target_d7_roas = EXCLUDED.target_d7_roas,
+      reason_code = EXCLUDED.reason_code,
+      llm_summary = EXCLUDED.llm_summary,
+      status = CASE
+        WHEN asa_keyword_recommendations.status IN ('applied', 'rejected') THEN asa_keyword_recommendations.status
+        ELSE EXCLUDED.status
+      END,
+      updated_at = NOW()
+    RETURNING id, app_key, platform, keyword, campaign, adset, date, action, change_ratio, primary_metric,
+              current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+              reason_code, llm_summary, status, created_at, updated_at`,
+    [
+      input.app_key,
+      input.platform,
+      input.keyword,
+      input.campaign,
+      input.adset,
+      input.date,
+      input.action,
+      input.change_ratio,
+      input.primary_metric,
+      input.current_ecpi,
+      input.current_cpp,
+      input.current_d7_roas,
+      input.target_ecpi,
+      input.target_cpp,
+      input.target_d7_roas,
+      input.reason_code,
+      JSON.stringify(input.llm_summary ?? {}),
+      input.status ?? 'pending'
+    ]
+  );
+  return result.rows[0];
+}
+
+export async function deleteStaleAsaKeywordRecommendations(
+  appKey: string,
+  platform: string,
+  from: string,
+  to: string,
+  scopes: Array<{ keyword: string; campaign: string; adset: string }>
+): Promise<void> {
+  if (!scopes.length) {
+    await pgQuery(
+      `DELETE FROM asa_keyword_recommendations
+        WHERE app_key = $1
+          AND platform = $2
+          AND date BETWEEN $3::date AND $4::date`,
+      [appKey, platform, from, to]
+    );
+    return;
+  }
+  await pgQuery(
+    `WITH keep AS (
+        SELECT keyword, campaign, adset
+        FROM jsonb_to_recordset($5::jsonb) AS x(keyword text, campaign text, adset text)
+      )
+      DELETE FROM asa_keyword_recommendations r
+      WHERE r.app_key = $1
+        AND r.platform = $2
+        AND r.date BETWEEN $3::date AND $4::date
+        AND NOT EXISTS (
+          SELECT 1
+          FROM keep k
+          WHERE k.keyword = r.keyword
+            AND k.campaign = r.campaign
+            AND k.adset = r.adset
+        )`,
+    [appKey, platform, from, to, JSON.stringify(scopes)]
+  );
+}
+
+export async function queryAsaKeywordRecommendations(filter: {
+  appKey?: string;
+  platform?: string;
+  status?: 'pending' | 'sent' | 'applied' | 'rejected' | 'expired';
+  from?: string;
+  to?: string;
+  page: number;
+  pageSize: number;
+}): Promise<{
+  rows: AsaKeywordRecommendationRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}> {
+  const values: unknown[] = [];
+  const clauses: string[] = [];
+  if (filter.appKey) {
+    values.push(filter.appKey);
+    clauses.push(`app_key = $${values.length}`);
+  }
+  if (filter.platform) {
+    values.push(filter.platform);
+    clauses.push(`platform = $${values.length}`);
+  }
+  if (filter.status) {
+    values.push(filter.status);
+    clauses.push(`status = $${values.length}`);
+  }
+  if (filter.from) {
+    values.push(filter.from);
+    clauses.push(`date >= $${values.length}::date`);
+  }
+  if (filter.to) {
+    values.push(filter.to);
+    clauses.push(`date <= $${values.length}::date`);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const countResult = await pgQuery<{ total: string }>(
+    `SELECT to_char(count(*), 'FM999999999999999') AS total
+       FROM asa_keyword_recommendations
+      ${where}`,
+    values
+  );
+  const total = Number(countResult.rows[0]?.total ?? 0);
+  const totalPages = Math.max(1, Math.ceil(total / filter.pageSize));
+  const page = Math.min(filter.page, totalPages);
+  const offset = (page - 1) * filter.pageSize;
+  const listValues = [...values, filter.pageSize, offset];
+  const rowsResult = await pgQuery<AsaKeywordRecommendationRow>(
+    `SELECT id, app_key, platform, keyword, campaign, adset, date, action, change_ratio, primary_metric,
+            current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+            reason_code, llm_summary, status, created_at, updated_at
+       FROM asa_keyword_recommendations
+       ${where}
+      ORDER BY date DESC, updated_at DESC, id DESC
+      LIMIT $${listValues.length - 1}
+      OFFSET $${listValues.length}`,
+    listValues
+  );
+  return { rows: rowsResult.rows, total, page, pageSize: filter.pageSize, totalPages };
+}
+
+export async function setAsaKeywordRecommendationStatus(
+  id: number,
+  status: 'pending' | 'sent' | 'applied' | 'rejected' | 'expired'
+): Promise<AsaKeywordRecommendationRow | null> {
+  const result = await pgQuery<AsaKeywordRecommendationRow>(
+    `UPDATE asa_keyword_recommendations
+        SET status = $1,
+            updated_at = NOW()
+      WHERE id = $2
+      RETURNING id, app_key, platform, keyword, campaign, adset, date, action, change_ratio, primary_metric,
+                current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+                reason_code, llm_summary, status, created_at, updated_at`,
+    [status, id]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function listEnabledAsaKeywordRoutes(): Promise<AsaKeywordRouteRecord[]> {
+  const result = await pgQuery<AsaKeywordRouteRecord>(
+    `SELECT id, enabled, route_name, app_key, platform, notify_feishu_app_id,
+            notify_feishu_app_secret, notify_feishu_chat_id, priority, created_at, updated_at
+       FROM asa_keyword_routes
+      WHERE enabled = TRUE
+      ORDER BY priority ASC, id ASC`
   );
   return result.rows;
 }

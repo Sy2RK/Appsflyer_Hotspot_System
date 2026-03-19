@@ -23,6 +23,7 @@
           <button class="nav-item" data-target="section-metrics" type="button">指标趋势</button>
           <button class="nav-item" data-target="section-keywords" type="button">关键词生命周期</button>
           <button class="nav-item" data-target="section-budget" type="button">预算建议</button>
+          <button class="nav-item" data-target="section-asa-keywords" type="button">ASA 关键词管理</button>
           <button class="nav-item" data-target="section-pull-records" type="button">Pull 明细</button>
           <button class="nav-item" data-target="section-operation-logs" type="button">操作日志</button>
         </nav>
@@ -81,6 +82,21 @@
                   <button id="sendDailyBriefBtn" class="btn btn-primary" type="button">发送到飞书</button>
                 </div>
               </form>
+              <div class="media-source-card">
+                <div class="media-source-card-head">
+                  <div>
+                    <h5>媒体源筛选</h5>
+                    <p>默认全选。预览与手动发送都会只使用当前勾选的媒体源重算整份日报。</p>
+                  </div>
+                  <div class="chip-actions">
+                    <button id="dailyBriefSelectAllMediaBtn" class="btn btn-ghost btn-compact" type="button">全选</button>
+                    <button id="dailyBriefClearMediaBtn" class="btn btn-ghost btn-compact" type="button">清空</button>
+                  </div>
+                </div>
+                <div id="dailyBriefMediaSourcesEmpty" class="hint hidden">当前日期暂无可用媒体源。</div>
+                <div id="dailyBriefMediaSources" class="media-chip-grid"></div>
+                <div id="dailyBriefMediaSourcesSummary" class="hint">媒体源默认全选。</div>
+              </div>
               <div id="dailyBriefStatus" class="hint">默认汇总前一天数据，并使用全局 Feishu 机器人配置发送。</div>
             </div>
           </section>
@@ -422,7 +438,7 @@
               <div class="card-head-row">
                 <div>
                   <h3>关键词生命周期</h3>
-                  <p>按阶段跟踪关键词代理项（基于 campaign 解析）并支持趋势下钻。</p>
+                  <p>按阶段跟踪通用投放项代理（基于 campaign 解析），不包含 ASA 真实关键词。</p>
                 </div>
                 <button id="keywordRecomputeBtn" class="btn btn-primary" type="button">手动重算</button>
               </div>
@@ -475,6 +491,7 @@
               <table class="data-table">
                 <thead>
                   <tr>
+                    <th>产品视图</th>
                     <th>应用 Key（app_key）</th>
                     <th>平台（platform）</th>
                     <th>关键词（keyword）</th>
@@ -520,7 +537,7 @@
                           <li>低量级：最近 3 天激活量 &lt; 15，默认观察，不自动调价。</li>
                           <li>中量级：最近 3 天激活量 15-30。eCPI ≤ 目标 90% 时上调 20%，≥ 目标 115% 时下调 20%。</li>
                           <li>高量级：最近 3 天激活量 &gt; 30。eCPI ≤ 目标时上调 20%，≥ 目标 120% 时下调 20%。</li>
-                          <li>目标 eCPI：按同应用、同平台、最近有效关键词的 eCPI 中位数自动计算。</li>
+                          <li>目标 eCPI：优先按同应用、同平台、同媒体源的有效关键词 P40 计算，再用同平台中位数做上限钳制。</li>
                           <li>极端低效且已进入 pause_candidate 的关键词，才会给出暂停建议。</li>
                         </ul>
                       </div>
@@ -574,9 +591,12 @@
                 <thead>
                   <tr>
                     <th>日期（date）</th>
+                    <th>产品视图</th>
                     <th>应用 Key（app_key）</th>
                     <th>平台（platform）</th>
+                    <th>媒体源（media_source）</th>
                     <th>关键词（keyword）</th>
+                    <th>主指标</th>
                     <th>量级</th>
                     <th>当前 eCPI（AF）</th>
                     <th>目标 eCPI</th>
@@ -595,6 +615,205 @@
               <button id="budgetPrevPageBtn" class="btn btn-ghost" type="button">上一页</button>
               <span id="budgetPaginationInfo" class="hint">第 1/1 页 · 共 0 条</span>
               <button id="budgetNextPageBtn" class="btn btn-ghost" type="button">下一页</button>
+            </div>
+          </section>
+
+          <section id="section-asa-keywords" class="section-panel" style="--delay: 325ms">
+            <div class="card-head">
+              <div class="card-head-row">
+                <div>
+                  <h3>ASA 关键词管理</h3>
+                  <p>仅服务 Apple Search Ads。关键词、安装与收入来自 Raw Data；关键词级成本直接来自 AppsFlyer Master API。</p>
+                </div>
+                <div class="inline-actions">
+                  <button id="asaKeywordRecomputeBtn" class="btn btn-primary" type="button">手动重算</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="asa-stack">
+              <section class="asa-zone asa-zone-data">
+                <div class="card-head card-head-compact asa-zone-head">
+                  <div>
+                    <h4>数据检索</h4>
+                    <p>先筛选关键词数据，再查看 ASA 成本、eCPI、CPP 与 D7 ROAS 表现。</p>
+                  </div>
+                </div>
+
+                <form id="asaKeywordFilter" class="inline-form asa-keyword-form">
+                  <label class="filter-field asa-filter-field asa-filter-select">
+                    <span class="field-label">应用</span>
+                    <select name="appKey" id="asaKeywordAppSelect"></select>
+                  </label>
+                  <label class="filter-field asa-filter-field asa-filter-select">
+                    <span class="field-label">平台</span>
+                    <select name="platform" id="asaKeywordPlatformSelect">
+                      <option value="">全部平台</option>
+                      <option value="ios">iOS</option>
+                      <option value="android">Android</option>
+                    </select>
+                  </label>
+                  <label class="filter-field asa-filter-field asa-filter-select">
+                    <span class="field-label">产品阶段</span>
+                    <select name="stage" id="asaKeywordStageSelect">
+                      <option value="">全部阶段</option>
+                      <option value="rising">上升期</option>
+                      <option value="stable">稳定期</option>
+                    </select>
+                  </label>
+                  <label class="filter-field asa-filter-field asa-filter-date">
+                    <span class="field-label">开始日期</span>
+                    <input type="date" name="from" id="asaKeywordFromInput" />
+                  </label>
+                  <label class="filter-field asa-filter-field asa-filter-date">
+                    <span class="field-label">结束日期</span>
+                    <input type="date" name="to" id="asaKeywordToInput" />
+                  </label>
+                  <label class="filter-field asa-filter-field asa-filter-search">
+                    <span class="field-label">关键词（keyword）</span>
+                    <input name="keyword" id="asaKeywordSearchInput" />
+                  </label>
+                  <label class="filter-field asa-filter-field asa-filter-search">
+                    <span class="field-label">Campaign 搜索</span>
+                    <input name="campaign" id="asaKeywordCampaignInput" />
+                  </label>
+                  <div class="filter-actions asa-filter-actions">
+                    <button class="btn btn-secondary" type="submit">查询</button>
+                  </div>
+                </form>
+
+                <div class="overview-grid asa-summary-grid">
+                  <article class="overview-card">
+                    <span class="overview-label">关键词数</span>
+                    <strong id="asaSummaryKeywordCount">0</strong>
+                  </article>
+                  <article class="overview-card">
+                    <span class="overview-label">安装量</span>
+                    <strong id="asaSummaryInstalls">0</strong>
+                  </article>
+                  <article class="overview-card">
+                    <span class="overview-label">成本</span>
+                    <strong id="asaSummaryCost">0</strong>
+                  </article>
+                  <article class="overview-card">
+                    <span class="overview-label">eCPI</span>
+                    <strong id="asaSummaryEcpi">0</strong>
+                  </article>
+                  <article class="overview-card">
+                    <span class="overview-label">CPP</span>
+                    <strong id="asaSummaryCpp">0</strong>
+                  </article>
+                  <article class="overview-card">
+                    <span class="overview-label">D7 ROAS</span>
+                    <strong id="asaSummaryRoas">0</strong>
+                  </article>
+                </div>
+
+                <div class="table-wrap">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th>产品视图</th>
+                        <th>应用 Key（app_key）</th>
+                        <th>平台（platform）</th>
+                        <th>关键词（keyword）</th>
+                        <th>Campaign</th>
+                        <th>广告组（adset）</th>
+                        <th>安装量</th>
+                        <th>成本</th>
+                        <th>Purchase</th>
+                        <th>eCPI</th>
+                        <th>CPP</th>
+                        <th>D7 ROAS</th>
+                        <th>阶段</th>
+                        <th>建议动作</th>
+                        <th>推送状态</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="asaKeywordsTableBody"></tbody>
+                  </table>
+                </div>
+
+                <div class="table-pagination">
+                  <button id="asaKeywordPrevPageBtn" class="btn btn-ghost" type="button">上一页</button>
+                  <span id="asaKeywordPaginationInfo" class="hint">第 1/1 页 · 共 0 条</span>
+                  <button id="asaKeywordNextPageBtn" class="btn btn-ghost" type="button">下一页</button>
+                </div>
+              </section>
+
+              <section class="asa-zone asa-zone-delivery">
+                <div class="card-head card-head-compact asa-zone-head">
+                  <div>
+                    <h4>推送与阶段配置</h4>
+                    <p>下半区只负责阶段设定、ASA 简报预览与独立推送，避免和数据检索混在一起。</p>
+                  </div>
+                </div>
+
+                <div class="asa-delivery-grid">
+                  <div class="stack asa-subpanel">
+                    <div class="card-head card-head-compact">
+                      <h5>阶段配置</h5>
+                      <p>按应用与平台手动指定上升期 / 稳定期评价标准。</p>
+                    </div>
+                    <form id="asaStageForm" class="inline-form asa-stage-form">
+                      <label class="filter-field">
+                        <span class="field-label">应用</span>
+                        <select id="asaStageAppSelect" name="appKey"></select>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">平台</span>
+                        <select id="asaStagePlatformSelect" name="platform">
+                          <option value="ios">iOS</option>
+                          <option value="android">Android</option>
+                        </select>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">产品阶段</span>
+                        <select id="asaStageStageSelect" name="stage">
+                          <option value="rising">上升期</option>
+                          <option value="stable">稳定期</option>
+                        </select>
+                      </label>
+                      <div class="filter-actions">
+                        <button id="asaStageSaveBtn" class="btn btn-secondary" type="submit">保存阶段</button>
+                      </div>
+                    </form>
+                  </div>
+
+                  <div class="stack asa-subpanel">
+                    <div class="card-head card-head-compact">
+                      <h5>ASA 推送</h5>
+                      <p>独立预览与发送 ASA 简报，建议操作已并入简报，不混入现有通用日报。</p>
+                    </div>
+                    <form id="asaBriefForm" class="asa-brief-form">
+                      <div class="asa-brief-controls">
+                        <label class="filter-field">
+                          <span class="field-label">报告日期</span>
+                          <input id="asaBriefDateInput" name="reportDate" type="date" />
+                        </label>
+                        <label class="filter-field">
+                          <span class="field-label">应用</span>
+                          <select id="asaBriefAppSelect" name="appKey"></select>
+                        </label>
+                        <label class="filter-field">
+                          <span class="field-label">平台</span>
+                          <select id="asaBriefPlatformSelect" name="platform">
+                            <option value="">全部平台</option>
+                            <option value="ios">iOS</option>
+                            <option value="android">Android</option>
+                          </select>
+                        </label>
+                      </div>
+                      <div class="filter-actions asa-brief-actions">
+                        <button id="previewAsaBriefBtn" class="btn btn-secondary" type="submit">预览 ASA 简报</button>
+                        <button id="sendAsaBriefBtn" class="btn btn-primary" type="button">发送 ASA 简报</button>
+                      </div>
+                    </form>
+                    <div id="asaBriefStatus" class="hint">默认按独立 ASA route 推送；建议操作已包含在简报内，未命中 route 时回退应用级或全局 Feishu 配置。</div>
+                  </div>
+                </div>
+              </section>
             </div>
           </section>
 
@@ -650,6 +869,7 @@
                   <tr>
                     <th>入库时间（ingest_time，美国时间）</th>
                     <th>日期（date）</th>
+                    <th>产品视图</th>
                     <th>应用 Key（app_key）</th>
                     <th>平台（platform）</th>
                     <th>媒体源（media_source）</th>
@@ -762,6 +982,25 @@
       </div>
     </aside>
 
+    <aside id="asaKeywordDrawer" class="drawer" aria-hidden="true">
+      <div class="drawer-backdrop" id="asaKeywordDrawerBackdrop"></div>
+      <div class="drawer-panel">
+        <div class="drawer-head">
+          <div>
+            <h3>ASA 关键词详情</h3>
+            <div id="asaKeywordDrawerMeta" class="hint"></div>
+          </div>
+          <button id="closeAsaKeywordDrawerBtn" class="btn btn-ghost" type="button">关闭</button>
+        </div>
+        <div class="chart-surface">
+          <canvas id="asaKeywordTrendCanvas" width="640" height="260" aria-label="asa keyword trend chart"></canvas>
+          <div id="asaKeywordTooltip" class="chart-tooltip hidden"></div>
+        </div>
+        <div id="asaKeywordTrendLegend" class="hint"></div>
+        <pre id="asaKeywordTrendRaw" class="pull-result-pre"></pre>
+      </div>
+    </aside>
+
     <aside id="alertDrawer" class="drawer" aria-hidden="true">
       <div class="drawer-backdrop" id="alertDrawerBackdrop"></div>
       <div class="drawer-panel" role="dialog" aria-label="告警详情">
@@ -813,9 +1052,15 @@
         </div>
         <div id="budgetDetailSummary" class="hint"></div>
         <div class="detail-grid">
+          <p><strong>产品视图：</strong><span id="budgetDetailDisplayName">-</span></p>
+          <p><strong>媒体源：</strong><span id="budgetDetailMediaSource">-</span></p>
+          <p><strong>主指标：</strong><span id="budgetDetailPrimaryMetric">-</span></p>
+          <p><strong>运行模式：</strong><span id="budgetDetailMetricMode">-</span></p>
           <p><strong>量级：</strong><span id="budgetDetailTier">-</span></p>
           <p><strong>当前 eCPI：</strong><span id="budgetDetailEcpi">-</span></p>
           <p><strong>目标 eCPI：</strong><span id="budgetDetailTargetEcpi">-</span></p>
+          <p><strong>当前 ROAS：</strong><span id="budgetDetailCurrentRoas">-</span></p>
+          <p><strong>目标 ROAS：</strong><span id="budgetDetailTargetRoas">-</span></p>
           <p><strong>当前成本：</strong><span id="budgetDetailCurrentCost">-</span></p>
           <p><strong>建议预算：</strong><span id="budgetDetailSuggestedBudget">-</span></p>
           <p><strong>调整比例：</strong><span id="budgetDetailChangeRatio">-</span></p>
@@ -891,6 +1136,36 @@
             <summary>原始飞书卡片 JSON</summary>
             <pre id="dailyBriefRaw" class="pull-result-pre"></pre>
           </details>
+        </section>
+      </div>
+    </div>
+
+    <div id="asaBriefModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="ASA 简报预览">
+      <div class="modal-backdrop" id="asaBriefModalBackdrop"></div>
+      <div class="modal-panel">
+        <div class="modal-head">
+          <h3 id="asaBriefModalTitle">ASA 简报预览</h3>
+          <button id="asaBriefModalCloseBtn" class="btn btn-ghost" type="button">关闭</button>
+        </div>
+        <div id="asaBriefMeta" class="hint"></div>
+        <div class="daily-brief-summary-grid" id="asaBriefSummaryGrid"></div>
+        <section class="section-panel section-panel-inner">
+          <div class="card-head card-head-compact">
+            <h4>本期判断</h4>
+          </div>
+          <p id="asaBriefJudgment" class="daily-brief-judgment">-</p>
+        </section>
+        <section class="section-panel section-panel-inner">
+          <div class="card-head card-head-compact">
+            <h4>建议操作</h4>
+          </div>
+          <div id="asaBriefActions" class="daily-brief-action-list"></div>
+        </section>
+        <section class="section-panel section-panel-inner">
+          <div class="card-head card-head-compact">
+            <h4>原始卡片 Payload</h4>
+          </div>
+          <pre id="asaBriefRaw" class="pull-result-pre"></pre>
         </section>
       </div>
     </div>

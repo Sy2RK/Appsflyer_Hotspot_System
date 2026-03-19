@@ -134,6 +134,7 @@ CREATE TABLE IF NOT EXISTS budget_recommendations (
   id BIGSERIAL PRIMARY KEY,
   app_key TEXT NOT NULL REFERENCES apps(app_key) ON DELETE CASCADE,
   platform TEXT NOT NULL DEFAULT 'unknown',
+  media_source TEXT NOT NULL DEFAULT 'unknown',
   keyword TEXT NOT NULL,
   match_type TEXT NOT NULL DEFAULT 'unknown',
   date DATE NOT NULL,
@@ -143,6 +144,10 @@ CREATE TABLE IF NOT EXISTS budget_recommendations (
   current_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
   current_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
   target_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
+  primary_metric TEXT NOT NULL DEFAULT 'ecpi' CHECK (primary_metric IN ('ecpi', 'roas')),
+  metric_mode TEXT NOT NULL DEFAULT 'active' CHECK (metric_mode IN ('active', 'roas_pending_revenue')),
+  current_roas DOUBLE PRECISION,
+  target_roas DOUBLE PRECISION,
   volume_tier TEXT NOT NULL DEFAULT 'low',
   expected_installs_delta DOUBLE PRECISION NOT NULL DEFAULT 0,
   confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -151,21 +156,27 @@ CREATE TABLE IF NOT EXISTS budget_recommendations (
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'applied', 'rejected', 'expired')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (app_key, platform, keyword, match_type, date)
+  UNIQUE (app_key, platform, media_source, keyword, match_type, date)
 );
 
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS media_source TEXT NOT NULL DEFAULT 'unknown';
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS current_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS target_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS primary_metric TEXT NOT NULL DEFAULT 'ecpi';
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS metric_mode TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS current_roas DOUBLE PRECISION;
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS target_roas DOUBLE PRECISION;
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS volume_tier TEXT NOT NULL DEFAULT 'low';
 ALTER TABLE budget_recommendations
   DROP CONSTRAINT IF EXISTS budget_recommendations_app_key_keyword_match_type_date_key;
+DROP INDEX IF EXISTS uq_budget_recommendations_platform_key;
 
 CREATE INDEX IF NOT EXISTS idx_budget_recommendations_lookup
   ON budget_recommendations (app_key, status, date DESC, created_at DESC);
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_budget_recommendations_platform_key
-  ON budget_recommendations (app_key, platform, keyword, match_type, date);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_budget_recommendations_platform_media_key
+  ON budget_recommendations (app_key, platform, media_source, keyword, match_type, date);
 
 CREATE TABLE IF NOT EXISTS llm_audit_logs (
   id BIGSERIAL PRIMARY KEY,
@@ -187,6 +198,7 @@ CREATE TABLE IF NOT EXISTS daily_brief_dispatches (
   report_date DATE NOT NULL,
   kind TEXT NOT NULL DEFAULT 'ops_daily',
   channel TEXT NOT NULL DEFAULT 'feishu',
+  route_key TEXT NOT NULL DEFAULT 'all',
   title TEXT NOT NULL DEFAULT '',
   content TEXT NOT NULL DEFAULT '',
   payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -196,11 +208,36 @@ CREATE TABLE IF NOT EXISTS daily_brief_dispatches (
   sent_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (report_date, kind, channel)
+  UNIQUE (report_date, kind, channel, route_key)
 );
+
+ALTER TABLE daily_brief_dispatches ADD COLUMN IF NOT EXISTS route_key TEXT NOT NULL DEFAULT 'all';
+ALTER TABLE daily_brief_dispatches
+  DROP CONSTRAINT IF EXISTS daily_brief_dispatches_report_date_kind_channel_key;
 
 CREATE INDEX IF NOT EXISTS idx_daily_brief_dispatches_lookup
   ON daily_brief_dispatches (report_date DESC, status, channel);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_brief_dispatches_route
+  ON daily_brief_dispatches (report_date, kind, channel, route_key);
+
+CREATE TABLE IF NOT EXISTS daily_brief_routes (
+  id BIGSERIAL PRIMARY KEY,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  route_name TEXT NOT NULL,
+  media_sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+  app_key TEXT,
+  platform TEXT,
+  notify_feishu_app_id TEXT,
+  notify_feishu_app_secret TEXT,
+  notify_feishu_chat_id TEXT,
+  priority INTEGER NOT NULL DEFAULT 100,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_brief_routes_lookup
+  ON daily_brief_routes (enabled, priority ASC, route_name ASC);
 
 CREATE TABLE IF NOT EXISTS operation_logs (
   id BIGSERIAL PRIMARY KEY,
@@ -245,6 +282,114 @@ CREATE TABLE IF NOT EXISTS pull_content_guards (
 
 CREATE INDEX IF NOT EXISTS idx_pull_content_guards_next_allowed
   ON pull_content_guards (next_allowed_at);
+
+CREATE TABLE IF NOT EXISTS product_stage_configs (
+  id BIGSERIAL PRIMARY KEY,
+  app_key TEXT NOT NULL REFERENCES apps(app_key) ON DELETE CASCADE,
+  platform TEXT NOT NULL DEFAULT 'unknown',
+  stage TEXT NOT NULL CHECK (stage IN ('rising', 'stable')),
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (app_key, platform)
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_stage_configs_lookup
+  ON product_stage_configs (enabled, app_key, platform);
+
+CREATE TABLE IF NOT EXISTS asa_keyword_states (
+  id BIGSERIAL PRIMARY KEY,
+  app_key TEXT NOT NULL REFERENCES apps(app_key) ON DELETE CASCADE,
+  platform TEXT NOT NULL DEFAULT 'unknown',
+  keyword TEXT NOT NULL,
+  campaign TEXT NOT NULL DEFAULT 'unknown',
+  adset TEXT NOT NULL DEFAULT 'unknown',
+  current_stage TEXT NOT NULL CHECK (current_stage IN ('rising', 'stable')),
+  stage_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+  first_seen_date DATE NOT NULL,
+  last_seen_date DATE NOT NULL,
+  current_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
+  current_cpp DOUBLE PRECISION NOT NULL DEFAULT 0,
+  current_d7_roas DOUBLE PRECISION NOT NULL DEFAULT 0,
+  target_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
+  target_cpp DOUBLE PRECISION NOT NULL DEFAULT 0,
+  target_d7_roas DOUBLE PRECISION NOT NULL DEFAULT 0,
+  installs_7d DOUBLE PRECISION NOT NULL DEFAULT 0,
+  total_cost_7d DOUBLE PRECISION NOT NULL DEFAULT 0,
+  purchase_count_7d DOUBLE PRECISION NOT NULL DEFAULT 0,
+  revenue_d7_7d DOUBLE PRECISION NOT NULL DEFAULT 0,
+  trend_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE asa_keyword_states
+  ADD COLUMN IF NOT EXISTS adset TEXT NOT NULL DEFAULT 'unknown';
+
+ALTER TABLE asa_keyword_states
+  DROP CONSTRAINT IF EXISTS asa_keyword_states_app_key_platform_keyword_campaign_key;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_asa_keyword_states_scope
+  ON asa_keyword_states (app_key, platform, keyword, campaign, adset);
+
+CREATE INDEX IF NOT EXISTS idx_asa_keyword_states_lookup
+  ON asa_keyword_states (app_key, platform, current_stage, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS asa_keyword_recommendations (
+  id BIGSERIAL PRIMARY KEY,
+  app_key TEXT NOT NULL REFERENCES apps(app_key) ON DELETE CASCADE,
+  platform TEXT NOT NULL DEFAULT 'unknown',
+  keyword TEXT NOT NULL,
+  campaign TEXT NOT NULL DEFAULT 'unknown',
+  adset TEXT NOT NULL DEFAULT 'unknown',
+  date DATE NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('increase', 'decrease', 'hold', 'pause')),
+  change_ratio DOUBLE PRECISION NOT NULL DEFAULT 0,
+  primary_metric TEXT NOT NULL CHECK (primary_metric IN ('ecpi', 'd7_roas_cpp')),
+  current_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
+  current_cpp DOUBLE PRECISION NOT NULL DEFAULT 0,
+  current_d7_roas DOUBLE PRECISION NOT NULL DEFAULT 0,
+  target_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
+  target_cpp DOUBLE PRECISION NOT NULL DEFAULT 0,
+  target_d7_roas DOUBLE PRECISION NOT NULL DEFAULT 0,
+  reason_code TEXT NOT NULL DEFAULT 'unknown',
+  llm_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'applied', 'rejected', 'expired')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE asa_keyword_recommendations
+  ADD COLUMN IF NOT EXISTS adset TEXT NOT NULL DEFAULT 'unknown';
+
+ALTER TABLE asa_keyword_recommendations
+  DROP CONSTRAINT IF EXISTS asa_keyword_recommendations_app_key_platform_keyword_campaign_date_key;
+
+ALTER TABLE asa_keyword_recommendations
+  DROP CONSTRAINT IF EXISTS asa_keyword_recommendations_app_key_platform_keyword_campai_key;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_asa_keyword_recommendations_scope
+  ON asa_keyword_recommendations (app_key, platform, keyword, campaign, adset, date);
+
+CREATE INDEX IF NOT EXISTS idx_asa_keyword_recommendations_lookup
+  ON asa_keyword_recommendations (app_key, platform, status, date DESC, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS asa_keyword_routes (
+  id BIGSERIAL PRIMARY KEY,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  route_name TEXT NOT NULL,
+  app_key TEXT,
+  platform TEXT,
+  notify_feishu_app_id TEXT,
+  notify_feishu_app_secret TEXT,
+  notify_feishu_chat_id TEXT,
+  priority INTEGER NOT NULL DEFAULT 100,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_asa_keyword_routes_lookup
+  ON asa_keyword_routes (enabled, priority ASC, route_name ASC);
 
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$
@@ -296,6 +441,12 @@ BEFORE UPDATE ON daily_brief_dispatches
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 
+DROP TRIGGER IF EXISTS trg_daily_brief_routes_updated_at ON daily_brief_routes;
+CREATE TRIGGER trg_daily_brief_routes_updated_at
+BEFORE UPDATE ON daily_brief_routes
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
 DROP TRIGGER IF EXISTS trg_pull_cycle_locks_updated_at ON pull_cycle_locks;
 CREATE TRIGGER trg_pull_cycle_locks_updated_at
 BEFORE UPDATE ON pull_cycle_locks
@@ -305,6 +456,30 @@ EXECUTE FUNCTION set_updated_at();
 DROP TRIGGER IF EXISTS trg_pull_content_guards_updated_at ON pull_content_guards;
 CREATE TRIGGER trg_pull_content_guards_updated_at
 BEFORE UPDATE ON pull_content_guards
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_product_stage_configs_updated_at ON product_stage_configs;
+CREATE TRIGGER trg_product_stage_configs_updated_at
+BEFORE UPDATE ON product_stage_configs
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_asa_keyword_states_updated_at ON asa_keyword_states;
+CREATE TRIGGER trg_asa_keyword_states_updated_at
+BEFORE UPDATE ON asa_keyword_states
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_asa_keyword_recommendations_updated_at ON asa_keyword_recommendations;
+CREATE TRIGGER trg_asa_keyword_recommendations_updated_at
+BEFORE UPDATE ON asa_keyword_recommendations
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_asa_keyword_routes_updated_at ON asa_keyword_routes;
+CREATE TRIGGER trg_asa_keyword_routes_updated_at
+BEFORE UPDATE ON asa_keyword_routes
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 

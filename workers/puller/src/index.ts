@@ -2,6 +2,7 @@ import { env } from '@shared/config/env.js';
 import { runPullCycle } from '@shared/utils/puller.js';
 import { logger } from '@api/common/logger/logger.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import { hasReachedDailyHour, msUntilNextDailyHour, nextDailyHourLocalString } from '@shared/utils/schedule.js';
 
 let running = false;
 let firstCycle = true;
@@ -71,12 +72,33 @@ async function tick(): Promise<void> {
 async function bootstrap(): Promise<void> {
   if (env.pullerRunOnBoot) {
     await tick();
+  } else if (hasReachedDailyHour(env.pullerReportHour, env.timezone)) {
+    await tick();
   } else {
-    logger.info('puller_skip_boot_cycle', { run_on_boot: false });
+    logger.info('puller_skip_boot_cycle', {
+      run_on_boot: false,
+      report_hour: env.pullerReportHour
+    });
   }
-  setInterval(() => {
-    void tick();
-  }, env.pullerIntervalMs);
+
+  const scheduleNext = (): void => {
+    const delay = msUntilNextDailyHour(env.pullerReportHour, env.timezone);
+    logger.info('puller_next_scheduled', {
+      timezone: env.timezone,
+      report_hour: env.pullerReportHour,
+      delay_ms: delay,
+      next_run_local: nextDailyHourLocalString(env.pullerReportHour, env.timezone)
+    });
+    setTimeout(async () => {
+      try {
+        await tick();
+      } finally {
+        scheduleNext();
+      }
+    }, delay);
+  };
+
+  scheduleNext();
 }
 
 bootstrap().catch((error) => {

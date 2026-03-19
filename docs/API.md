@@ -273,6 +273,69 @@ Request:
 }
 ```
 
+### `GET /api/asa-keywords?appKey=&platform=&stage=&from=&to=&keyword=&campaign=&page=&pageSize=`
+查询 ASA 真实关键词看板（仅 `Apple Search Ads`）。
+
+口径说明：
+- `keyword / campaign / adset / 收入事件`：来自 AppsFlyer Raw Data
+- `cost / installs / average_ecpi`：来自 AppsFlyer Master API
+- ASA 主粒度：`keyword + campaign + adset`
+
+返回：
+- `data`: ASA 关键词状态列表
+- `summary`: `keyword_count / installs / total_cost / ecpi / cpp / d7_roas`
+- `meta`: 分页信息
+
+返回字段补充：
+- `adset`
+- `current_ecpi / current_cpp / current_d7_roas`
+- `target_ecpi / target_cpp / target_d7_roas`
+
+### `GET /api/asa-keywords/:keyword/trend?appKey=&platform=&campaign=&adset=`
+查询单个 ASA keyword 的日级趋势（来源 `asa_keyword_daily_metrics_v2`）。
+
+说明：
+- `campaign` 与 `adset` 必填，用于避免同名 keyword 跨广告组混淆
+- 返回中包含：
+  - `adset`
+  - `average_ecpi`
+
+### `GET /api/asa-keywords/stages`
+查询产品阶段配置（`app + platform -> rising|stable`）。
+
+### `POST /api/asa-keywords/stages`
+保存产品阶段配置。
+
+Request:
+```json
+{
+  "appKey": "ai-seek",
+  "platform": "ios",
+  "stage": "rising",
+  "enabled": true
+}
+```
+
+### `POST /api/asa-keywords/recompute`
+触发 ASA Raw Data + Master API 拉取、聚合、状态重算与建议生成。
+
+Request:
+```json
+{
+  "backfillDays": 30
+}
+```
+
+说明：
+- Raw Data 只负责 keyword / 收入 / 安装事件
+- Master API 负责 keyword 级 `cost / installs / average_ecpi`
+
+### `GET /api/asa-keywords/brief/preview?reportDate=&appKey=&platform=`
+预览 ASA 专项简报。建议操作已并入简报正文。
+
+### `POST /api/asa-keywords/brief/send`
+发送 ASA 专项简报到 Feishu。建议操作会随简报一并发送。
+
 ### `GET /api/budget/recommendations?appKey=&platform=&status=&from=&to=&page=`
 查询预算建议（分页）。
 

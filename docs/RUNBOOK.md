@@ -43,6 +43,7 @@ Web UI 新增能力:
 - 告警详情抽屉（查看 `top_contributors` 与原始 JSON）
 - 关键词生命周期页面（筛选、分页、趋势抽屉、手动重算）
 - 预算建议页面（筛选、分页、详情弹窗、状态流转、手动生成、eCPI 分级规则说明）
+- ASA 关键词管理页面（真实 ASA keyword、阶段配置、专项简报 / 建议发送）
 - 每日报告页面（结构化预览、飞书 `interactive` 卡片发送、阈值说明）
 - 操作日志页面（查看手动操作与定时任务执行记录）
 - UI 文案默认中文（专有名词保留英文），规则见 `AGENTS.md`
@@ -316,6 +317,88 @@ WebUI 路径：
 - `worker.keyword_engine`
 - `worker.budget_advisor`
 - `worker.daily_brief`
+
+---
+
+## 5.8 验证 ASA 关键词专项链路
+
+保存产品阶段：
+
+```bash
+curl -X POST "http://localhost:3000/api/asa-keywords/stages" \
+  -H "Content-Type: application/json" \
+  -d '{"appKey":"ai-seek","platform":"ios","stage":"rising","enabled":true}'
+```
+
+手动重算 ASA 关键词链路：
+
+```bash
+curl -X POST "http://localhost:3000/api/asa-keywords/recompute" \
+  -H "Content-Type: application/json" \
+  -d '{"backfillDays":1}'
+```
+
+验证 Master API 关键词成本直连：
+
+```bash
+curl -G "https://hq1.appsflyer.com/api/master-agg-data/v4/app/id6752638454" \
+  -H "Authorization: Bearer ${APPSFLYER_MASTER_API_TOKEN:-$APPSFLYER_PULL_TOKEN}" \
+  --data-urlencode "from=2026-03-18" \
+  --data-urlencode "to=2026-03-18" \
+  --data-urlencode "groupings=pid,c,af_adset,af_keywords" \
+  --data-urlencode "kpis=cost,installs,average_ecpi" \
+  --data-urlencode "pid=Apple Search Ads" \
+  --data-urlencode "timezone=preferred" \
+  --data-urlencode "currency=preferred" \
+  --data-urlencode "format=json"
+```
+
+查询 ASA 关键词列表：
+
+```bash
+curl -G "http://localhost:3000/api/asa-keywords" \
+  --data-urlencode "appKey=ai-screen-time-coach" \
+  --data-urlencode "platform=ios" \
+  --data-urlencode "page=1"
+```
+
+查询 ASA 关键词趋势：
+
+```bash
+curl -G "http://localhost:3000/api/asa-keywords/controle%20de%20tempo%20de%20tela/trend" \
+  --data-urlencode "appKey=ai-screen-time-coach" \
+  --data-urlencode "platform=ios" \
+  --data-urlencode "campaign=Zensi_pt(br)_broad_260213_Wancy_br" \
+  --data-urlencode "adset=broad"
+```
+
+预览 ASA 简报：
+
+```bash
+curl -G "http://localhost:3000/api/asa-keywords/brief/preview" \
+  --data-urlencode "reportDate=2026-03-12" \
+  --data-urlencode "appKey=ai-seek" \
+  --data-urlencode "platform=ios"
+```
+
+发送 ASA 简报：
+
+```bash
+curl -X POST "http://localhost:3000/api/asa-keywords/brief/send" \
+  -H "Content-Type: application/json" \
+  -d '{"reportDate":"2026-03-12","appKey":"ai-seek","platform":"ios","force":true}'
+```
+
+WebUI 路径：
+- 左侧导航点击 `ASA 关键词管理`
+- 可配置 `app + platform` 阶段
+- 可筛选真实 ASA keyword
+- 列表中的 `广告组（adset）` 与成本口径直接来自 AppsFlyer Master API
+- 可手动预览 / 发送 ASA 简报，建议操作已并入简报
+
+排障说明：
+- 如果 Raw Data 的 `cost_value` 仍为 0，但 Master API 关键词成本可返回，系统属于正常状态
+- 当前 ASA 专项以 Master API 作为唯一成本主来源，不再依赖 Raw Data `cost_value`
 
 ---
 

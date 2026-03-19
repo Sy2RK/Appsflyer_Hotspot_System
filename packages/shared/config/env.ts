@@ -42,11 +42,31 @@ export const env = {
   feishuAppSecret: process.env.FEISHU_APP_SECRET ?? '',
   feishuChatId: process.env.FEISHU_CHAT_ID ?? '',
   pullToken: process.env.APPSFLYER_PULL_TOKEN ?? '',
+  masterApiToken:
+    process.env.APPSFLYER_MASTER_API_TOKEN ??
+    process.env.APPSFLYER_PULL_TOKEN ??
+    '',
+  rawDataToken:
+    process.env.BI_APPSFLYER_RAWDATA_TOKEN ??
+    process.env.bi_appsflyer_rawdata_token ??
+    process.env.APPSFLYER_RAWDATA_TOKEN ??
+    process.env.APPSFLYER_PULL_TOKEN ??
+    '',
+  rawDataEndpointTemplate:
+    process.env.APPSFLYER_RAWDATA_ENDPOINT_TEMPLATE ??
+    'https://hq1.appsflyer.com/api/raw-data/export/app/{app_id}/in_app_events_report/v5',
+  rawInstallsEndpointTemplate:
+    process.env.APPSFLYER_RAW_INSTALLS_ENDPOINT_TEMPLATE ??
+    'https://hq1.appsflyer.com/api/raw-data/export/app/{app_id}/installs_report/v5',
+  rawEventsEndpointTemplate:
+    process.env.APPSFLYER_RAW_EVENTS_ENDPOINT_TEMPLATE ??
+    'https://hq1.appsflyer.com/api/raw-data/export/app/{app_id}/in_app_events_report/v5',
 
   aggregatorLookbackHours: optionalNumber('AGGREGATOR_LOOKBACK_HOURS', 6),
   aggregatorIntervalMs: optionalNumber('AGGREGATOR_INTERVAL_MS', 5 * 60 * 1000),
   detectorIntervalMs: optionalNumber('DETECTOR_INTERVAL_MS', 5 * 60 * 1000),
   pullerIntervalMs: optionalNumber('PULLER_INTERVAL_MS', 24 * 60 * 60 * 1000),
+  pullerReportHour: optionalNumber('PULLER_REPORT_HOUR', 9),
   pullerBackfillDays: optionalNumber('PULLER_BACKFILL_DAYS', 3),
   pullerRunOnBoot: (process.env.PULLER_RUN_ON_BOOT ?? 'false').toLowerCase() === 'true',
   pullerRequestIntervalMs: optionalNumber('PULLER_REQUEST_INTERVAL_MS', 1000),
@@ -65,6 +85,17 @@ export const env = {
   keywordEngineRollingBackfillDays: optionalNumber('KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS', 3),
   budgetAdvisorIntervalMs: optionalNumber('BUDGET_ADVISOR_INTERVAL_MS', 24 * 60 * 60 * 1000),
   budgetAdvisorLookbackDays: optionalNumber('BUDGET_ADVISOR_LOOKBACK_DAYS', 30),
+  asaKeywordIntervalMs: optionalNumber('ASA_KEYWORD_INTERVAL_MS', 24 * 60 * 60 * 1000),
+  asaKeywordBackfillDays: optionalNumber('ASA_KEYWORD_BACKFILL_DAYS', 14),
+  asaKeywordRunOnBoot: (process.env.ASA_KEYWORD_RUN_ON_BOOT ?? 'false').toLowerCase() === 'true',
+  asaKeywordRequestIntervalMs: optionalNumber('ASA_KEYWORD_REQUEST_INTERVAL_MS', 1200),
+  asaMasterApiRequestIntervalMs: optionalNumber(
+    'ASA_MASTER_API_REQUEST_INTERVAL_MS',
+    optionalNumber('ASA_KEYWORD_REQUEST_INTERVAL_MS', 1200)
+  ),
+  asaDailyBriefEnabled: (process.env.ASA_DAILY_BRIEF_ENABLED ?? 'true').toLowerCase() !== 'false',
+  asaDailyBriefIntervalMs: optionalNumber('ASA_DAILY_BRIEF_INTERVAL_MS', 60 * 60 * 1000),
+  asaDailyBriefReportHour: optionalNumber('ASA_DAILY_BRIEF_REPORT_HOUR', 10),
   dailyBriefEnabled: (process.env.DAILY_BRIEF_ENABLED ?? 'true').toLowerCase() !== 'false',
   dailyBriefIntervalMs: optionalNumber('DAILY_BRIEF_INTERVAL_MS', 60 * 60 * 1000),
   dailyBriefReportHour: optionalNumber('DAILY_BRIEF_REPORT_HOUR', 10),

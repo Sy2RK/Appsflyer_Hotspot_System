@@ -5,6 +5,8 @@ const state = {
   pullRecords: [],
   keywordRows: [],
   budgetRows: [],
+  asaKeywordRows: [],
+  asaStageConfigs: [],
   operationLogs: [],
   editingAppKey: '',
   ruleTotalCount: 0,
@@ -20,8 +22,14 @@ const state = {
   budgetPage: 1,
   budgetTotalPages: 1,
   budgetTotal: 0,
+  asaKeywordPage: 1,
+  asaKeywordTotalPages: 1,
+  asaKeywordTotal: 0,
   activeBudgetDetail: null,
-  appFeishuEnabled: false
+  activeAsaKeywordDetail: null,
+  appFeishuEnabled: false,
+  dailyBriefMediaSources: [],
+  dailyBriefSelectedMediaSources: []
 };
 
 const PUSH_METRIC_OPTIONS = [
@@ -71,6 +79,11 @@ const el = {
   previewDailyBriefBtn: document.getElementById('previewDailyBriefBtn'),
   sendDailyBriefBtn: document.getElementById('sendDailyBriefBtn'),
   dailyBriefStatus: document.getElementById('dailyBriefStatus'),
+  dailyBriefMediaSources: document.getElementById('dailyBriefMediaSources'),
+  dailyBriefMediaSourcesEmpty: document.getElementById('dailyBriefMediaSourcesEmpty'),
+  dailyBriefMediaSourcesSummary: document.getElementById('dailyBriefMediaSourcesSummary'),
+  dailyBriefSelectAllMediaBtn: document.getElementById('dailyBriefSelectAllMediaBtn'),
+  dailyBriefClearMediaBtn: document.getElementById('dailyBriefClearMediaBtn'),
 
   appForm: document.getElementById('appForm'),
   appSubmitBtn: document.getElementById('appSubmitBtn'),
@@ -145,6 +158,37 @@ const el = {
   budgetPaginationInfo: document.getElementById('budgetPaginationInfo'),
   budgetRecomputeBtn: document.getElementById('budgetRecomputeBtn'),
   budgetRuleHelpBtn: document.getElementById('budgetRuleHelpBtn'),
+
+  asaStageForm: document.getElementById('asaStageForm'),
+  asaStageAppSelect: document.getElementById('asaStageAppSelect'),
+  asaStagePlatformSelect: document.getElementById('asaStagePlatformSelect'),
+  asaStageStageSelect: document.getElementById('asaStageStageSelect'),
+  asaKeywordRecomputeBtn: document.getElementById('asaKeywordRecomputeBtn'),
+  asaBriefForm: document.getElementById('asaBriefForm'),
+  asaBriefDateInput: document.getElementById('asaBriefDateInput'),
+  asaBriefAppSelect: document.getElementById('asaBriefAppSelect'),
+  asaBriefPlatformSelect: document.getElementById('asaBriefPlatformSelect'),
+  previewAsaBriefBtn: document.getElementById('previewAsaBriefBtn'),
+  sendAsaBriefBtn: document.getElementById('sendAsaBriefBtn'),
+  asaBriefStatus: document.getElementById('asaBriefStatus'),
+  asaKeywordFilter: document.getElementById('asaKeywordFilter'),
+  asaKeywordAppSelect: document.getElementById('asaKeywordAppSelect'),
+  asaKeywordPlatformSelect: document.getElementById('asaKeywordPlatformSelect'),
+  asaKeywordStageSelect: document.getElementById('asaKeywordStageSelect'),
+  asaKeywordFromInput: document.getElementById('asaKeywordFromInput'),
+  asaKeywordToInput: document.getElementById('asaKeywordToInput'),
+  asaKeywordSearchInput: document.getElementById('asaKeywordSearchInput'),
+  asaKeywordCampaignInput: document.getElementById('asaKeywordCampaignInput'),
+  asaSummaryKeywordCount: document.getElementById('asaSummaryKeywordCount'),
+  asaSummaryInstalls: document.getElementById('asaSummaryInstalls'),
+  asaSummaryCost: document.getElementById('asaSummaryCost'),
+  asaSummaryEcpi: document.getElementById('asaSummaryEcpi'),
+  asaSummaryCpp: document.getElementById('asaSummaryCpp'),
+  asaSummaryRoas: document.getElementById('asaSummaryRoas'),
+  asaKeywordsTableBody: document.getElementById('asaKeywordsTableBody'),
+  asaKeywordPrevPageBtn: document.getElementById('asaKeywordPrevPageBtn'),
+  asaKeywordNextPageBtn: document.getElementById('asaKeywordNextPageBtn'),
+  asaKeywordPaginationInfo: document.getElementById('asaKeywordPaginationInfo'),
   operationLogsFilter: document.getElementById('operationLogsFilter'),
   operationLogsSourceSelect: document.getElementById('operationLogsSourceSelect'),
   operationLogsStatusSelect: document.getElementById('operationLogsStatusSelect'),
@@ -159,15 +203,29 @@ const el = {
   keywordTooltip: document.getElementById('keywordTooltip'),
   keywordTrendLegend: document.getElementById('keywordTrendLegend'),
   keywordTrendRaw: document.getElementById('keywordTrendRaw'),
+  asaKeywordDrawer: document.getElementById('asaKeywordDrawer'),
+  asaKeywordDrawerBackdrop: document.getElementById('asaKeywordDrawerBackdrop'),
+  closeAsaKeywordDrawerBtn: document.getElementById('closeAsaKeywordDrawerBtn'),
+  asaKeywordDrawerMeta: document.getElementById('asaKeywordDrawerMeta'),
+  asaKeywordTrendCanvas: document.getElementById('asaKeywordTrendCanvas'),
+  asaKeywordTooltip: document.getElementById('asaKeywordTooltip'),
+  asaKeywordTrendLegend: document.getElementById('asaKeywordTrendLegend'),
+  asaKeywordTrendRaw: document.getElementById('asaKeywordTrendRaw'),
 
   budgetDetailModal: document.getElementById('budgetDetailModal'),
   budgetDetailModalBackdrop: document.getElementById('budgetDetailModalBackdrop'),
   closeBudgetDetailModalBtn: document.getElementById('closeBudgetDetailModalBtn'),
   budgetDetailTitle: document.getElementById('budgetDetailTitle'),
   budgetDetailSummary: document.getElementById('budgetDetailSummary'),
+  budgetDetailDisplayName: document.getElementById('budgetDetailDisplayName'),
+  budgetDetailMediaSource: document.getElementById('budgetDetailMediaSource'),
+  budgetDetailPrimaryMetric: document.getElementById('budgetDetailPrimaryMetric'),
+  budgetDetailMetricMode: document.getElementById('budgetDetailMetricMode'),
   budgetDetailTier: document.getElementById('budgetDetailTier'),
   budgetDetailEcpi: document.getElementById('budgetDetailEcpi'),
   budgetDetailTargetEcpi: document.getElementById('budgetDetailTargetEcpi'),
+  budgetDetailCurrentRoas: document.getElementById('budgetDetailCurrentRoas'),
+  budgetDetailTargetRoas: document.getElementById('budgetDetailTargetRoas'),
   budgetDetailCurrentCost: document.getElementById('budgetDetailCurrentCost'),
   budgetDetailSuggestedBudget: document.getElementById('budgetDetailSuggestedBudget'),
   budgetDetailChangeRatio: document.getElementById('budgetDetailChangeRatio'),
@@ -187,6 +245,15 @@ const el = {
   dailyBriefActions: document.getElementById('dailyBriefActions'),
   dailyBriefBody: document.getElementById('dailyBriefBody'),
   dailyBriefRaw: document.getElementById('dailyBriefRaw'),
+  asaBriefModal: document.getElementById('asaBriefModal'),
+  asaBriefModalBackdrop: document.getElementById('asaBriefModalBackdrop'),
+  asaBriefModalCloseBtn: document.getElementById('asaBriefModalCloseBtn'),
+  asaBriefModalTitle: document.getElementById('asaBriefModalTitle'),
+  asaBriefMeta: document.getElementById('asaBriefMeta'),
+  asaBriefSummaryGrid: document.getElementById('asaBriefSummaryGrid'),
+  asaBriefJudgment: document.getElementById('asaBriefJudgment'),
+  asaBriefActions: document.getElementById('asaBriefActions'),
+  asaBriefRaw: document.getElementById('asaBriefRaw'),
 
   alertDrawer: document.getElementById('alertDrawer'),
   alertDrawerBackdrop: document.getElementById('alertDrawerBackdrop'),
@@ -324,6 +391,38 @@ function platformLabel(platform) {
   return platform || '-';
 }
 
+function primaryMetricLabel(metric) {
+  if (metric === 'roas') return 'ROAS（roas）';
+  return 'eCPI（ecpi）';
+}
+
+function metricModeLabel(mode) {
+  if (mode === 'roas_pending_revenue') return 'ROAS 待收入数据（roas_pending_revenue）';
+  return '生效中（active）';
+}
+
+function asaStageLabel(stage) {
+  if (stage === 'stable') return '稳定期';
+  if (stage === 'rising') return '上升期';
+  return stage || '-';
+}
+
+function asaRecommendationStatusLabel(status) {
+  const mapping = {
+    pending: '待纳入简报',
+    sent: '已纳入简报',
+    applied: '已执行',
+    rejected: '已拒绝',
+    expired: '已过期'
+  };
+  return mapping[status] || status || '-';
+}
+
+function asaPrimaryMetricLabel(metric) {
+  if (metric === 'd7_roas_cpp') return 'D7 ROAS + CPP';
+  return 'eCPI';
+}
+
 function matchTypeLabel(matchType) {
   if (matchType === 'unknown') return '未知（unknown）';
   return matchType || '-';
@@ -335,6 +434,31 @@ function displayNameOfApp(app) {
     return raw;
   }
   return String(app?.app_key || '').replaceAll('-', ' ').trim();
+}
+
+function appConfigOf(appKey) {
+  return (state.apps || []).find((item) => item.app_key === appKey) || null;
+}
+
+function productViewName(appKey, platform) {
+  const normalizedPlatform = String(platform || '').trim().toLowerCase();
+  if (appKey === 'ai-seek') {
+    if (normalizedPlatform === 'ios') return 'Novix';
+    if (normalizedPlatform === 'android') return 'AI Seek';
+  }
+
+  const app = appConfigOf(appKey);
+  if (!app) {
+    return String(appKey || '').replaceAll('-', ' ').trim();
+  }
+
+  if (normalizedPlatform === 'ios' && app.ios_display_name) {
+    return String(app.ios_display_name).trim();
+  }
+  if (normalizedPlatform === 'android' && app.android_display_name) {
+    return String(app.android_display_name).trim();
+  }
+  return displayNameOfApp(app);
 }
 
 function lifecycleStageLabel(stage) {
@@ -470,6 +594,16 @@ function setBudgetDetailModalOpen(open) {
     return;
   }
   el.budgetDetailModal.classList.add('hidden');
+}
+
+function setAsaKeywordDrawerOpen(open) {
+  if (open) {
+    el.asaKeywordDrawer.classList.add('is-open');
+    el.asaKeywordDrawer.setAttribute('aria-hidden', 'false');
+    return;
+  }
+  el.asaKeywordDrawer.classList.remove('is-open');
+  el.asaKeywordDrawer.setAttribute('aria-hidden', 'true');
 }
 
 function setDailyBriefModalOpen(open) {
@@ -869,6 +1003,9 @@ function populateAppSelects() {
   el.pullRecordsAppSelect.innerHTML = options;
   el.keywordAppSelect.innerHTML = options;
   el.budgetAppSelect.innerHTML = options;
+  el.asaKeywordAppSelect.innerHTML = options;
+  el.asaBriefAppSelect.innerHTML = options;
+  el.asaStageAppSelect.innerHTML = options;
 
   const metricOptions = state.apps
     .map((a) => `<option value="${a.app_key}">${escapeHtml(displayNameOfApp(a))} (${a.app_key})</option>`)
@@ -877,6 +1014,9 @@ function populateAppSelects() {
 
   if (state.apps[0] && !ruleField('app_key').value) {
     ruleField('app_key').value = state.apps[0].app_key;
+  }
+  if (state.apps[0] && !el.asaStageAppSelect.value) {
+    el.asaStageAppSelect.value = state.apps[0].app_key;
   }
 }
 
@@ -949,11 +1089,22 @@ function applyAppToEditor(app) {
   el.appSubmitBtn.textContent = `更新应用配置: ${app.app_key}`;
 }
 
+function syncAsaStageFormSelection() {
+  const appKey = String(el.asaStageAppSelect.value || '').trim();
+  const platform = String(el.asaStagePlatformSelect.value || 'ios').trim().toLowerCase();
+  if (!appKey || !platform) {
+    return;
+  }
+  const row = (state.asaStageConfigs || []).find((item) => item.app_key === appKey && item.platform === platform);
+  el.asaStageStageSelect.value = row?.stage || 'rising';
+}
+
 async function loadApps() {
   const body = await api('/api/apps');
   state.apps = body.data || [];
   renderApps();
   populateAppSelects();
+  syncAsaStageFormSelection();
 }
 
 async function saveAppConfig(event) {
@@ -1348,7 +1499,7 @@ function renderPullRecordsTable() {
   const rows = state.pullRecords || [];
   if (rows.length === 0) {
     el.pullRecordsTableBody.innerHTML =
-      '<tr><td class="table-empty" colspan="11">当前筛选条件下暂无 Pull 记录</td></tr>';
+      '<tr><td class="table-empty" colspan="12">当前筛选条件下暂无 Pull 记录</td></tr>';
     return;
   }
 
@@ -1358,10 +1509,11 @@ function renderPullRecordsTable() {
     const expanded = rowKey === state.expandedPullRowKey;
     const actionText = expanded ? '收起 JSON' : '展开 JSON';
 
-    html.push(`
+      html.push(`
       <tr>
         <td class="table-cell-mono">${escapeHtml(fmtTime(row.ingest_time))}</td>
         <td>${escapeHtml(row.date)}</td>
+        <td>${escapeHtml(productViewName(row.app_key, row.platform || 'unknown'))}</td>
         <td class="table-cell-mono">${escapeHtml(row.app_key)}</td>
         <td>${escapeHtml(platformLabel(row.platform || 'unknown'))}</td>
         <td>${escapeHtml(row.media_source)}</td>
@@ -1388,7 +1540,7 @@ function renderPullRecordsTable() {
       }
       html.push(`
         <tr class="pull-json-row">
-          <td colspan="11">
+          <td colspan="12">
             <div class="pull-json-wrap">
               <pre class="pull-json-pre">${escapeHtml(pretty)}</pre>
             </div>
@@ -1459,14 +1611,90 @@ function setDefaultDailyBriefDate() {
   el.dailyBriefDateInput.value = toLocalDate(reportDate);
 }
 
+function getSelectedDailyBriefMediaSources() {
+  return Array.from(state.dailyBriefSelectedMediaSources || []);
+}
+
+function updateDailyBriefMediaSourceSummary() {
+  const total = state.dailyBriefMediaSources.length;
+  const selected = getSelectedDailyBriefMediaSources();
+  if (total === 0) {
+    el.dailyBriefMediaSourcesSummary.textContent = '当前日期暂无可用媒体源。';
+    return;
+  }
+  if (selected.length === 0) {
+    el.dailyBriefMediaSourcesSummary.textContent = '当前未选择媒体源，无法预览或发送。';
+    return;
+  }
+  if (selected.length === total) {
+    el.dailyBriefMediaSourcesSummary.textContent = `当前已全选 ${total} 个媒体源。`;
+    return;
+  }
+  el.dailyBriefMediaSourcesSummary.textContent = `当前选中 ${selected.length}/${total} 个媒体源：${selected.join('、')}`;
+}
+
+function renderDailyBriefMediaSources() {
+  const items = state.dailyBriefMediaSources || [];
+  el.dailyBriefMediaSourcesEmpty.classList.toggle('hidden', items.length > 0);
+  if (items.length === 0) {
+    el.dailyBriefMediaSources.innerHTML = '';
+    updateDailyBriefMediaSourceSummary();
+    return;
+  }
+
+  el.dailyBriefMediaSources.innerHTML = items
+    .map((item) => {
+      const checked = state.dailyBriefSelectedMediaSources.includes(item);
+      return `
+        <label class="media-chip">
+          <input type="checkbox" name="dailyBriefMediaSource" value="${escapeHtml(item)}" ${checked ? 'checked' : ''} />
+          <span>${escapeHtml(item)}</span>
+        </label>
+      `;
+    })
+    .join('');
+  updateDailyBriefMediaSourceSummary();
+}
+
+async function loadDailyBriefMediaSources(preserveSelection = false) {
+  const reportDate = String(el.dailyBriefDateInput.value || '').trim();
+  if (!reportDate) {
+    state.dailyBriefMediaSources = [];
+    state.dailyBriefSelectedMediaSources = [];
+    renderDailyBriefMediaSources();
+    return;
+  }
+
+  const body = await api(`/api/daily-brief/media-sources?reportDate=${encodeURIComponent(reportDate)}`);
+  const items = Array.isArray(body.data) ? body.data.map((item) => String(item || '').trim()).filter(Boolean) : [];
+  state.dailyBriefMediaSources = items;
+  if (preserveSelection) {
+    const selected = new Set(state.dailyBriefSelectedMediaSources.filter((item) => items.includes(item)));
+    state.dailyBriefSelectedMediaSources = selected.size > 0 ? Array.from(selected) : [...items];
+  } else {
+    state.dailyBriefSelectedMediaSources = [...items];
+  }
+  renderDailyBriefMediaSources();
+}
+
 function dailyBriefSummaryItems(summary) {
   return [
-    { label: '应用覆盖', value: `${summary.apps_with_data || 0}/${summary.app_count || 0}` },
+    { label: '产品覆盖', value: `${summary.apps_with_data || 0}/${summary.app_count || 0}` },
     { label: '安装', value: toFixed2(summary.total_installs || 0) },
     { label: '点击', value: toFixed2(summary.total_clicks || 0) },
     { label: '成本', value: `$${toFixed2(summary.total_cost || 0)}` },
     { label: '综合 eCPI', value: `$${toFixed2(summary.blended_ecpi || 0)}` },
     { label: '待处理预算', value: String(summary.pending_budget_actions || 0) }
+  ];
+}
+
+function dailyBriefFilterItems(report) {
+  const mediaSources = Array.isArray(report.media_sources_applied) ? report.media_sources_applied : [];
+  const filters = report.filters || {};
+  return [
+    { label: '媒体源', value: mediaSources.length > 0 ? mediaSources.join('、') : '全部' },
+    { label: '应用', value: filters.app_key || '全部' },
+    { label: '平台', value: filters.platform ? platformLabel(filters.platform) : '全部' }
   ];
 }
 
@@ -1477,32 +1705,62 @@ function renderDailyBriefBody(report) {
 
   const sections = [
     {
-      title: '📦 应用概览',
+      title: '🔎 当前筛选',
+      type: 'kv',
+      items: dailyBriefFilterItems(report)
+    },
+    {
+      title: '📦 产品概览',
+      type: 'card',
       items:
         apps.length > 0
           ? apps.slice(0, 8).map(
-              (row) =>
-                `${displayNameOfApp(row)}（${row.app_key}）｜安装 ${toFixed2(row.installs)} ｜ 点击 ${toFixed2(row.clicks)} ｜ 成本 $${toFixed2(row.total_cost)} ｜ eCPI $${toFixed2(row.blended_ecpi)}`
+              (row) => ({
+                title: `${row.display_name || productViewName(row.app_key, row.platform)}（${row.app_key}）`,
+                source: Array.isArray(report.media_sources_applied) && report.media_sources_applied.length > 0
+                  ? report.media_sources_applied.join('、')
+                  : '全部媒体源',
+                lines: [
+                  `平台 ${platformLabel(row.platform || 'unknown')}`,
+                  `安装 ${toFixed2(row.installs)} ｜ 点击 ${toFixed2(row.clicks)}`,
+                  `成本 $${toFixed2(row.total_cost)} ｜ eCPI $${toFixed2(row.blended_ecpi)}`
+                ]
+              })
             )
-          : ['当前日期暂无 Pull 汇总数据。']
+          : [{ title: '暂无数据', source: '-', lines: ['当前日期暂无 Pull 汇总数据。'] }]
     },
     {
       title: `🎯 预算动作（超过阈值，共 ${budgets.length} 条）`,
+      type: 'card',
       items:
         budgets.length > 0
           ? budgets.map(
-              (row) =>
-                `${actionLabel(row.action)} ${Math.abs((Number(row.change_ratio) || 0) * 100).toFixed(0)}% ｜ ${row.app_key} / ${platformLabel(row.platform || 'unknown')} / ${row.keyword} ｜ 当前 eCPI $${toFixed2(row.current_ecpi)} ｜ 目标 $${toFixed2(row.target_ecpi)} ｜ 理由 ${String(row.reason_summary || '').trim() || '暂无补充说明'}`
+              (row) => {
+                const metricText =
+                  row.metric_mode === 'roas_pending_revenue'
+                    ? 'ROAS 待收入数据，当前仍按 eCPI 生成建议'
+                    : `当前 eCPI $${toFixed2(row.current_ecpi)} ｜ 目标 $${toFixed2(row.target_ecpi)}`;
+                return {
+                  title: `${actionLabel(row.action)} ${Math.abs((Number(row.change_ratio) || 0) * 100).toFixed(0)}% ｜ ${productViewName(row.app_key, row.platform)}`,
+                  source: row.media_source || '-',
+                  lines: [
+                    `广告系列 ${row.keyword}`,
+                    metricText,
+                    `理由 ${String(row.reason_summary || '').trim() || '暂无补充说明'}`
+                  ]
+                };
+              }
             )
-          : ['当前没有待处理预算动作。']
+          : [{ title: '暂无待处理预算动作', source: '-', lines: ['当前没有待处理预算动作。'] }]
     },
     {
-      title: '⚠️ 未恢复告警 Top 5',
+      title: '⚠️ 未恢复告警',
+      type: 'list',
       items:
         alerts.length > 0
           ? alerts.map(
               (row) =>
-                `${row.app_key} / ${row.severity} / ${metricLabel(row.metric)} ｜ Δ ${toFixed2(row.delta_value)} ｜ ${String(row.explanation || '').slice(0, 64) || '-'}`
+                `${productViewName(row.app_key, 'unknown')} / ${row.severity} / ${metricLabel(row.metric)} ｜ Δ ${toFixed2(row.delta_value)} ｜ ${String(row.explanation || '').slice(0, 64) || '-'}`
             )
           : ['当前没有未恢复告警。']
     }
@@ -1513,9 +1771,38 @@ function renderDailyBriefBody(report) {
       (section) => `
         <article class="daily-brief-block">
           <h6>${escapeHtml(section.title)}</h6>
-          <ul class="daily-brief-list">
-            ${section.items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}
-          </ul>
+          ${
+            section.type === 'kv'
+              ? `<div class="daily-brief-kv-grid">
+                  ${section.items
+                    .map(
+                      (item) => `<div class="daily-brief-kv-item">
+                        <span>${escapeHtml(item.label)}</span>
+                        <strong>${escapeHtml(item.value)}</strong>
+                      </div>`
+                    )
+                    .join('')}
+                </div>`
+              : section.type === 'card'
+                ? `<div class="daily-brief-entry-grid">
+                    ${section.items
+                      .map(
+                        (item) => `<article class="daily-brief-entry-card">
+                          <div class="daily-brief-entry-head">
+                            <strong>${escapeHtml(item.title)}</strong>
+                            <span class="daily-brief-source-chip">媒体源 ${escapeHtml(item.source)}</span>
+                          </div>
+                          <div class="daily-brief-entry-body">
+                            ${item.lines.map((line) => `<p>${escapeHtml(line)}</p>`).join('')}
+                          </div>
+                        </article>`
+                      )
+                      .join('')}
+                  </div>`
+                : `<ul class="daily-brief-list">
+                    ${section.items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}
+                  </ul>`
+          }
         </article>
       `
     )
@@ -1530,10 +1817,11 @@ function renderDailyBriefModal(payload, mode) {
   const notify = payload?.notify || null;
   const skipped = payload?.skipped === true;
   const renderMode = String(notify?.render_mode || report.render_mode || 'interactive');
+  const filterItems = dailyBriefFilterItems(report);
 
   el.dailyBriefModalTitle.textContent = mode === 'send' ? '每日简报发送结果' : '每日简报预览';
   el.dailyBriefMeta.textContent =
-    `报告日期 ${report.report_date || '-'} · 应用 ${summary.app_count || 0} 个 · 覆盖 ${summary.apps_with_data || 0} 个 · 安装 ${toFixed2(summary.total_installs || 0)} · 成本 ${toFixed2(summary.total_cost || 0)} · 待处理预算 ${summary.pending_budget_actions || 0} · 建议操作 ${actionItems.length}` +
+    `报告日期 ${report.report_date || '-'} · 产品 ${summary.app_count || 0} 个 · 覆盖 ${summary.apps_with_data || 0} 个 · 安装 ${toFixed2(summary.total_installs || 0)} · 成本 ${toFixed2(summary.total_cost || 0)} · 待处理预算 ${summary.pending_budget_actions || 0} · 建议操作 ${actionItems.length}` +
     (dispatch?.sent_at ? ` · 最近发送 ${fmtTime(dispatch.sent_at)}` : '') +
     (notify?.ok ? ` · Feishu 状态 ${notify.status || 200}` : '') +
     (skipped ? ' · 当日已发送，本次跳过' : '');
@@ -1552,6 +1840,15 @@ function renderDailyBriefModal(payload, mode) {
       `
     )
     .join('');
+  el.dailyBriefSummaryGrid.insertAdjacentHTML(
+    'beforeend',
+    `
+      <article class="daily-brief-metric daily-brief-metric-wide">
+        <span>媒体源</span>
+        <strong>${escapeHtml(filterItems[0].value)}</strong>
+      </article>
+    `
+  );
   el.dailyBriefJudgment.textContent = String(report.today_judgment || '暂无判断');
   el.dailyBriefActions.innerHTML = actionItems
     .map(
@@ -1579,7 +1876,13 @@ async function previewDailyBrief(event) {
   if (!reportDate) {
     throw new Error('请先选择报告日期');
   }
-  const body = await api(`/api/daily-brief/preview?reportDate=${encodeURIComponent(reportDate)}`);
+  const selectedMediaSources = getSelectedDailyBriefMediaSources();
+  if (state.dailyBriefMediaSources.length > 0 && selectedMediaSources.length === 0) {
+    throw new Error('请至少选择一个媒体源');
+  }
+  const params = new URLSearchParams({ reportDate });
+  selectedMediaSources.forEach((item) => params.append('mediaSources', item));
+  const body = await api(`/api/daily-brief/preview?${params.toString()}`);
   renderDailyBriefModal(body.data, 'preview');
   el.dailyBriefStatus.textContent = `已生成 ${reportDate} 的日报预览，可直接发送到飞书。`;
 }
@@ -1592,6 +1895,10 @@ async function sendDailyBriefOnce() {
   if (!reportDate) {
     throw new Error('请先选择报告日期');
   }
+  const selectedMediaSources = getSelectedDailyBriefMediaSources();
+  if (state.dailyBriefMediaSources.length > 0 && selectedMediaSources.length === 0) {
+    throw new Error('请至少选择一个媒体源');
+  }
 
   const originalText = el.sendDailyBriefBtn.textContent || '发送到飞书';
   el.sendDailyBriefBtn.disabled = true;
@@ -1599,7 +1906,7 @@ async function sendDailyBriefOnce() {
   try {
     const body = await api('/api/daily-brief/send', {
       method: 'POST',
-      body: JSON.stringify({ reportDate, force: true })
+      body: JSON.stringify({ reportDate, force: true, mediaSources: selectedMediaSources })
     });
     renderDailyBriefModal(body.data, 'send');
     el.dailyBriefStatus.textContent = `日报已发送到飞书群聊：${reportDate}`;
@@ -1754,7 +2061,7 @@ function renderKeywordTable() {
   const rows = state.keywordRows || [];
   if (rows.length === 0) {
     el.keywordsTableBody.innerHTML =
-      '<tr><td class="table-empty" colspan="10">当前筛选条件下暂无关键词生命周期数据</td></tr>';
+      '<tr><td class="table-empty" colspan="11">当前筛选条件下暂无关键词生命周期数据</td></tr>';
     return;
   }
 
@@ -1762,6 +2069,7 @@ function renderKeywordTable() {
     .map(
       (row) => `
       <tr>
+        <td>${escapeHtml(productViewName(row.app_key, row.platform || 'unknown'))}</td>
         <td class="table-cell-mono">${escapeHtml(row.app_key)}</td>
         <td>${escapeHtml(platformLabel(row.platform || 'unknown'))}</td>
         <td class="table-cell-wrap">${escapeHtml(row.keyword)}</td>
@@ -1854,7 +2162,7 @@ async function openKeywordTrend(row) {
   drawLineChart(el.keywordTrendCanvas, chartRows);
 
   el.keywordDrawerMeta.textContent =
-    `应用=${row.app_key} · 平台（platform）=${platformLabel(row.platform || 'unknown')} · 关键词（keyword）=${row.keyword} · 匹配类型（match_type）=${matchTypeLabel(row.match_type || 'unknown')} · 阶段（stage）=${lifecycleStageLabel(row.current_stage)} · 阶段天数（days_in_stage）=${row.days_in_stage}`;
+    `产品视图=${productViewName(row.app_key, row.platform || 'unknown')} · 应用=${row.app_key} · 平台（platform）=${platformLabel(row.platform || 'unknown')} · 关键词（keyword）=${row.keyword} · 匹配类型（match_type）=${matchTypeLabel(row.match_type || 'unknown')} · 阶段（stage）=${lifecycleStageLabel(row.current_stage)} · 阶段天数（days_in_stage）=${row.days_in_stage}`;
   const last = trendRows.at(-1);
   el.keywordTrendLegend.textContent = `数据点=${trendRows.length} · 最新安装量（installs）=${toFixed2(last?.installs)} · 最新 CPI（cpi）=${toFixed2(last?.cpi)}`;
   el.keywordTrendRaw.textContent = JSON.stringify(trendRows, null, 2);
@@ -1895,7 +2203,7 @@ function renderBudgetTable() {
   const rows = state.budgetRows || [];
   if (rows.length === 0) {
     el.budgetTableBody.innerHTML =
-      '<tr><td class="table-empty" colspan="12">当前筛选条件下暂无预算建议</td></tr>';
+      '<tr><td class="table-empty" colspan="15">当前筛选条件下暂无预算建议</td></tr>';
     return;
   }
 
@@ -1905,9 +2213,12 @@ function renderBudgetTable() {
       return `
       <tr>
         <td>${escapeHtml(row.date)}</td>
+        <td>${escapeHtml(productViewName(row.app_key, row.platform || 'unknown'))}</td>
         <td class="table-cell-mono">${escapeHtml(row.app_key)}</td>
         <td>${escapeHtml(platformLabel(row.platform || 'unknown'))}</td>
+        <td>${escapeHtml(row.media_source || '-')}</td>
         <td class="table-cell-wrap">${escapeHtml(row.keyword)}</td>
+        <td>${escapeHtml(primaryMetricLabel(row.primary_metric || 'ecpi'))}</td>
         <td>${escapeHtml(volumeTierLabel(row.volume_tier))}</td>
         <td class="table-cell-tight">${toFixed2(row.current_ecpi)}</td>
         <td class="table-cell-tight">${toFixed2(row.target_ecpi)}</td>
@@ -1982,11 +2293,17 @@ function openBudgetDetail(row) {
   const checklist = Array.isArray(llmSummary.checklist) ? llmSummary.checklist : [];
   const points = Array.isArray(llmSummary.explanation_points) ? llmSummary.explanation_points : [];
 
-  el.budgetDetailTitle.textContent = `预算建议详情 · ${row.app_key} · ${platformLabel(row.platform || 'unknown')} · ${row.keyword}`;
+  el.budgetDetailTitle.textContent = `预算建议详情 · ${productViewName(row.app_key, row.platform || 'unknown')} · ${row.keyword}`;
   el.budgetDetailSummary.textContent = String(llmSummary.summary_cn || `reason_code=${row.reason_code}`);
+  el.budgetDetailDisplayName.textContent = productViewName(row.app_key, row.platform || 'unknown');
+  el.budgetDetailMediaSource.textContent = String(row.media_source || '-');
+  el.budgetDetailPrimaryMetric.textContent = primaryMetricLabel(row.primary_metric || 'ecpi');
+  el.budgetDetailMetricMode.textContent = metricModeLabel(row.metric_mode || 'active');
   el.budgetDetailTier.textContent = volumeTierLabel(row.volume_tier);
   el.budgetDetailEcpi.textContent = toFixed2(row.current_ecpi);
   el.budgetDetailTargetEcpi.textContent = toFixed2(row.target_ecpi);
+  el.budgetDetailCurrentRoas.textContent = row.current_roas == null ? '-' : toFixed2(row.current_roas);
+  el.budgetDetailTargetRoas.textContent = row.target_roas == null ? '-' : toFixed2(row.target_roas);
   el.budgetDetailCurrentCost.textContent = toFixed2(row.current_cost);
   el.budgetDetailSuggestedBudget.textContent = toFixed2(row.suggested_budget);
   el.budgetDetailChangeRatio.textContent = `${(Number(row.change_ratio || 0) * 100).toFixed(1)}%`;
@@ -2048,6 +2365,359 @@ async function triggerBudgetRecompute() {
     el.budgetRecomputeBtn.disabled = false;
     el.budgetRecomputeBtn.textContent = originalText;
   }
+}
+
+function updateAsaSummary(summary = {}) {
+  const totalCost = Number(summary.total_cost || 0);
+  const installs = Number(summary.installs || 0);
+  const revenueD7 = Number(summary.revenue_d7 || 0);
+  el.asaSummaryKeywordCount.textContent = String(summary.keyword_count || 0);
+  el.asaSummaryInstalls.textContent = toFixed2(summary.installs || 0);
+  el.asaSummaryCost.textContent = `$${toFixed2(summary.total_cost || 0)}`;
+  el.asaSummaryEcpi.textContent = totalCost > 0 && installs <= 0 ? '—' : `$${toFixed2(summary.ecpi || 0)}`;
+  el.asaSummaryCpp.textContent = Number(summary.cpp || 0) > 0 ? `$${toFixed2(summary.cpp || 0)}` : '-';
+  el.asaSummaryRoas.textContent = totalCost > 0 ? `${toFixed2(summary.d7_roas || 0)}x` : '-';
+  el.asaSummaryRoas.title = totalCost > 0 && revenueD7 <= 0 ? '当前未观察到 D7 收入' : '';
+  el.asaSummaryEcpi.title = totalCost > 0 && installs <= 0 ? '当前有花费但没有安装，eCPI 不可计算' : '';
+}
+
+function asaHasSpendWithoutInstalls(totalCost, installs) {
+  return Number(totalCost || 0) > 0 && Number(installs || 0) <= 0;
+}
+
+function asaHasCostWithoutD7Revenue(totalCost, revenueD7) {
+  return Number(totalCost || 0) > 0 && Number(revenueD7 || 0) <= 0;
+}
+
+function formatAsaEcpiDisplay(value, totalCost, installs, options = {}) {
+  const withCurrency = options.withCurrency !== false;
+  if (asaHasSpendWithoutInstalls(totalCost, installs)) {
+    return '—';
+  }
+  return withCurrency ? `$${toFixed2(value || 0)}` : `${toFixed2(value || 0)}`;
+}
+
+function formatAsaEcpiDisplayWithReason(value, totalCost, installs, options = {}) {
+  const withCurrency = options.withCurrency !== false;
+  if (asaHasSpendWithoutInstalls(totalCost, installs)) {
+    return '—（有花费无安装）';
+  }
+  return withCurrency ? `$${toFixed2(value || 0)}` : `${toFixed2(value || 0)}`;
+}
+
+function formatAsaD7RoasDisplay(value, totalCost, revenueD7) {
+  if (Number(totalCost || 0) <= 0) {
+    return '-';
+  }
+  return `${toFixed2(value || 0)}x`;
+}
+
+function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7) {
+  if (Number(totalCost || 0) <= 0) {
+    return '-';
+  }
+  const base = `${toFixed2(value || 0)}x`;
+  return asaHasCostWithoutD7Revenue(totalCost, revenueD7) ? `${base}（未观察到D7收入）` : base;
+}
+
+function asaRecommendationBadgeClass(action) {
+  return `badge-action-${String(action || 'hold')}`;
+}
+
+function renderAsaKeywordTable() {
+  const rows = state.asaKeywordRows || [];
+  if (rows.length === 0) {
+    el.asaKeywordsTableBody.innerHTML =
+      '<tr><td class="table-empty" colspan="16">当前筛选条件下暂无 ASA 关键词数据</td></tr>';
+    return;
+  }
+
+  el.asaKeywordsTableBody.innerHTML = rows
+    .map(
+      (row) => `
+      <tr>
+        <td>${escapeHtml(productViewName(row.app_key, row.platform || 'unknown'))}</td>
+        <td class="table-cell-mono">${escapeHtml(row.app_key)}</td>
+        <td>${escapeHtml(platformLabel(row.platform || 'unknown'))}</td>
+        <td class="table-cell-wrap">${escapeHtml(row.keyword)}</td>
+        <td class="table-cell-wrap">${escapeHtml(row.campaign)}</td>
+        <td class="table-cell-wrap">${escapeHtml(row.adset || 'unknown')}</td>
+        <td>${toFixed2(row.installs_7d || row.last_installs || 0)}</td>
+        <td>$${toFixed2(row.total_cost_7d || 0)}</td>
+        <td>${toFixed2(row.purchase_count_7d || 0)}</td>
+        <td title="${escapeHtml(asaHasSpendWithoutInstalls(row.total_cost_7d, row.installs_7d || row.last_installs || 0) ? '当前有花费但没有安装，eCPI 不可计算' : '')}">${escapeHtml(formatAsaEcpiDisplay(row.current_ecpi || 0, row.total_cost_7d || 0, row.installs_7d || row.last_installs || 0))}</td>
+        <td>${row.current_cpp > 0 ? `$${toFixed2(row.current_cpp)}` : '-'}</td>
+        <td title="${escapeHtml(asaHasCostWithoutD7Revenue(row.total_cost_7d, row.revenue_d7_7d) ? '当前未观察到 D7 收入' : '')}">${escapeHtml(formatAsaD7RoasDisplay(row.current_d7_roas, row.total_cost_7d, row.revenue_d7_7d))}</td>
+        <td><span class="badge badge-stage-${escapeHtml(row.current_stage)}">${asaStageLabel(row.current_stage)}</span></td>
+        <td>${row.recommendation_action ? `<span class="badge ${asaRecommendationBadgeClass(row.recommendation_action)}">${escapeHtml(actionLabel(row.recommendation_action))}</span>` : '-'}</td>
+        <td>${escapeHtml(asaRecommendationStatusLabel(row.recommendation_status))}</td>
+        <td>
+          <div class="table-actions">
+            <button class="btn btn-ghost btn-compact" type="button" data-asa-keyword-view-id="${row.id}">详情</button>
+          </div>
+        </td>
+      </tr>
+    `
+    )
+    .join('');
+}
+
+function updateAsaKeywordPaginationUi() {
+  el.asaKeywordPaginationInfo.textContent = `第 ${state.asaKeywordPage}/${state.asaKeywordTotalPages} 页 · 共 ${state.asaKeywordTotal} 条`;
+  el.asaKeywordPrevPageBtn.disabled = state.asaKeywordPage <= 1;
+  el.asaKeywordNextPageBtn.disabled = state.asaKeywordPage >= state.asaKeywordTotalPages;
+}
+
+async function loadAsaStageConfigs() {
+  const body = await api('/api/asa-keywords/stages');
+  state.asaStageConfigs = Array.isArray(body.data) ? body.data : [];
+  syncAsaStageFormSelection();
+}
+
+async function saveAsaStageConfig(event) {
+  event.preventDefault();
+  const appKey = String(el.asaStageAppSelect.value || '').trim();
+  const platform = String(el.asaStagePlatformSelect.value || '').trim().toLowerCase();
+  const stage = String(el.asaStageStageSelect.value || 'rising').trim();
+  if (!appKey || !platform) {
+    throw new Error('请先选择应用与平台');
+  }
+  await api('/api/asa-keywords/stages', {
+    method: 'POST',
+    body: JSON.stringify({ appKey, platform, stage, enabled: true })
+  });
+  showToast(`已保存 ${productViewName(appKey, platform)} 的产品阶段`);
+  await loadAsaStageConfigs();
+  await loadAsaKeywords(undefined, 1);
+}
+
+function setDefaultAsaDateRange() {
+  const now = new Date();
+  const from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const reportDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  el.asaKeywordFromInput.value = toLocalDate(from);
+  el.asaKeywordToInput.value = toLocalDate(now);
+  el.asaBriefDateInput.value = toLocalDate(reportDate);
+}
+
+async function loadAsaKeywords(event, pageOverride) {
+  if (event) {
+    event.preventDefault();
+  }
+  const form = new FormData(el.asaKeywordFilter);
+  const appKey = String(form.get('appKey') || '').trim();
+  const platform = String(form.get('platform') || '').trim().toLowerCase();
+  const stage = String(form.get('stage') || '').trim();
+  const from = String(form.get('from') || '').trim();
+  const to = String(form.get('to') || '').trim();
+  const keyword = String(form.get('keyword') || '').trim();
+  const campaign = String(form.get('campaign') || '').trim();
+  const page = Number.isFinite(Number(pageOverride)) ? Number(pageOverride) : state.asaKeywordPage || 1;
+  if (from && to && from > to) {
+    throw new Error('ASA 关键词查询起始日期不能晚于结束日期');
+  }
+
+  const params = new URLSearchParams({ page: String(Math.max(1, page)) });
+  if (appKey) params.set('appKey', appKey);
+  if (platform) params.set('platform', platform);
+  if (stage) params.set('stage', stage);
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  if (keyword) params.set('keyword', keyword);
+  if (campaign) params.set('campaign', campaign);
+
+  const body = await api(`/api/asa-keywords?${params.toString()}`);
+  state.asaKeywordRows = Array.isArray(body.data) ? body.data : [];
+  state.asaKeywordPage = Number(body.meta?.page || 1);
+  state.asaKeywordTotalPages = Number(body.meta?.totalPages || 1);
+  state.asaKeywordTotal = Number(body.meta?.total || 0);
+  updateAsaSummary(body.summary || {});
+  renderAsaKeywordTable();
+  updateAsaKeywordPaginationUi();
+}
+
+async function changeAsaKeywordPage(delta) {
+  const next = state.asaKeywordPage + delta;
+  if (next < 1 || next > state.asaKeywordTotalPages) {
+    return;
+  }
+  await loadAsaKeywords(undefined, next);
+}
+
+async function openAsaKeywordDetail(row) {
+  state.activeAsaKeywordDetail = row;
+  const params = new URLSearchParams({
+    appKey: row.app_key,
+    platform: String(row.platform || 'unknown').toLowerCase(),
+    campaign: row.campaign || '',
+    adset: row.adset || 'unknown'
+  });
+  const body = await api(`/api/asa-keywords/${encodeURIComponent(row.keyword)}/trend?${params.toString()}`);
+  const trendRows = Array.isArray(body.data) ? body.data : [];
+  const chartRows = trendRows.map((item) => ({
+    label: item.date,
+    value: Number(item.installs || 0),
+    tooltipLines: [
+      `日期：${item.date}`,
+      `安装量：${toFixed2(item.installs)}`,
+      `成本：$${toFixed2(item.total_cost)}`,
+      `Purchase：${toFixed2(item.purchase_count)}`,
+      `eCPI：${formatAsaEcpiDisplayWithReason(item.ecpi, item.total_cost, item.installs)}`,
+      `官方 eCPI：$${toFixed2(item.average_ecpi || 0)}`,
+      `CPP：${Number(item.cpp || 0) > 0 ? `$${toFixed2(item.cpp)}` : '-'}`,
+      `D7 ROAS：${formatAsaD7RoasDisplayWithReason(item.d7_roas, item.total_cost, item.revenue_d7)}`
+    ]
+  }));
+  drawLineChart(el.asaKeywordTrendCanvas, chartRows);
+  const llmSummary = safeJsonParse(row.llm_summary, {});
+  el.asaKeywordDrawerMeta.textContent =
+    `产品视图=${productViewName(row.app_key, row.platform || 'unknown')} · 应用=${row.app_key} · 平台=${platformLabel(row.platform || 'unknown')} · 关键词=${row.keyword} · Campaign=${row.campaign} · 广告组=${row.adset || 'unknown'} · 阶段=${asaStageLabel(row.current_stage)} · 建议指标=${asaPrimaryMetricLabel(row.primary_metric)}`;
+  const last = trendRows.at(-1);
+  el.asaKeywordTrendLegend.textContent =
+    `数据点=${trendRows.length} · 最新安装量=${toFixed2(last?.installs)} · 最新 eCPI=${formatAsaEcpiDisplayWithReason(last?.ecpi, last?.total_cost, last?.installs)} · 官方 eCPI=$${toFixed2(last?.average_ecpi || 0)} · 最新 D7 ROAS=${formatAsaD7RoasDisplayWithReason(last?.d7_roas, last?.total_cost, last?.revenue_d7)}`;
+  el.asaKeywordTrendRaw.textContent = JSON.stringify(
+    {
+      recommendation: {
+        action: row.recommendation_action,
+        status: row.recommendation_status,
+        summary: llmSummary.summary_cn || '',
+        explanation_points: llmSummary.explanation_points || []
+      },
+      note: 'ASA 关键词成本直接来自 AppsFlyer Master API（关键词 + 广告系列 + 广告组）。eCPI 显示为“—”表示有花费无安装；D7 ROAS 显示 0.00x 表示当前未观察到 D7 收入。',
+      trend: trendRows
+    },
+    null,
+    2
+  );
+  setAsaKeywordDrawerOpen(true);
+}
+
+async function handleAsaKeywordTableClick(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) return;
+  const rowId = Number(target.dataset.asaKeywordViewId || 0);
+  if (!rowId) return;
+  const row = state.asaKeywordRows.find((item) => Number(item.id) === rowId);
+  if (!row) return;
+  await openAsaKeywordDetail(row);
+}
+
+async function triggerAsaKeywordRecompute() {
+  if (el.asaKeywordRecomputeBtn.disabled) return;
+  const originalText = el.asaKeywordRecomputeBtn.textContent || '手动重算';
+  el.asaKeywordRecomputeBtn.disabled = true;
+  el.asaKeywordRecomputeBtn.textContent = '重算中...';
+  try {
+    const body = await api('/api/asa-keywords/recompute', {
+      method: 'POST',
+      body: JSON.stringify({ backfillDays: 30 })
+    });
+    const result = body.data || {};
+    showToast(`ASA 关键词重算完成：状态 ${result.state_rows || 0} / 建议 ${result.recommendation_rows || 0}`);
+    state.asaKeywordPage = 1;
+    await loadAsaKeywords(undefined, 1);
+  } finally {
+    el.asaKeywordRecomputeBtn.disabled = false;
+    el.asaKeywordRecomputeBtn.textContent = originalText;
+  }
+}
+
+function asaBriefSummaryItems(report) {
+  const summary = report.summary || {};
+  return [
+    { label: '当前阶段', value: asaStageLabel(report.current_stage) },
+    { label: '关键词数', value: String(summary.keyword_count || 0) },
+    { label: '安装量', value: toFixed2(summary.installs || 0) },
+    { label: '成本', value: `$${toFixed2(summary.total_cost || 0)}` },
+    { label: 'eCPI', value: formatAsaEcpiDisplay(summary.ecpi || 0, summary.total_cost || 0, summary.installs || 0) },
+    { label: 'CPP', value: Number(summary.cpp || 0) > 0 ? `$${toFixed2(summary.cpp || 0)}` : '-' },
+    { label: 'D7 ROAS', value: formatAsaD7RoasDisplay(summary.d7_roas || 0, summary.total_cost || 0, summary.revenue_d7 || 0) }
+  ];
+}
+
+function renderAsaBriefModal(payload, mode) {
+  const report = payload?.report || payload || {};
+  const notify = payload?.notify || null;
+  const skipped = payload?.skipped === true;
+  const actionRows = Array.isArray(report.action_rows) ? report.action_rows : [];
+  el.asaBriefModalTitle.textContent = mode === 'send' ? 'ASA 简报发送结果' : 'ASA 简报预览';
+  el.asaBriefMeta.textContent =
+    `报告日期 ${report.report_date || '-'} · 当前阶段 ${asaStageLabel(report.current_stage)} · 关键词数 ${report.summary?.keyword_count || 0}` +
+    (notify?.ok ? ` · Feishu 状态 ${notify.status || 200}` : '') +
+    (skipped ? ' · 当日已发送，本次跳过' : '');
+  el.asaBriefSummaryGrid.innerHTML = asaBriefSummaryItems(report)
+    .map(
+      (item) => `
+        <article class="daily-brief-metric">
+          <span>${escapeHtml(item.label)}</span>
+          <strong>${escapeHtml(item.value)}</strong>
+        </article>
+      `
+    )
+    .join('');
+  el.asaBriefJudgment.textContent =
+    report.today_judgment ||
+    (report.current_stage === 'stable'
+      ? '当前已按稳定期口径输出建议，优先观察 D7 ROAS 与 CPP 是否同步达标。成本直接取自 AppsFlyer Master API。'
+      : '当前按上升期口径输出建议，优先观察 eCPI 与安装扩张效率。成本直接取自 AppsFlyer Master API。');
+  el.asaBriefActions.innerHTML = actionRows.length
+    ? actionRows
+        .slice(0, 12)
+        .map((row) => {
+          const llmSummary = safeJsonParse(row.llm_summary, {});
+          return `
+            <article class="daily-brief-action-card priority-P2">
+              <div class="daily-brief-action-head">
+                <span class="badge ${asaRecommendationBadgeClass(row.action)}">${escapeHtml(actionLabel(row.action))}</span>
+                <strong>${escapeHtml(productViewName(row.app_key, row.platform))} / ${escapeHtml(row.keyword)}</strong>
+              </div>
+              <p>Campaign：${escapeHtml(row.campaign)}</p>
+              <p>广告组：${escapeHtml(row.adset || 'unknown')}</p>
+              <p>${escapeHtml(
+                row.primary_metric === 'd7_roas_cpp'
+                  ? `D7 ROAS ${formatAsaD7RoasDisplayWithReason(row.current_d7_roas, row.total_cost_7d, row.revenue_d7_7d)} / 目标 ${toFixed2(row.target_d7_roas)}x ｜ CPP ${row.current_cpp > 0 ? `$${toFixed2(row.current_cpp)}` : '-'} / 目标 ${row.target_cpp > 0 ? `$${toFixed2(row.target_cpp)}` : '-'}`
+                  : `当前 eCPI ${formatAsaEcpiDisplayWithReason(row.current_ecpi, row.total_cost_7d, row.installs_7d)} / 目标 $${toFixed2(row.target_ecpi)}`
+              )}</p>
+              <p>${escapeHtml(String(llmSummary.summary_cn || row.reason_code || '暂无补充说明'))}</p>
+            </article>
+          `;
+        })
+        .join('')
+    : '<p class="hint">当前没有可纳入简报的建议操作。</p>';
+  el.asaBriefRaw.textContent = JSON.stringify(report.feishu_card_payload || {}, null, 2);
+  setAsaBriefModalOpen(true);
+}
+
+function setAsaBriefModalOpen(open) {
+  el.asaBriefModal.classList.toggle('hidden', !open);
+}
+
+async function previewAsaBrief(event) {
+  if (event) event.preventDefault();
+  const reportDate = String(el.asaBriefDateInput.value || '').trim();
+  if (!reportDate) throw new Error('请先选择报告日期');
+  const params = new URLSearchParams({ reportDate });
+  const appKey = String(el.asaBriefAppSelect.value || '').trim();
+  const platform = String(el.asaBriefPlatformSelect.value || '').trim().toLowerCase();
+  if (appKey) params.set('appKey', appKey);
+  if (platform) params.set('platform', platform);
+  const body = await api(`/api/asa-keywords/brief/preview?${params.toString()}`);
+  renderAsaBriefModal(body.data, 'preview');
+  el.asaBriefStatus.textContent = `已生成 ${reportDate} 的 ASA 简报预览，建议操作已并入简报。`;
+}
+
+async function sendAsaBrief() {
+  const reportDate = String(el.asaBriefDateInput.value || '').trim();
+  if (!reportDate) throw new Error('请先选择报告日期');
+  const appKey = String(el.asaBriefAppSelect.value || '').trim();
+  const platform = String(el.asaBriefPlatformSelect.value || '').trim().toLowerCase();
+  const body = await api('/api/asa-keywords/brief/send', {
+    method: 'POST',
+    body: JSON.stringify({ reportDate, appKey: appKey || undefined, platform: platform || undefined, force: true })
+  });
+  renderAsaBriefModal(body.data, 'send');
+  el.asaBriefStatus.textContent = `ASA 简报已发送：${reportDate}，建议操作已随简报一并发送。`;
+  showToast('ASA 简报已发送');
 }
 
 async function loadMetrics(event) {
@@ -2189,7 +2859,11 @@ async function refreshAll() {
 
   state.budgetPage = 1;
   await loadBudgetRecommendations(undefined, 1);
+  await loadAsaStageConfigs();
+  state.asaKeywordPage = 1;
+  await loadAsaKeywords(undefined, 1);
   await loadOperationLogs();
+  await loadDailyBriefMediaSources(true);
 
   const now = new Date();
   el.lastUpdated.textContent = `更新时间 ${now.toLocaleTimeString()}`;
@@ -2202,6 +2876,7 @@ async function bootstrap() {
   setDefaultPullDateRange();
   setDefaultKeywordDateRange();
   setDefaultBudgetDateRange();
+  setDefaultAsaDateRange();
   setDefaultDailyBriefDate();
   syncAppFeishuSection();
   applyUniformFieldLabels();
@@ -2209,6 +2884,7 @@ async function bootstrap() {
   setupSideNav();
   bindChartHover(el.metricsCanvas, el.metricsTooltip);
   bindChartHover(el.keywordTrendCanvas, el.keywordTooltip);
+  bindChartHover(el.asaKeywordTrendCanvas, el.asaKeywordTooltip);
 
   window.addEventListener('scroll', syncActiveSectionOnScroll, { passive: true });
   window.addEventListener('resize', () => {
@@ -2219,6 +2895,10 @@ async function bootstrap() {
     const keywordState = chartState.get(el.keywordTrendCanvas);
     if (keywordState) {
       drawLineChart(el.keywordTrendCanvas, keywordState.rows, keywordState.options);
+    }
+    const asaKeywordState = chartState.get(el.asaKeywordTrendCanvas);
+    if (asaKeywordState) {
+      drawLineChart(el.asaKeywordTrendCanvas, asaKeywordState.rows, asaKeywordState.options);
     }
   });
 
@@ -2271,10 +2951,21 @@ el.closeAlertDrawerBtn.addEventListener('click', () => setDrawerOpen(false));
 el.alertDrawerBackdrop.addEventListener('click', () => setDrawerOpen(false));
 
 el.metricsForm.addEventListener('submit', (e) => loadMetrics(e).catch((err) => showToast(err.message || '指标加载失败', true)));
+function triggerMetricsAutoRefresh() {
+  if (!String(el.metricsAppSelect.value || '').trim()) {
+    return;
+  }
+  loadMetrics().catch((err) => showToast(err.message || '指标加载失败', true));
+}
+
 el.metricsSourceSelect.addEventListener('change', () => {
   const source = el.metricsSourceSelect.value || 'pull';
   setMetricsMode(source);
+  triggerMetricsAutoRefresh();
 });
+el.metricsAppSelect.addEventListener('change', triggerMetricsAutoRefresh);
+el.metricsPlatformSelect.addEventListener('change', triggerMetricsAutoRefresh);
+el.metricsMetricSelect.addEventListener('change', triggerMetricsAutoRefresh);
 el.pullRecordsFilter.addEventListener('submit', (e) =>
   loadPullRecords(e, 1).catch((err) => showToast(err.message || 'Pull 明细加载失败，请检查 API 与 ClickHouse 连接', true))
 );
@@ -2310,6 +3001,37 @@ el.keywordRecomputeBtn.addEventListener('click', () =>
 el.closeKeywordDrawerBtn.addEventListener('click', () => setKeywordDrawerOpen(false));
 el.keywordDrawerBackdrop.addEventListener('click', () => setKeywordDrawerOpen(false));
 
+el.asaStageForm.addEventListener('submit', (e) =>
+  saveAsaStageConfig(e).catch((err) => showToast(err.message || 'ASA 阶段保存失败', true))
+);
+el.asaStageAppSelect.addEventListener('change', syncAsaStageFormSelection);
+el.asaStagePlatformSelect.addEventListener('change', syncAsaStageFormSelection);
+el.asaKeywordFilter.addEventListener('submit', (e) =>
+  loadAsaKeywords(e, 1).catch((err) => showToast(err.message || 'ASA 关键词加载失败', true))
+);
+el.asaKeywordsTableBody.addEventListener('click', (e) =>
+  handleAsaKeywordTableClick(e).catch((err) => showToast(err.message || 'ASA 关键词详情加载失败', true))
+);
+el.asaKeywordPrevPageBtn.addEventListener('click', () =>
+  changeAsaKeywordPage(-1).catch((err) => showToast(err.message || 'ASA 关键词翻页失败', true))
+);
+el.asaKeywordNextPageBtn.addEventListener('click', () =>
+  changeAsaKeywordPage(1).catch((err) => showToast(err.message || 'ASA 关键词翻页失败', true))
+);
+el.asaKeywordRecomputeBtn.addEventListener('click', () =>
+  triggerAsaKeywordRecompute().catch((err) => showToast(err.message || 'ASA 关键词重算失败', true))
+);
+el.asaBriefForm.addEventListener('submit', (e) =>
+  previewAsaBrief(e).catch((err) => showToast(err.message || 'ASA 简报预览失败', true))
+);
+el.sendAsaBriefBtn.addEventListener('click', () =>
+  sendAsaBrief().catch((err) => showToast(err.message || 'ASA 简报发送失败', true))
+);
+el.closeAsaKeywordDrawerBtn.addEventListener('click', () => setAsaKeywordDrawerOpen(false));
+el.asaKeywordDrawerBackdrop.addEventListener('click', () => setAsaKeywordDrawerOpen(false));
+el.asaBriefModalCloseBtn.addEventListener('click', () => setAsaBriefModalOpen(false));
+el.asaBriefModalBackdrop.addEventListener('click', () => setAsaBriefModalOpen(false));
+
 el.budgetFilter.addEventListener('submit', (e) =>
   loadBudgetRecommendations(e, 1).catch((err) => showToast(err.message || '预算建议加载失败', true))
 );
@@ -2337,6 +3059,35 @@ el.operationLogsFilter.addEventListener('submit', (e) =>
 el.dailyBriefForm.addEventListener('submit', (e) =>
   previewDailyBrief(e).catch((err) => showToast(err.message || '日报预览失败', true))
 );
+el.dailyBriefDateInput.addEventListener('change', () =>
+  loadDailyBriefMediaSources(false).catch((err) => showToast(err.message || '媒体源列表加载失败', true))
+);
+el.dailyBriefMediaSources.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.name !== 'dailyBriefMediaSource') {
+    return;
+  }
+  const value = String(target.value || '').trim();
+  if (!value) {
+    return;
+  }
+  if (target.checked) {
+    if (!state.dailyBriefSelectedMediaSources.includes(value)) {
+      state.dailyBriefSelectedMediaSources = [...state.dailyBriefSelectedMediaSources, value];
+    }
+  } else {
+    state.dailyBriefSelectedMediaSources = state.dailyBriefSelectedMediaSources.filter((item) => item !== value);
+  }
+  updateDailyBriefMediaSourceSummary();
+});
+el.dailyBriefSelectAllMediaBtn.addEventListener('click', () => {
+  state.dailyBriefSelectedMediaSources = [...state.dailyBriefMediaSources];
+  renderDailyBriefMediaSources();
+});
+el.dailyBriefClearMediaBtn.addEventListener('click', () => {
+  state.dailyBriefSelectedMediaSources = [];
+  renderDailyBriefMediaSources();
+});
 el.sendDailyBriefBtn.addEventListener('click', () =>
   sendDailyBriefOnce().catch((err) => showToast(err.message || '日报发送失败', true))
 );
