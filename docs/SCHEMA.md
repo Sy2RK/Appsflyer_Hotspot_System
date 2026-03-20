@@ -350,6 +350,26 @@
 - `asa_raw` 在同一 Base 下自动创建 / 复用 `ASA Raw 明细`
 - 该表只保存导出配置与同步结果，不保存实际导出数据
 
+### `runtime_schedule_configs`
+- 全局运行时调度配置（单行表）
+
+字段:
+- `singleton_key`
+- `pull_time`
+- `push_time`
+- `created_at`
+- `updated_at`
+
+说明：
+- 默认只有一行：`singleton_key = 'global'`
+- `pull_time` 控制：
+  - `puller`
+  - `asa-keywords`
+- `push_time` 控制：
+  - `daily-brief`
+  - `asa-daily-brief`
+- `bitable-export` 不单独存库，固定按 `push_time + 5 分钟` 计算
+
 ### `operation_logs`
 - 统一记录 API 手动操作与 worker 定时任务执行结果
 

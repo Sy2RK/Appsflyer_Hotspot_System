@@ -6,6 +6,9 @@
 
 - AppsFlyer Push Callback 入库与小时级聚合
 - AppsFlyer Pull `daily_report_v5` 日级拉取与指标趋势
+- WebUI 顶部全局调度配置
+  - 统一编辑 `Pull 时间` 与 `推送时间`
+  - `bitable-export` 自动使用 `推送时间 + 5 分钟`
 - 通用投放项 / 广告系列监控与预算建议
 - ASA 关键词专项管理
   - Raw Data 获取关键词与收入
@@ -63,6 +66,7 @@ docker compose up -d --build
 
 ## 最近补充
 
+- 顶部全局调度配置（Pull / Push 时间统一管理）
 - ASA keyword 成本切换到 AppsFlyer Master API
 - Feishu 多维表格原始数据推送模块
-- 每日 `10:05 (Asia/Shanghai)` 自动执行多维表格导出
+- 默认 `09:00 / 10:00 / 10:05 (Asia/Shanghai)` 调度，可在页面顶部修改

@@ -113,10 +113,16 @@ async function sendFeishuMessage(
         ...payload
       })
     });
+    const body = (await messageRes.json().catch(() => ({}))) as {
+      code?: number;
+      msg?: string;
+    };
+    const ok = messageRes.ok && Number(body.code ?? 0) === 0;
 
     return {
-      ok: messageRes.ok,
+      ok,
       status: messageRes.status,
+      error: ok ? undefined : `Feishu message failed: code=${String(body.code ?? '')}, msg=${String(body.msg ?? '')}`,
       render_mode:
         payload.msg_type === 'interactive' ? 'interactive' : payload.msg_type === 'post' ? 'post' : 'text'
     };

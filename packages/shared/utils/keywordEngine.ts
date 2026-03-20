@@ -8,6 +8,7 @@ import {
 import { extractKeywordFromCampaign, evaluateKeywordLifecycle } from './keyword.js';
 import { KeywordExtractRuleRecord, KeywordLifecycleStateRow } from '../types/models.js';
 import { env } from '../config/env.js';
+import { getPreviousDateString, shiftDateString } from './businessDate.js';
 
 export interface KeywordEngineLogger {
   info: (message: string, context?: Record<string, unknown>) => void;
@@ -111,10 +112,6 @@ function logError(
   }
 }
 
-function toDateString(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
 function normalizeDateInput(value: string | Date): Date | null {
   if (value instanceof Date) {
     return Number.isFinite(value.getTime()) ? value : null;
@@ -138,10 +135,9 @@ function dateDaysDiff(from: string | Date, to: string | Date): number {
 
 function buildWindow(backfillDays: number): { from: string; to: string } {
   const safeDays = Math.max(1, Math.floor(backfillDays));
-  const today = new Date();
-  const end = new Date(today.getTime() - DAY_MS);
-  const start = new Date(end.getTime() - (safeDays - 1) * DAY_MS);
-  return { from: toDateString(start), to: toDateString(end) };
+  const to = getPreviousDateString(1);
+  const from = shiftDateString(to, -(safeDays - 1));
+  return { from, to };
 }
 
 function toNumber(raw: string): number {

@@ -14,10 +14,13 @@ import operationLogsRoutes from './modules/operationLogs/operationLogs.routes.js
 import asaKeywordsRoutes from './modules/asaKeywords/asaKeywords.routes.js';
 import runtimeScheduleRoutes from './modules/runtimeSchedule/runtimeSchedule.routes.js';
 import uiRoutes from './modules/ui/ui.routes.js';
+import authRoutes from './modules/auth/auth.routes.js';
+import { adminBasicAuthMiddleware, assertAdminAuthConfigured } from './common/auth/adminBasicAuth.js';
 import { requestIdMiddleware } from './common/utils/request.js';
 import { logger } from './common/logger/logger.js';
 
 export function createApp(): express.Express {
+  assertAdminAuthConfigured();
   const app = express();
 
   app.disable('x-powered-by');
@@ -34,6 +37,9 @@ export function createApp(): express.Express {
   });
 
   app.use(ingestRoutes);
+  app.use(healthRoutes);
+  app.use(authRoutes);
+  app.use(adminBasicAuthMiddleware());
   app.use(uiRoutes);
   app.use(appsRoutes);
   app.use(metricsRoutes);
@@ -47,7 +53,6 @@ export function createApp(): express.Express {
   app.use(operationLogsRoutes);
   app.use(alertsRoutes);
   app.use(rulesRoutes);
-  app.use(healthRoutes);
 
   app.use((error: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     logger.error('unhandled_error', {

@@ -9,6 +9,7 @@ import {
 } from './repositories.js';
 import { chInsertJSON } from './clickhouse.js';
 import { md5Hex } from './hash.js';
+import { buildPreviousDateList, getPreviousDateString } from './businessDate.js';
 
 interface CsvRow {
   [key: string]: string;
@@ -252,20 +253,11 @@ function toStringOr(value: string | undefined, fallback: string): string {
 }
 
 function buildDateList(backfillDays: number): string[] {
-  const days = Math.max(1, backfillDays);
-  const now = new Date();
-  const result: string[] = [];
-
-  for (let i = 1; i <= days; i += 1) {
-    const day = new Date(now.getTime() - i * ONE_DAY_MS).toISOString().slice(0, 10);
-    result.push(day);
-  }
-
-  return result;
+  return buildPreviousDateList(backfillDays);
 }
 
 function yesterdayDateString(): string {
-  return new Date(Date.now() - ONE_DAY_MS).toISOString().slice(0, 10);
+  return getPreviousDateString(1);
 }
 
 function cooldownMsForReportDate(date: string): number {
@@ -385,13 +377,27 @@ function buildPullContentSignature(rows: PullAggregateDailyRow[]): string {
     })
     .map((row) =>
       [
+        row.date,
         row.media_source,
         row.country,
         row.campaign,
+        row.platform,
+        row.agency_pmd,
+        Number(row.impressions).toFixed(6),
         Number(row.installs).toFixed(6),
         Number(row.clicks).toFixed(6),
+        Number(row.ctr).toFixed(6),
+        Number(row.conversion_rate).toFixed(6),
+        Number(row.sessions).toFixed(6),
+        Number(row.loyal_users).toFixed(6),
+        Number(row.loyal_users_installs_ratio).toFixed(6),
         Number(row.total_cost).toFixed(6),
-        Number(row.average_ecpi).toFixed(6)
+        Number(row.average_ecpi).toFixed(6),
+        Number(row.revenue).toFixed(6),
+        Number(row.events).toFixed(6),
+        row.source_report,
+        row.pull_window_from,
+        row.pull_window_to
       ].join('|')
     )
     .join('\n');

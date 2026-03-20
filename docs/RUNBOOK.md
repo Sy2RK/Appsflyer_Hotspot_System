@@ -9,6 +9,9 @@ cp .env.example .env
 # 或 ALERT_WEBHOOK_URL（二选一或同时配置）
 # Pull 回填天数（默认 3）
 # PULLER_BACKFILL_DAYS=3
+# Pull / 推送时间的 env 仅作为默认值使用
+# 启动后可在 WebUI 顶部“全局调度设置”里修改
+# PULLER_REPORT_HOUR=9
 # 关键词与预算建议 worker（默认每天）
 # KEYWORD_ENGINE_INTERVAL_MS=86400000
 # BUDGET_ADVISOR_INTERVAL_MS=86400000
@@ -17,7 +20,9 @@ cp .env.example .env
 # DAILY_BRIEF_INTERVAL_MS=3600000
 # DAILY_BRIEF_REPORT_HOUR=10
 # DAILY_BRIEF_TITLE_PREFIX=Hotspot 每日简报
-# Feishu 多维表格原始数据推送（默认每天 10:05）
+# ASA keyword 数据准备时间默认与 Pull 一致
+# ASA_KEYWORD_REPORT_HOUR=9
+# Feishu 多维表格原始数据推送默认使用“推送时间 + 5 分钟”
 # FEISHU_BITABLE_ENABLED=true
 # FEISHU_BITABLE_APP_TOKEN=KlGhboFKLahZJssn17QcdLqTnhc
 # FEISHU_BITABLE_PULL_TABLE_ID=tblARnjXQhrXquyh
@@ -47,6 +52,7 @@ docker compose up -d --build
 > - 初始 token 为占位值，需上线前更新
 
 Web UI 新增能力:
+- 顶部全局调度设置（统一编辑 Pull 时间 / 推送时间）
 - 规则 DSL 表单编辑（并可与 JSON 双向同步）
 - 告警详情抽屉（查看 `top_contributors` 与原始 JSON）
 - 关键词生命周期页面（筛选、分页、趋势抽屉、手动重算）
@@ -304,9 +310,31 @@ curl -X POST "http://localhost:3000/api/daily-brief/send" \
 - 卡片失败会自动回退到纯文本发送
 - WebUI 路径：`总览 -> 每日简报`
 
+## 5.7 验证全局调度设置
+
+读取当前调度快照：
+
+```bash
+curl "http://localhost:3000/api/runtime-schedule"
+```
+
+更新调度时间：
+
+```bash
+curl -X POST "http://localhost:3000/api/runtime-schedule" \
+  -H "Content-Type: application/json" \
+  -d '{"pullTime":"09:00","pushTime":"10:00"}'
+```
+
+预期：
+- 返回 `pull_time / push_time / bitable_time`
+- `bitable_time` 固定为 `push_time + 5 分钟`
+- 页面顶部 `全局调度设置` 会显示当前配置
+- worker 在下一轮检查时会跟随新时间，不需要手动改 `.env`
+
 ---
 
-## 5.7 验证操作日志
+## 5.8 验证操作日志
 
 ```bash
 curl -G "http://localhost:3000/api/operation-logs" \
@@ -331,7 +359,7 @@ WebUI 路径：
 
 ---
 
-## 5.8 验证 Feishu 多维表格原始数据推送
+## 5.9 验证 Feishu 多维表格原始数据推送
 
 查询当前导出配置：
 
@@ -413,7 +441,8 @@ curl -X POST "http://localhost:3000/api/bitable-exports/run" \
 
 定时任务：
 - `worker.bitable_export`
-- 每天 `10:05 (Asia/Shanghai)` 自动执行
+- 默认每天 `10:05 (Asia/Shanghai)` 自动执行
+- 实际时间固定按全局 `push_time + 5 分钟`
 - 默认导出前一天数据
 
 查看 worker 日志：
@@ -425,7 +454,7 @@ docker compose logs -f bitable-export
 
 ---
 
-## 5.8 验证 ASA 关键词专项链路
+## 5.10 验证 ASA 关键词专项链路
 
 保存产品阶段：
 

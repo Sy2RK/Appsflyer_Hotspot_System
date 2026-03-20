@@ -26,6 +26,8 @@ export const env = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: optionalNumber('PORT', 3000),
   timezone: process.env.TZ ?? 'Asia/Shanghai',
+  adminBasicAuthUser: process.env.ADMIN_BASIC_AUTH_USER?.trim() || 'GuruASAadmin',
+  adminBasicAuthPassword: process.env.ADMIN_BASIC_AUTH_PASSWORD || 'Guru@666',
 
   clickhouse: {
     host: requireEnv('CLICKHOUSE_HOST', 'localhost'),

@@ -1,8 +1,8 @@
 CREATE DATABASE IF NOT EXISTS hotspot;
 
-CREATE USER IF NOT EXISTS hotspot_api HOST ANY IDENTIFIED WITH no_password;
-ALTER USER IF EXISTS hotspot_api HOST ANY IDENTIFIED WITH no_password;
-GRANT SELECT, INSERT, CREATE, ALTER, DROP, OPTIMIZE ON hotspot.* TO hotspot_api;
+CREATE USER IF NOT EXISTS hotspot_api HOST ANY IDENTIFIED BY 'hotspot_api_change_me';
+ALTER USER IF EXISTS hotspot_api HOST ANY IDENTIFIED BY 'hotspot_api_change_me';
+GRANT SELECT, INSERT, ALTER, OPTIMIZE ON hotspot.* TO hotspot_api;
 
 CREATE TABLE IF NOT EXISTS hotspot.raw_events (
   event_date Date,

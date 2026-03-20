@@ -376,7 +376,7 @@ export interface BitableExportConfigRecord {
   target_table_name: string | null;
   chat_id: string | null;
   selected_fields: string[];
-  last_status: 'idle' | 'success' | 'failed';
+  last_status: 'idle' | 'success' | 'failed' | 'partial_success';
   last_error: string | null;
   last_synced_at: string | null;
   last_record_count: number;

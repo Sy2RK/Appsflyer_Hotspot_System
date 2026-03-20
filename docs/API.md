@@ -397,6 +397,59 @@ Request:
 - 若卡片发送失败，会自动回退到纯文本发送
 - `force=true` 时即使当天发过也会再次发送
 
+### `GET /api/runtime-schedule`
+查询当前全局调度配置快照。
+
+返回：
+- `singleton_key`
+- `pull_time`
+- `push_time`
+- `bitable_time`
+- `timezone`
+- `created_at`
+- `updated_at`
+
+示例：
+```json
+{
+  "ok": true,
+  "data": {
+    "singleton_key": "global",
+    "pull_time": "09:00",
+    "push_time": "10:00",
+    "bitable_time": "10:05",
+    "timezone": "Asia/Shanghai",
+    "created_at": "2026-03-20T07:20:16.000Z",
+    "updated_at": "2026-03-20T07:20:16.000Z"
+  }
+}
+```
+
+说明：
+- `pull_time` 控制：
+  - `puller`
+  - `asa-keywords`
+- `push_time` 控制：
+  - `daily-brief`
+  - `asa-daily-brief`
+- `bitable_time` 不单独存库，固定按 `push_time + 5 分钟` 计算
+
+### `POST /api/runtime-schedule`
+保存全局调度配置。
+
+Request:
+```json
+{
+  "pullTime": "09:00",
+  "pushTime": "10:00"
+}
+```
+
+说明：
+- `pullTime` / `pushTime` 必须是 `HH:MM` 格式
+- 保存成功后，worker 会在下一轮检查时读取新配置，不需要手动改 `.env`
+- 页面入口位于 WebUI 顶部 `全局调度设置`
+
 ### `GET /api/bitable-exports/configs`
 查询 Feishu 多维表格导出配置快照。
 
@@ -437,8 +490,9 @@ Request:
 ```
 
 说明：
-- `enabled=true` 且 `chatId` 非空时，才会被每日 `10:05` 定时任务纳入执行
+- `enabled=true` 且 `chatId` 非空时，才会被每日 `bitable_time` 定时任务纳入执行
 - `selectedFields` 仅允许选择后端固定字段目录中的列
+- `bitable_time` 固定按全局 `push_time + 5 分钟` 计算
 
 ### `POST /api/bitable-exports/run`
 手动执行一次原始数据导出到 Feishu 多维表格，并向指定群聊发送结果通知。
@@ -497,5 +551,6 @@ Request:
 6. 指标恢复后 open alert 变 resolved 并发送恢复通知
 7. `GET /api/daily-brief/preview` 可生成结构化日报预览
 8. `POST /api/daily-brief/send` 可发送飞书日报卡片
-9. `GET /api/bitable-exports/configs` / `POST /api/bitable-exports/run` 可执行原始数据多维表格导出
-10. `GET /api/operation-logs` 可查询操作与定时任务执行记录
+9. `GET /api/runtime-schedule` / `POST /api/runtime-schedule` 可读取并更新全局调度时间
+10. `GET /api/bitable-exports/configs` / `POST /api/bitable-exports/run` 可执行原始数据多维表格导出
+11. `GET /api/operation-logs` 可查询操作与定时任务执行记录

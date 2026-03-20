@@ -1146,7 +1146,7 @@ export async function updateBitableExportSyncResult(input: {
   source_type: BitableExportSourceType;
   target_table_id?: string | null;
   target_table_name?: string | null;
-  last_status: 'idle' | 'success' | 'failed';
+  last_status: 'idle' | 'success' | 'failed' | 'partial_success';
   last_error?: string | null;
   last_synced_at?: string | null;
   last_record_count?: number;

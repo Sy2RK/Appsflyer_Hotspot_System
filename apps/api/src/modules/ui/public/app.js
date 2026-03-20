@@ -70,6 +70,7 @@ const el = {
   sections: Array.from(document.querySelectorAll('.section-panel[id]')),
 
   refreshAllBtn: document.getElementById('refreshAllBtn'),
+  logoutBtn: document.getElementById('logoutBtn'),
   lastUpdated: document.getElementById('lastUpdated'),
 
   ovApps: document.getElementById('ovApps'),
@@ -342,6 +343,11 @@ async function api(path, options = {}) {
   });
 
   const body = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    const next = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+    window.location.assign(`/login?next=${next}`);
+    throw new Error('unauthorized');
+  }
   if (!res.ok || body.ok === false) {
     throw new Error(body.error || `request_failed_${res.status}`);
   }
@@ -3406,6 +3412,16 @@ el.runtimePushTimeInput?.addEventListener('input', renderRuntimeSchedulePreview)
 el.refreshAllBtn.addEventListener('click', () =>
   refreshAll().catch((err) => showToast(err.message || '刷新失败', true))
 );
+el.logoutBtn?.addEventListener('click', async () => {
+  try {
+    await fetch('/auth/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' }
+    });
+  } finally {
+    window.location.assign('/login');
+  }
+});
 el.operationLogsFilter.addEventListener('submit', (e) =>
   loadOperationLogs(e).catch((err) => showToast(err.message || '操作日志加载失败', true))
 );

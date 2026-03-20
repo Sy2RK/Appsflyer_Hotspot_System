@@ -4,8 +4,8 @@ services:
     container_name: hotspot-clickhouse
     restart: unless-stopped
     ports:
-      - '8123:8123'
-      - '9000:9000'
+      - '127.0.0.1:8123:8123'
+      - '127.0.0.1:9000:9000'
     environment:
       CLICKHOUSE_DB: hotspot
       CLICKHOUSE_USER: default
@@ -19,7 +19,7 @@ services:
     container_name: hotspot-postgres
     restart: unless-stopped
     ports:
-      - '5432:5432'
+      - '127.0.0.1:5432:5432'
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -46,7 +46,7 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
       POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       AGGREGATOR_LOOKBACK_HOURS: 6
@@ -75,7 +75,7 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
       POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       AGGREGATOR_LOOKBACK_HOURS: 6
@@ -99,7 +99,7 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
       POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       DETECTOR_INTERVAL_MS: 300000
@@ -125,7 +125,7 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
       POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       PULLER_INTERVAL_MS: 86400000
@@ -152,7 +152,7 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
       POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       KEYWORD_ENGINE_INTERVAL_MS: ${KEYWORD_ENGINE_INTERVAL_MS:-86400000}
@@ -177,7 +177,7 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
       POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       BUDGET_ADVISOR_INTERVAL_MS: ${BUDGET_ADVISOR_INTERVAL_MS:-86400000}
@@ -204,7 +204,7 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
       POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       ASA_KEYWORD_INTERVAL_MS: ${ASA_KEYWORD_INTERVAL_MS:-86400000}
@@ -233,7 +233,7 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
       POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       ASA_DAILY_BRIEF_ENABLED: ${ASA_DAILY_BRIEF_ENABLED:-true}
@@ -261,7 +261,7 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
       POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       DAILY_BRIEF_ENABLED: ${DAILY_BRIEF_ENABLED:-true}
@@ -290,7 +290,7 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
       POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       FEISHU_BITABLE_ENABLED: ${FEISHU_BITABLE_ENABLED:-true}

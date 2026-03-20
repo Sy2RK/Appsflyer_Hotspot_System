@@ -5,17 +5,9 @@ import {
   setRuleEnabled,
   upsertRule
 } from '@shared/utils/repositories.js';
-import { RuleDSL } from '@shared/types/rules.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import { parseRuleDsl } from '@shared/utils/ruleParser.js';
 import { logger } from '../../common/logger/logger.js';
-
-function isRuleDsl(value: unknown): value is RuleDSL {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-  const obj = value as Record<string, unknown>;
-  return Array.isArray(obj.metrics);
-}
 
 const router = Router();
 
@@ -32,9 +24,9 @@ router.post('/api/rules', async (req, res) => {
   const name = typeof body.name === 'string' ? body.name : '';
   const enabled = typeof body.enabled === 'boolean' ? body.enabled : true;
   const id = typeof body.id === 'number' ? body.id : undefined;
-  const ruleJson = body.rule_json;
+  const ruleJson = parseRuleDsl(body.rule_json);
 
-  if (!appKey || !name || !isRuleDsl(ruleJson)) {
+  if (!appKey || !name || !ruleJson) {
     return res.status(400).json({ ok: false, error: 'invalid_rule_payload' });
   }
 

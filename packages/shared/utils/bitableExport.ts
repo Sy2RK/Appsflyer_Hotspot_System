@@ -8,6 +8,7 @@ import {
   updateBitableExportSyncResult
 } from './repositories.js';
 import { getFeishuTenantAccessToken, sendFeishuInteractiveCardNotification, type AlertChannelConfig } from './notifier.js';
+import { getPreviousDateString } from './businessDate.js';
 
 interface LoggerLike {
   info?: (message: string, meta?: Record<string, unknown>) => void;
@@ -72,6 +73,7 @@ export interface BitableExportRunResult {
 const SYSTEM_FIELDS: BitableFieldDefinition[] = [
   { key: '_report_date', label: '同步报告日期', value_type: 'text', default_selected: true, system: true },
   { key: '_sync_key', label: '同步键', value_type: 'text', default_selected: true, system: true },
+  { key: '_snapshot_id', label: '同步快照ID', value_type: 'text', default_selected: true, system: true },
   { key: '_synced_at', label: '同步时间', value_type: 'datetime', default_selected: true, system: true }
 ];
 
@@ -662,11 +664,18 @@ async function ensureTableFields(
   }
 }
 
-async function listRecordIdsForReportDate(appToken: string, tableId: string, reportDate: string): Promise<string[]> {
+async function listRecordsForReportDate(
+  appToken: string,
+  tableId: string,
+  reportDate: string
+): Promise<Array<{ record_id: string; snapshot_id: string }>> {
   const records = await listBitableRecords(appToken, tableId);
   return records
     .filter((record) => String(record.fields['同步报告日期'] || '').trim() === reportDate)
-    .map((record) => record.record_id);
+    .map((record) => ({
+      record_id: record.record_id,
+      snapshot_id: String(record.fields['同步快照ID'] || '').trim()
+    }));
 }
 
 async function deleteRecordsByIds(appToken: string, tableId: string, recordIds: string[], logger?: LoggerLike): Promise<number> {
@@ -690,14 +699,17 @@ function buildRecordFields(
   sourceType: BitableExportSourceType,
   row: Record<string, unknown>,
   selectedFields: string[],
-  reportDate: string
+  reportDate: string,
+  snapshotId: string,
+  syncedAtMillis: number
 ): Record<string, unknown> {
   const catalog = fieldCatalog(sourceType);
   const selected = new Set(selectedFields);
   const result: Record<string, unknown> = {
     同步报告日期: reportDate,
     同步键: syncKeyForRow(sourceType, row),
-    同步时间: parseToEpochMillis(formatLocalDateTime())
+    同步快照ID: snapshotId,
+    同步时间: syncedAtMillis
   };
   for (const field of catalog) {
     if (field.system || !selected.has(field.key)) {
@@ -822,10 +834,29 @@ export async function runBitableExport(
   await ensureTableFields(appToken, table.table_id, sourceType, selectedFields, logger);
 
   const rows = sourceType === 'pull_daily' ? await queryPullRows(reportDate) : await queryAsaRows(reportDate);
-  const oldRecordIds = await listRecordIdsForReportDate(appToken, table.table_id, reportDate);
+  const oldRecords = await listRecordsForReportDate(appToken, table.table_id, reportDate);
+  const snapshotId = `${reportDate}:${Date.now()}:${sourceType}`;
+  const syncedAtMillis = parseToEpochMillis(formatLocalDateTime()) ?? Date.now();
+  const recordPayloads = rows.map((row) => buildRecordFields(sourceType, row, selectedFields, reportDate, snapshotId, syncedAtMillis));
+
+  try {
+    await batchCreateBitableRecords(appToken, table.table_id, recordPayloads);
+  } catch (error) {
+    const partialSnapshotRecords = (await listRecordsForReportDate(appToken, table.table_id, reportDate))
+      .filter((record) => record.snapshot_id === snapshotId)
+      .map((record) => record.record_id);
+    if (partialSnapshotRecords.length > 0) {
+      await deleteRecordsByIds(appToken, table.table_id, partialSnapshotRecords, logger);
+    }
+    throw error;
+  }
+
+  const oldRecordIds = oldRecords.map((record) => record.record_id);
   const deletedCount = await deleteRecordsByIds(appToken, table.table_id, oldRecordIds, logger);
-  const recordPayloads = rows.map((row) => buildRecordFields(sourceType, row, selectedFields, reportDate));
-  await batchCreateBitableRecords(appToken, table.table_id, recordPayloads);
+  const cleanupError =
+    oldRecordIds.length > 0 && deletedCount !== oldRecordIds.length
+      ? `snapshot_cleanup_incomplete deleted=${deletedCount}/${oldRecordIds.length}`
+      : null;
 
   const resultBase = {
     source_type: sourceType,
@@ -866,11 +897,21 @@ export async function runBitableExport(
     source_type: sourceType,
     target_table_id: table.table_id,
     target_table_name: table.name,
-    last_status: notify.ok ? 'success' : 'failed',
-    last_error: notify.ok ? null : notify.error || 'notify_failed',
+    last_status: cleanupError ? 'partial_success' : notify.ok ? 'success' : 'failed',
+    last_error: cleanupError || (notify.ok ? null : notify.error || 'notify_failed'),
     last_synced_at: new Date().toISOString(),
     last_record_count: recordPayloads.length
   });
+
+  if (cleanupError) {
+    logger?.warn?.('bitable_snapshot_cleanup_incomplete', {
+      source_type: sourceType,
+      report_date: reportDate,
+      table_id: table.table_id,
+      deleted_count: deletedCount,
+      expected_delete_count: oldRecordIds.length
+    });
+  }
 
   return result;
 }
@@ -881,7 +922,7 @@ export async function runScheduledBitableExports(logger?: LoggerLike): Promise<B
     return [];
   }
   await ensureDefaultConfigs();
-  const reportDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const reportDate = getPreviousDateString(1);
   const configs = await listBitableExportConfigs();
   const enabled = configs
     .map((row) => mergeConfig(row.source_type, row))

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { chExec, chQuery } from '../../common/clickhouse/client.js';
+import { chExec, chInsertJSON, chQuery } from '../../common/clickhouse/client.js';
 import { runPullCycle } from '@shared/utils/puller.js';
 import { logger } from '../../common/logger/logger.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
@@ -32,9 +32,97 @@ function normalizePage(raw: unknown): number {
   return Math.floor(num);
 }
 
-function normalizeNumeric(raw: unknown): number {
-  const num = Number(raw);
-  return Number.isFinite(num) ? num : 0;
+async function rebuildMetricsDailySlice(params: {
+  date: string;
+  appKey: string;
+  platform: string;
+  mediaSource: string;
+  country: string;
+  campaign: string;
+}): Promise<void> {
+  const queryParams = {
+    date: params.date,
+    app_key: params.appKey,
+    platform: params.platform,
+    media_source: params.mediaSource,
+    country: params.country,
+    campaign: params.campaign
+  };
+
+  await chExec(
+    `ALTER TABLE metrics_daily
+      DELETE WHERE date = toDate({date:String})
+        AND app_key = {app_key:String}
+        AND lowerUTF8(platform) = {platform:String}
+        AND media_source = {media_source:String}
+        AND country = {country:String}
+        AND campaign = {campaign:String}
+        AND source = 'pull_daily_report_v5'
+      SETTINGS mutations_sync = 2`,
+    queryParams
+  );
+
+  const rows = await chQuery<Record<string, unknown>>(
+    `SELECT
+        sum(toFloat64(installs)) AS installs,
+        sum(toFloat64(clicks)) AS clicks,
+        sum(toFloat64(total_cost)) AS total_cost
+      FROM pull_aggregate_daily
+      WHERE date = toDate({date:String})
+        AND app_key = {app_key:String}
+        AND lowerUTF8(platform) = {platform:String}
+        AND media_source = {media_source:String}
+        AND country = {country:String}
+        AND campaign = {campaign:String}`,
+    queryParams
+  );
+
+  const installs = Number(rows[0]?.installs || 0);
+  const clicks = Number(rows[0]?.clicks || 0);
+  const totalCost = Number(rows[0]?.total_cost || 0);
+  if (installs <= 0 && clicks <= 0 && totalCost <= 0) {
+    return;
+  }
+
+  const version = Date.now();
+  await chInsertJSON('metrics_daily', [
+    {
+      date: params.date,
+      app_key: params.appKey,
+      platform: params.platform,
+      metric: 'installs',
+      value: installs,
+      media_source: params.mediaSource,
+      campaign: params.campaign,
+      country: params.country,
+      source: 'pull_daily_report_v5',
+      version
+    },
+    {
+      date: params.date,
+      app_key: params.appKey,
+      platform: params.platform,
+      metric: 'clicks',
+      value: clicks,
+      media_source: params.mediaSource,
+      campaign: params.campaign,
+      country: params.country,
+      source: 'pull_daily_report_v5',
+      version
+    },
+    {
+      date: params.date,
+      app_key: params.appKey,
+      platform: params.platform,
+      metric: 'total_cost',
+      value: totalCost,
+      media_source: params.mediaSource,
+      campaign: params.campaign,
+      country: params.country,
+      source: 'pull_daily_report_v5',
+      version
+    }
+  ]);
 }
 
 function summarizePullCycleStatus(result: {
@@ -163,10 +251,6 @@ router.delete('/api/pull-records', async (req, res) => {
   const campaign = normalizeTextFilter(body.campaign);
   const sourceReport = normalizeTextFilter(body.source_report);
   const rawJson = typeof body.raw_json === 'string' ? body.raw_json : '';
-  const installs = normalizeNumeric(body.installs);
-  const clicks = normalizeNumeric(body.clicks);
-  const totalCost = normalizeNumeric(body.total_cost);
-
   if (!ingestTime || !date || !appKey || !sourceReport || !rawJson) {
     return res.status(400).json({ ok: false, error: 'invalid_pull_record_payload' });
   }
@@ -184,7 +268,8 @@ router.delete('/api/pull-records', async (req, res) => {
         AND country = {country:String}
         AND campaign = {campaign:String}
         AND source_report = {source_report:String}
-        AND raw_json = {raw_json:String}`,
+        AND raw_json = {raw_json:String}
+      SETTINGS mutations_sync = 2`,
     {
       ingest_time: ingestTime,
       date,
@@ -198,32 +283,14 @@ router.delete('/api/pull-records', async (req, res) => {
     }
   );
 
-  await chExec(
-    `ALTER TABLE metrics_daily
-      DELETE WHERE date = toDate({date:String})
-        AND app_key = {app_key:String}
-        AND lowerUTF8(platform) = {platform:String}
-        AND media_source = {media_source:String}
-        AND country = {country:String}
-        AND campaign = {campaign:String}
-        AND source = 'pull_daily_report_v5'
-        AND (
-          (metric = 'installs' AND value = {installs:Float64})
-          OR (metric = 'clicks' AND value = {clicks:Float64})
-          OR (metric = 'total_cost' AND value = {total_cost:Float64})
-        )`,
-    {
-      date,
-      app_key: appKey,
-      platform: platform || 'unknown',
-      media_source: mediaSource || 'unknown',
-      country: country || 'unknown',
-      campaign: campaign || 'unknown',
-      installs,
-      clicks,
-      total_cost: totalCost
-    }
-  );
+  await rebuildMetricsDailySlice({
+    date,
+    appKey,
+    platform: platform || 'unknown',
+    mediaSource: mediaSource || 'unknown',
+    country: country || 'unknown',
+    campaign: campaign || 'unknown'
+  });
 
   logger.info('pull_record_deleted', {
     app_key: appKey,

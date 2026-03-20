@@ -1,5 +1,5 @@
 import { env } from '../config/env.js';
-import { chInsertJSON, chQuery } from './clickhouse.js';
+import { chExec, chInsertJSON, chQuery } from './clickhouse.js';
 import { md5Hex } from './hash.js';
 import { explainBudgetRecommendationWithLlm } from './llm.js';
 import {
@@ -22,6 +22,7 @@ import { sendAlertNotification, sendFeishuInteractiveCardNotification, type Aler
 import { resolveProductViewName } from './displayName.js';
 import { getDailyBriefDefaultReportDate } from './dailyBrief.js';
 import { getPushScheduleTarget } from './runtimeSchedule.js';
+import { buildPreviousDateList } from './businessDate.js';
 import type {
   AppConfigRecord,
   AsaKeywordRecommendationRow,
@@ -546,12 +547,7 @@ function toAsaEventRows(app: AppConfigRecord, platformHint: string, rows: CsvRow
 }
 
 function buildDateList(backfillDays: number): string[] {
-  const days = Math.max(1, backfillDays);
-  const result: string[] = [];
-  for (let i = 1; i <= days; i += 1) {
-    result.push(new Date(Date.now() - i * ONE_DAY_MS).toISOString().slice(0, 10));
-  }
-  return result;
+  return buildPreviousDateList(backfillDays);
 }
 
 function percentile(values: number[], ratio: number): number {
@@ -684,6 +680,14 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     if (!appKey || !platform) continue;
     await deleteStaleAsaKeywordStates(appKey, platform, scopes);
     await deleteStaleAsaKeywordRecommendations(appKey, platform, from, to, scopes);
+  }
+  for (const target of asaTargets(Array.from(appByKey.values()))) {
+    const scopeKey = `${target.app.app_key}|${target.platform}`;
+    if (scopesByApp.has(scopeKey)) {
+      continue;
+    }
+    await deleteStaleAsaKeywordStates(target.app.app_key, target.platform, []);
+    await deleteStaleAsaKeywordRecommendations(target.app.app_key, target.platform, from, to, []);
   }
 
   let stateRows = 0;
@@ -930,14 +934,56 @@ function aggregateDailyMetrics(
   });
 }
 
+async function replaceAsaSlice(params: {
+  appKey: string;
+  platform: string;
+  date: string;
+  installRows: AsaInstallRow[];
+  eventRows: AsaInAppEventRow[];
+  metricRows: AsaKeywordDailyMetricInsertRow[];
+}): Promise<void> {
+  const queryParams = {
+    app_key: params.appKey,
+    platform: params.platform,
+    date: params.date
+  };
+  await chExec(
+    `ALTER TABLE asa_raw_installs
+      DELETE WHERE app_key = {app_key:String}
+        AND platform = {platform:String}
+        AND install_date = toDate({date:String})
+      SETTINGS mutations_sync = 2`,
+    queryParams
+  );
+  await chExec(
+    `ALTER TABLE asa_raw_in_app_events
+      DELETE WHERE app_key = {app_key:String}
+        AND platform = {platform:String}
+        AND install_date = toDate({date:String})
+      SETTINGS mutations_sync = 2`,
+    queryParams
+  );
+  await chExec(
+    `ALTER TABLE ${ASA_KEYWORD_METRICS_TABLE}
+      DELETE WHERE app_key = {app_key:String}
+        AND platform = {platform:String}
+        AND date = toDate({date:String})
+      SETTINGS mutations_sync = 2`,
+    queryParams
+  );
+  await chInsertJSON('asa_raw_installs', params.installRows);
+  await chInsertJSON('asa_raw_in_app_events', params.eventRows);
+  await chInsertJSON(ASA_KEYWORD_METRICS_TABLE, params.metricRows);
+}
+
 export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLike): Promise<AsaCycleResult> {
   const startedAt = new Date();
   const dates = buildDateList(backfillDays);
   const apps = await listApps();
   const targets = asaTargets(apps);
-  const installRows: AsaInstallRow[] = [];
-  const eventRows: AsaInAppEventRow[] = [];
-  const masterRows: AsaMasterMetricRow[] = [];
+  let installRowCount = 0;
+  let eventRowCount = 0;
+  let metricRowCount = 0;
 
   for (const target of targets) {
     for (const date of dates) {
@@ -946,19 +992,28 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
         fetchRawCsv(target.appId, 'events', date),
         fetchMasterKeywordMetrics(target.appId, target.app.app_key, target.platform, date)
       ]);
-      installRows.push(...toAsaInstallRows(target.app, target.platform, installsCsv));
-      eventRows.push(...toAsaEventRows(target.app, target.platform, eventsCsv));
-      masterRows.push(...masterMetrics);
+      const installRows = toAsaInstallRows(target.app, target.platform, installsCsv);
+      const eventRows = toAsaEventRows(target.app, target.platform, eventsCsv);
+      const metricRows = aggregateDailyMetrics(installRows, eventRows, masterMetrics);
+
+      await replaceAsaSlice({
+        appKey: target.app.app_key,
+        platform: target.platform,
+        date,
+        installRows,
+        eventRows,
+        metricRows
+      });
+
+      installRowCount += installRows.length;
+      eventRowCount += eventRows.length;
+      metricRowCount += metricRows.length;
       if (env.asaKeywordRequestIntervalMs > 0 || env.asaMasterApiRequestIntervalMs > 0) {
         await sleep(Math.max(env.asaKeywordRequestIntervalMs, env.asaMasterApiRequestIntervalMs));
       }
     }
   }
 
-  const metricRows = aggregateDailyMetrics(installRows, eventRows, masterRows);
-  await chInsertJSON('asa_raw_installs', installRows);
-  await chInsertJSON('asa_raw_in_app_events', eventRows);
-  await chInsertJSON(ASA_KEYWORD_METRICS_TABLE, metricRows);
   const { stateRows, recommendationRows } = await rebuildAsaKeywordStatesAndRecommendations(backfillDays, logger);
 
   const endedAt = new Date();
@@ -967,9 +1022,9 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
     ended_at: endedAt.toISOString(),
     duration_ms: endedAt.getTime() - startedAt.getTime(),
     backfill_days: backfillDays,
-    install_rows: installRows.length,
-    event_rows: eventRows.length,
-    metric_rows: metricRows.length,
+    install_rows: installRowCount,
+    event_rows: eventRowCount,
+    metric_rows: metricRowCount,
     state_rows: stateRows,
     recommendation_rows: recommendationRows,
     app_targets: targets.length

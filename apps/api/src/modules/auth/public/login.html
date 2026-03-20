@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hotspot 登录</title>
+    <link rel="stylesheet" href="/login-assets/login.css" />
+  </head>
+  <body>
+    <main class="login-shell">
+      <section class="login-stage">
+        <div class="login-stage-copy">
+          <p class="login-kicker">AppsFlyer Hotspot</p>
+          <h1>监测控制台登录</h1>
+          <p class="login-lead">
+            使用管理员下发的账号密码进入控制台。登录成功后会保留当前浏览器会话，控制台页面和 API 请求都会自动复用登录态。
+          </p>
+          <div class="login-feature-list">
+            <article class="login-feature-card">
+              <strong>统一入口</strong>
+              <span>总览、日报、ASA 模块、多维表导出共用同一套会话。</span>
+            </article>
+            <article class="login-feature-card">
+              <strong>更顺手</strong>
+              <span>不再出现浏览器原生 Basic Auth 弹窗，直接在页面里登录即可。</span>
+            </article>
+          </div>
+        </div>
+
+        <div class="login-card">
+          <div class="login-card-head">
+            <p class="login-card-kicker">安全访问</p>
+            <h2>输入管理员凭证</h2>
+            <p>默认账号为 <strong>GuruASAadmin</strong>。密码由管理员线下提供。</p>
+          </div>
+
+          <form id="loginForm" class="login-form" autocomplete="off">
+            <label class="login-field">
+              <span>账号</span>
+              <input id="loginAccountInput" name="account" type="text" value="GuruASAadmin" />
+            </label>
+            <label class="login-field">
+              <span>密码</span>
+              <input id="loginPasswordInput" name="password" type="password" placeholder="请输入管理员密码" />
+            </label>
+            <button id="loginSubmitBtn" class="login-submit" type="submit">进入控制台</button>
+          </form>
+
+          <div id="loginStatus" class="login-status">登录后会自动跳转到当前目标页面。</div>
+        </div>
+      </section>
+    </main>
+    <script src="/login-assets/login.js"></script>
+  </body>
+  </html>

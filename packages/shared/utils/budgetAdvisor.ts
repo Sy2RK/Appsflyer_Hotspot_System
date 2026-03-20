@@ -1,6 +1,7 @@
 import { chQuery } from './clickhouse.js';
 import { env } from '../config/env.js';
 import { explainBudgetRecommendationWithLlm } from './llm.js';
+import { getDateStringInTimezone, shiftDateString } from './businessDate.js';
 import {
   expirePendingBudgetRecommendationsForDate,
   insertLlmAuditLog,
@@ -75,14 +76,7 @@ function safeNumber(value: unknown, fallback = 0): number {
 }
 
 function todayDateString(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function shiftDateString(dateString: string, days: number): string {
-  const [year, month, day] = dateString.split('-').map(Number);
-  const value = new Date(Date.UTC(year, month - 1, day));
-  value.setUTCDate(value.getUTCDate() + days);
-  return value.toISOString().slice(0, 10);
+  return getDateStringInTimezone();
 }
 
 function yesterdayDateString(): string {
