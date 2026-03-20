@@ -49,6 +49,7 @@ function resolveEventNameFilter(metricRule: MetricRule): string | null {
 
 async function queryWindowMetricValue(params: {
   appKey: string;
+  platform: string;
   metricRule: MetricRule;
   start: Date;
   end: Date;
@@ -64,7 +65,7 @@ async function queryWindowMetricValue(params: {
         ${eventNameClause}
         AND hour >= toDateTime({start:String})
         AND hour < toDateTime({end:String})
-        AND platform = '__all__'
+        AND platform = {platform:String}
         AND attribution = 'unknown'
         AND event_type = 'unknown'
         AND media_source = '__all__'
@@ -74,6 +75,7 @@ async function queryWindowMetricValue(params: {
       app_key: params.appKey,
       metric: params.metricRule.metric,
       event_name: eventNameFilter ?? '',
+      platform: params.platform,
       start: toCHDate(params.start),
       end: toCHDate(params.end)
     }
@@ -84,6 +86,7 @@ async function queryWindowMetricValue(params: {
 
 async function computeBaseline(params: {
   appKey: string;
+  platform: string;
   metricRule: MetricRule;
   windowStart: Date;
   windowEnd: Date;
@@ -96,6 +99,7 @@ async function computeBaseline(params: {
     const end = addDays(params.windowEnd, -day);
     const value = await queryWindowMetricValue({
       appKey: params.appKey,
+      platform: params.platform,
       metricRule: params.metricRule,
       start,
       end
@@ -180,6 +184,17 @@ export interface DetectorRunStats {
   alertNotifyFailure: number;
 }
 
+function rulePlatforms(row: { ios_pull_app_id?: string | null; android_pull_app_id?: string | null }): string[] {
+  const scopes = ['__all__'];
+  if (String(row.ios_pull_app_id || '').trim()) {
+    scopes.push('ios');
+  }
+  if (String(row.android_pull_app_id || '').trim()) {
+    scopes.push('android');
+  }
+  return scopes;
+}
+
 export async function runDetectionCycle(): Promise<DetectorRunStats> {
   const cycleStart = Date.now();
   const now = new Date();
@@ -205,43 +220,126 @@ export async function runDetectionCycle(): Promise<DetectorRunStats> {
     const silenceMinutes = parsedRule.silence_minutes ?? 30;
 
     for (const metricRule of parsedRule.metrics) {
-      stats.checkedRules += 1;
-      const metricKey = metricIdentity(metricRule);
-      const window = parseWindow(metricRule.window);
-      const windowEnd = floorToHour(now);
-      const windowStart = addHours(windowEnd, -window.hours);
+      for (const platform of rulePlatforms(row)) {
+        stats.checkedRules += 1;
+        try {
+          const metricKey = metricIdentity(metricRule);
+          const window = parseWindow(metricRule.window);
+          const windowEnd = floorToHour(now);
+          const windowStart = addHours(windowEnd, -window.hours);
 
-      const current = await queryWindowMetricValue({
-        appKey: row.app_key,
-        metricRule,
-        start: windowStart,
-        end: windowEnd
-      });
-      const baseline = await computeBaseline({
-        appKey: row.app_key,
-        metricRule,
-        windowStart,
-        windowEnd
-      });
-      const result = evaluateMetric(metricRule, current, baseline);
+          const current = await queryWindowMetricValue({
+            appKey: row.app_key,
+            platform,
+            metricRule,
+            start: windowStart,
+            end: windowEnd
+          });
+          const baseline = await computeBaseline({
+            appKey: row.app_key,
+            platform,
+            metricRule,
+            windowStart,
+            windowEnd
+          });
+          const result = evaluateMetric(metricRule, current, baseline);
 
-      if (result.status === 'normal') {
-        const openAlerts = await listOpenAlertsByRuleMetric(row.app_key, row.id, metricKey, metricRule.window);
-        if (openAlerts.length > 0) {
-          const resolvedCount = await resolveOpenAlertsByRuleMetric(
-            row.app_key,
-            row.id,
-            metricKey,
-            metricRule.window
+          if (result.status === 'normal') {
+            const openAlerts = await listOpenAlertsByRuleMetric(row.app_key, platform, row.id, metricKey, metricRule.window);
+            if (openAlerts.length > 0) {
+              const resolvedCount = await resolveOpenAlertsByRuleMetric(
+                row.app_key,
+                platform,
+                row.id,
+                metricKey,
+                metricRule.window
+              );
+              stats.resolvedAlerts += resolvedCount;
+
+              const notifyRes = await sendAlertNotification(
+                {
+                  title: `[Hotspot][RESOLVED] ${row.app_key}${platform === '__all__' ? '' : `/${platform}`} ${metricKey}`,
+                  text: `rule=${row.name}\nplatform=${platform}\nwindow=${metricRule.window}\nresolved_alerts=${resolvedCount}\ncurrent=${current.toFixed(
+                    2
+                  )}\nbaseline=${baseline.toFixed(2)}`
+                },
+                row
+              );
+
+              if (notifyRes.ok) {
+                stats.alertNotifySuccess += 1;
+              } else {
+                stats.alertNotifyFailure += 1;
+              }
+            }
+            continue;
+          }
+
+          const explain = await explainAnomaly({
+            appKey: row.app_key,
+            platform,
+            metricRule,
+            windowStart,
+            windowEnd,
+            direction: result.status
+          });
+
+          const major = explain.top_contributors[0];
+          const fingerprint = md5Hex(
+            [
+              row.app_key,
+              platform,
+              metricKey,
+              metricRule.window,
+              major?.dim ?? 'none',
+              major?.key ?? 'none'
+            ].join('|')
           );
-          stats.resolvedAlerts += resolvedCount;
+
+          const suppressed = await findRecentOpenAlertByFingerprint(fingerprint, silenceMinutes);
+          if (suppressed) {
+            logger.info('alert_suppressed', {
+              app_key: row.app_key,
+              platform,
+              rule_id: row.id,
+              metric: metricKey,
+              fingerprint,
+              silence_minutes: silenceMinutes
+            });
+            continue;
+          }
+
+          const created = await createAlert({
+            app_key: row.app_key,
+            platform,
+            rule_id: row.id,
+            severity: result.severity ?? 'P2',
+            status: 'open',
+            metric: metricKey,
+            window: metricRule.window,
+            current_value: result.current,
+            baseline_value: result.baseline,
+            delta_value: result.delta,
+            delta_ratio: result.deltaRatio,
+            top_contributors: explain.top_contributors,
+            explanation: explain.hypothesis,
+            fingerprint
+          });
+          stats.openedAlerts += 1;
 
           const notifyRes = await sendAlertNotification(
             {
-              title: `[Hotspot][RESOLVED] ${row.app_key} ${metricKey}`,
-              text: `rule=${row.name}\nwindow=${metricRule.window}\nresolved_alerts=${resolvedCount}\ncurrent=${current.toFixed(
-                2
-              )}\nbaseline=${baseline.toFixed(2)}`
+              title: `[Hotspot][${result.severity}] ${row.app_key}${platform === '__all__' ? '' : `/${platform}`} ${metricKey} ${result.status.toUpperCase()}`,
+              text:
+                `rule=${row.name}\n` +
+                `platform=${platform}\n` +
+                `window=${metricRule.window} (${toCHDate(windowStart)} -> ${toCHDate(windowEnd)})\n` +
+                `current=${result.current.toFixed(2)} baseline=${result.baseline.toFixed(2)} ` +
+                `delta=${result.delta.toFixed(2)} ratio=${result.deltaRatio.toFixed(4)}\n` +
+                `fingerprint=${fingerprint}\n` +
+                `top=${JSON.stringify(explain.top_contributors)}\n` +
+                `explanation=${explain.hypothesis}\n` +
+                `alert_id=${created.id}`
             },
             row
           );
@@ -251,78 +349,17 @@ export async function runDetectionCycle(): Promise<DetectorRunStats> {
           } else {
             stats.alertNotifyFailure += 1;
           }
+        } catch (error) {
+          logger.warn('rule_eval_failed', {
+            app_key: row.app_key,
+            rule_id: row.id,
+            platform,
+            metric: metricRule.metric,
+            window: metricRule.window,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          continue;
         }
-        continue;
-      }
-
-      const explain = await explainAnomaly({
-        appKey: row.app_key,
-        metricRule,
-        windowStart,
-        windowEnd,
-        direction: result.status
-      });
-
-      const major = explain.top_contributors[0];
-      const fingerprint = md5Hex(
-        [
-          row.app_key,
-          metricKey,
-          metricRule.window,
-          major?.dim ?? 'none',
-          major?.key ?? 'none'
-        ].join('|')
-      );
-
-      const suppressed = await findRecentOpenAlertByFingerprint(fingerprint, silenceMinutes);
-      if (suppressed) {
-        logger.info('alert_suppressed', {
-          app_key: row.app_key,
-          rule_id: row.id,
-          metric: metricKey,
-          fingerprint,
-          silence_minutes: silenceMinutes
-        });
-        continue;
-      }
-
-      const created = await createAlert({
-        app_key: row.app_key,
-        rule_id: row.id,
-        severity: result.severity ?? 'P2',
-        status: 'open',
-        metric: metricKey,
-        window: metricRule.window,
-        current_value: result.current,
-        baseline_value: result.baseline,
-        delta_value: result.delta,
-        delta_ratio: result.deltaRatio,
-        top_contributors: explain.top_contributors,
-        explanation: explain.hypothesis,
-        fingerprint
-      });
-      stats.openedAlerts += 1;
-
-      const notifyRes = await sendAlertNotification(
-        {
-          title: `[Hotspot][${result.severity}] ${row.app_key} ${metricKey} ${result.status.toUpperCase()}`,
-          text:
-            `rule=${row.name}\n` +
-            `window=${metricRule.window} (${toCHDate(windowStart)} -> ${toCHDate(windowEnd)})\n` +
-            `current=${result.current.toFixed(2)} baseline=${result.baseline.toFixed(2)} ` +
-            `delta=${result.delta.toFixed(2)} ratio=${result.deltaRatio.toFixed(4)}\n` +
-            `fingerprint=${fingerprint}\n` +
-            `top=${JSON.stringify(explain.top_contributors)}\n` +
-            `explanation=${explain.hypothesis}\n` +
-            `alert_id=${created.id}`
-        },
-        row
-      );
-
-      if (notifyRes.ok) {
-        stats.alertNotifySuccess += 1;
-      } else {
-        stats.alertNotifyFailure += 1;
       }
     }
   }

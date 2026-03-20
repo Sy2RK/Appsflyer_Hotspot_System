@@ -2,6 +2,9 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+const nodeEnv = process.env.NODE_ENV ?? 'development';
+const isProduction = nodeEnv === 'production';
+
 function requireEnv(name: string, fallback?: string): string {
   const value = process.env[name] ?? fallback;
   if (value === undefined || value === '') {
@@ -23,21 +26,23 @@ function optionalNumber(name: string, fallback: number): number {
 }
 
 export const env = {
-  nodeEnv: process.env.NODE_ENV ?? 'development',
+  nodeEnv,
   port: optionalNumber('PORT', 3000),
   timezone: process.env.TZ ?? 'Asia/Shanghai',
-  adminBasicAuthUser: process.env.ADMIN_BASIC_AUTH_USER?.trim() || 'GuruASAadmin',
-  adminBasicAuthPassword: process.env.ADMIN_BASIC_AUTH_PASSWORD || 'Guru@666',
+  adminBasicAuthUser: process.env.ADMIN_BASIC_AUTH_USER?.trim() ?? '',
+  adminBasicAuthPassword: process.env.ADMIN_BASIC_AUTH_PASSWORD ?? '',
 
   clickhouse: {
     host: requireEnv('CLICKHOUSE_HOST', 'localhost'),
     port: optionalNumber('CLICKHOUSE_PORT', 8123),
-    user: requireEnv('CLICKHOUSE_USER', 'default'),
-    password: process.env.CLICKHOUSE_PASSWORD ?? '',
+    user: isProduction ? requireEnv('CLICKHOUSE_USER') : requireEnv('CLICKHOUSE_USER', 'default'),
+    password: isProduction ? requireEnv('CLICKHOUSE_PASSWORD') : process.env.CLICKHOUSE_PASSWORD ?? '',
     database: requireEnv('CLICKHOUSE_DB', 'hotspot')
   },
 
-  postgresUrl: requireEnv('POSTGRES_URL', 'postgres://postgres:postgres@localhost:5432/hotspot'),
+  postgresUrl: isProduction
+    ? requireEnv('POSTGRES_URL')
+    : requireEnv('POSTGRES_URL', 'postgres://postgres:postgres@localhost:5432/hotspot'),
   redisUrl: process.env.REDIS_URL ?? '',
   alertWebhookUrl: process.env.ALERT_WEBHOOK_URL ?? '',
   feishuAppId: process.env.FEISHU_APP_ID ?? '',

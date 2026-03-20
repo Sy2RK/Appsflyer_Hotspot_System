@@ -6,7 +6,7 @@ import {
   upsertRule
 } from '@shared/utils/repositories.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
-import { parseRuleDsl } from '@shared/utils/ruleParser.js';
+import { validateRuleDsl } from '@shared/utils/ruleParser.js';
 import { logger } from '../../common/logger/logger.js';
 
 const router = Router();
@@ -24,10 +24,18 @@ router.post('/api/rules', async (req, res) => {
   const name = typeof body.name === 'string' ? body.name : '';
   const enabled = typeof body.enabled === 'boolean' ? body.enabled : true;
   const id = typeof body.id === 'number' ? body.id : undefined;
-  const ruleJson = parseRuleDsl(body.rule_json);
+  const validatedRuleJson = validateRuleDsl(body.rule_json);
 
-  if (!appKey || !name || !ruleJson) {
+  if (!appKey || !name) {
     return res.status(400).json({ ok: false, error: 'invalid_rule_payload' });
+  }
+
+  if (!validatedRuleJson.ok || !validatedRuleJson.value) {
+    return res.status(400).json({
+      ok: false,
+      error: 'invalid_rule_payload',
+      detail: validatedRuleJson.error ?? 'rule_json validation failed'
+    });
   }
 
   const app = await getAppByKey(appKey);
@@ -40,7 +48,7 @@ router.post('/api/rules', async (req, res) => {
     app_key: appKey,
     name,
     enabled,
-    rule_json: ruleJson as unknown as Record<string, unknown>
+    rule_json: validatedRuleJson.value as unknown as Record<string, unknown>
   });
 
   await writeOperationLog(

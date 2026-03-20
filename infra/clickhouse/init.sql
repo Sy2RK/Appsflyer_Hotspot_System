@@ -1,9 +1,5 @@
 CREATE DATABASE IF NOT EXISTS hotspot;
 
-CREATE USER IF NOT EXISTS hotspot_api HOST ANY IDENTIFIED BY 'hotspot_api_change_me';
-ALTER USER IF EXISTS hotspot_api HOST ANY IDENTIFIED BY 'hotspot_api_change_me';
-GRANT SELECT, INSERT, ALTER, OPTIMIZE ON hotspot.* TO hotspot_api;
-
 CREATE TABLE IF NOT EXISTS hotspot.raw_events (
   event_date Date,
   event_time DateTime,
@@ -151,6 +147,7 @@ CREATE TABLE IF NOT EXISTS hotspot.asa_raw_installs (
   country LowCardinality(String),
   cost_value Float64,
   currency LowCardinality(String),
+  snapshot_id UInt64 DEFAULT 0,
   event_uid FixedString(32),
   raw_json String
 )
@@ -173,6 +170,7 @@ CREATE TABLE IF NOT EXISTS hotspot.asa_raw_in_app_events (
   event_revenue_usd Float64,
   cost_value Float64,
   currency LowCardinality(String),
+  snapshot_id UInt64 DEFAULT 0,
   event_uid FixedString(32),
   raw_json String
 )
@@ -217,8 +215,25 @@ CREATE TABLE IF NOT EXISTS hotspot.asa_keyword_daily_metrics_v2 (
   average_ecpi Float64,
   cpp Float64,
   d7_roas Float64,
+  snapshot_id UInt64 DEFAULT 0,
   version UInt64
 )
 ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(date)
 ORDER BY (app_key, platform, date, keyword, campaign, adset);
+
+CREATE TABLE IF NOT EXISTS hotspot.asa_slice_snapshots (
+  app_key String,
+  platform LowCardinality(String),
+  date Date,
+  snapshot_id UInt64,
+  status LowCardinality(String),
+  created_at DateTime
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(date)
+ORDER BY (app_key, platform, date, snapshot_id);
+
+ALTER TABLE hotspot.asa_raw_installs ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;
+ALTER TABLE hotspot.asa_raw_in_app_events ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;
+ALTER TABLE hotspot.asa_keyword_daily_metrics_v2 ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;

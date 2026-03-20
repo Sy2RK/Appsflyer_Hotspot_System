@@ -2,6 +2,20 @@
 
 ## 1. 启动
 
+升级已有环境时，先看：`docs/UPGRADE_CHECKLIST.md`。
+
+
+生产环境必填：
+
+- `ADMIN_BASIC_AUTH_USER`
+- `ADMIN_BASIC_AUTH_PASSWORD`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `POSTGRES_DB`
+- `CLICKHOUSE_USER`
+- `CLICKHOUSE_PASSWORD`
+- `CLICKHOUSE_API_PASSWORD`（用于 ClickHouse 业务账号初始化）
+
 ```bash
 cd hotspot-system
 cp .env.example .env

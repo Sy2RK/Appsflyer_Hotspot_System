@@ -22,6 +22,21 @@ export interface NotificationResult {
   render_mode?: 'interactive' | 'post' | 'text' | 'text_fallback';
 }
 
+async function parseJsonBody<T>(
+  response: Response,
+  context: string
+): Promise<{ ok: true; body: T } | { ok: false; error: string }> {
+  try {
+    const body = (await response.json()) as T;
+    return { ok: true, body };
+  } catch (error) {
+    return {
+      ok: false,
+      error: `${context} returned non-JSON body: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+
 function resolveFeishuConfig(override?: AlertChannelConfig): {
   appId: string;
   appSecret: string;
@@ -70,10 +85,25 @@ export async function getFeishuTenantAccessToken(
       return { ok: false, status: tokenRes.status, error: 'Feishu token request failed' };
     }
 
-    const tokenBody = (await tokenRes.json()) as { tenant_access_token?: string; code?: number; msg?: string };
+    const parsed = await parseJsonBody<{ tenant_access_token?: string; code?: number; msg?: string }>(
+      tokenRes,
+      'Feishu token API'
+    );
+    if (!parsed.ok) {
+      return { ok: false, status: tokenRes.status, error: parsed.error };
+    }
+    const tokenBody = parsed.body;
+    if (Number(tokenBody.code ?? 0) !== 0) {
+      return {
+        ok: false,
+        status: tokenRes.status,
+        error: `Feishu token request failed: code=${String(tokenBody.code ?? '')}, msg=${String(tokenBody.msg ?? '')}`
+      };
+    }
     if (!tokenBody.tenant_access_token) {
       return {
         ok: false,
+        status: tokenRes.status,
         error: `Feishu token missing, code=${String(tokenBody.code ?? '')}, msg=${String(tokenBody.msg ?? '')}`
       };
     }
@@ -113,11 +143,21 @@ async function sendFeishuMessage(
         ...payload
       })
     });
-    const body = (await messageRes.json().catch(() => ({}))) as {
+    const parsed = await parseJsonBody<{
       code?: number;
       msg?: string;
-    };
-    const ok = messageRes.ok && Number(body.code ?? 0) === 0;
+    }>(messageRes, 'Feishu message API');
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        status: messageRes.status,
+        error: parsed.error,
+        render_mode:
+          payload.msg_type === 'interactive' ? 'interactive' : payload.msg_type === 'post' ? 'post' : 'text'
+      };
+    }
+    const body = parsed.body;
+    const ok = messageRes.ok && Number(body.code) === 0;
 
     return {
       ok,

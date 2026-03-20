@@ -3,27 +3,24 @@ services:
     image: clickhouse/clickhouse-server:24.8
     container_name: hotspot-clickhouse
     restart: unless-stopped
+    env_file:
+      - ../.env
     ports:
       - '127.0.0.1:8123:8123'
       - '127.0.0.1:9000:9000'
-    environment:
-      CLICKHOUSE_DB: hotspot
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: ''
     volumes:
       - clickhouse-data:/var/lib/clickhouse
-      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./clickhouse/init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
 
   postgres:
     image: postgres:16
     container_name: hotspot-postgres
     restart: unless-stopped
+    env_file:
+      - ../.env
     ports:
       - '127.0.0.1:5432:5432'
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: hotspot
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -34,7 +31,7 @@ services:
       dockerfile: Dockerfile
     container_name: hotspot-api
     restart: unless-stopped
-    command: npm run start:api
+    command: sh -lc 'export POSTGRES_URL="postgres://$${POSTGRES_USER:?missing}:$${POSTGRES_PASSWORD:?missing}@postgres:5432/$${POSTGRES_DB:-hotspot}"; npm run start:api'
     env_file:
       - ../.env
     ports:
@@ -45,10 +42,7 @@ services:
       TZ: Asia/Shanghai
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
-      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       AGGREGATOR_LOOKBACK_HOURS: 6
       AGGREGATOR_INTERVAL_MS: 300000
       DETECTOR_INTERVAL_MS: 300000
@@ -66,7 +60,7 @@ services:
       dockerfile: Dockerfile
     container_name: hotspot-aggregator
     restart: unless-stopped
-    command: npm run start:aggregator
+    command: sh -lc 'export POSTGRES_URL="postgres://$${POSTGRES_USER:?missing}:$${POSTGRES_PASSWORD:?missing}@postgres:5432/$${POSTGRES_DB:-hotspot}"; npm run start:aggregator'
     env_file:
       - ../.env
     environment:
@@ -74,10 +68,7 @@ services:
       TZ: Asia/Shanghai
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
-      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       AGGREGATOR_LOOKBACK_HOURS: 6
       AGGREGATOR_INTERVAL_MS: 300000
     depends_on:
@@ -90,7 +81,7 @@ services:
       dockerfile: Dockerfile
     container_name: hotspot-detector
     restart: unless-stopped
-    command: npm run start:detector
+    command: sh -lc 'export POSTGRES_URL="postgres://$${POSTGRES_USER:?missing}:$${POSTGRES_PASSWORD:?missing}@postgres:5432/$${POSTGRES_DB:-hotspot}"; npm run start:detector'
     env_file:
       - ../.env
     environment:
@@ -98,10 +89,7 @@ services:
       TZ: Asia/Shanghai
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
-      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       DETECTOR_INTERVAL_MS: 300000
     dns:
       - 1.1.1.1
@@ -116,7 +104,7 @@ services:
       dockerfile: Dockerfile
     container_name: hotspot-puller
     restart: unless-stopped
-    command: npm run start:puller
+    command: sh -lc 'export POSTGRES_URL="postgres://$${POSTGRES_USER:?missing}:$${POSTGRES_PASSWORD:?missing}@postgres:5432/$${POSTGRES_DB:-hotspot}"; npm run start:puller'
     env_file:
       - ../.env
     environment:
@@ -124,10 +112,7 @@ services:
       TZ: Asia/Shanghai
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
-      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       PULLER_INTERVAL_MS: 86400000
       PULLER_BACKFILL_DAYS: ${PULLER_BACKFILL_DAYS:-3}
     dns:
@@ -143,7 +128,7 @@ services:
       dockerfile: Dockerfile
     container_name: hotspot-keyword-engine
     restart: unless-stopped
-    command: npm run start:keyword-engine
+    command: sh -lc 'export POSTGRES_URL="postgres://$${POSTGRES_USER:?missing}:$${POSTGRES_PASSWORD:?missing}@postgres:5432/$${POSTGRES_DB:-hotspot}"; npm run start:keyword-engine'
     env_file:
       - ../.env
     environment:
@@ -151,10 +136,7 @@ services:
       TZ: Asia/Shanghai
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
-      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       KEYWORD_ENGINE_INTERVAL_MS: ${KEYWORD_ENGINE_INTERVAL_MS:-86400000}
       KEYWORD_ENGINE_INITIAL_BACKFILL_DAYS: ${KEYWORD_ENGINE_INITIAL_BACKFILL_DAYS:-30}
       KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS: ${KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS:-3}
@@ -168,7 +150,7 @@ services:
       dockerfile: Dockerfile
     container_name: hotspot-budget-advisor
     restart: unless-stopped
-    command: npm run start:budget-advisor
+    command: sh -lc 'export POSTGRES_URL="postgres://$${POSTGRES_USER:?missing}:$${POSTGRES_PASSWORD:?missing}@postgres:5432/$${POSTGRES_DB:-hotspot}"; npm run start:budget-advisor'
     env_file:
       - ../.env
     environment:
@@ -176,10 +158,7 @@ services:
       TZ: Asia/Shanghai
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
-      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       BUDGET_ADVISOR_INTERVAL_MS: ${BUDGET_ADVISOR_INTERVAL_MS:-86400000}
       BUDGET_ADVISOR_LOOKBACK_DAYS: ${BUDGET_ADVISOR_LOOKBACK_DAYS:-30}
     dns:
@@ -195,7 +174,7 @@ services:
       dockerfile: Dockerfile
     container_name: hotspot-asa-keywords
     restart: unless-stopped
-    command: npm run start:asa-keywords
+    command: sh -lc 'export POSTGRES_URL="postgres://$${POSTGRES_USER:?missing}:$${POSTGRES_PASSWORD:?missing}@postgres:5432/$${POSTGRES_DB:-hotspot}"; npm run start:asa-keywords'
     env_file:
       - ../.env
     environment:
@@ -203,10 +182,7 @@ services:
       TZ: Asia/Shanghai
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
-      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       ASA_KEYWORD_INTERVAL_MS: ${ASA_KEYWORD_INTERVAL_MS:-86400000}
       ASA_KEYWORD_BACKFILL_DAYS: ${ASA_KEYWORD_BACKFILL_DAYS:-14}
       ASA_KEYWORD_RUN_ON_BOOT: ${ASA_KEYWORD_RUN_ON_BOOT:-false}
@@ -224,7 +200,7 @@ services:
       dockerfile: Dockerfile
     container_name: hotspot-asa-daily-brief
     restart: unless-stopped
-    command: npm run start:asa-daily-brief
+    command: sh -lc 'export POSTGRES_URL="postgres://$${POSTGRES_USER:?missing}:$${POSTGRES_PASSWORD:?missing}@postgres:5432/$${POSTGRES_DB:-hotspot}"; npm run start:asa-daily-brief'
     env_file:
       - ../.env
     environment:
@@ -232,10 +208,7 @@ services:
       TZ: Asia/Shanghai
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
-      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       ASA_DAILY_BRIEF_ENABLED: ${ASA_DAILY_BRIEF_ENABLED:-true}
       ASA_DAILY_BRIEF_INTERVAL_MS: ${ASA_DAILY_BRIEF_INTERVAL_MS:-3600000}
       ASA_DAILY_BRIEF_REPORT_HOUR: ${ASA_DAILY_BRIEF_REPORT_HOUR:-10}
@@ -252,7 +225,7 @@ services:
       dockerfile: Dockerfile
     container_name: hotspot-daily-brief
     restart: unless-stopped
-    command: npm run start:daily-brief
+    command: sh -lc 'export POSTGRES_URL="postgres://$${POSTGRES_USER:?missing}:$${POSTGRES_PASSWORD:?missing}@postgres:5432/$${POSTGRES_DB:-hotspot}"; npm run start:daily-brief'
     env_file:
       - ../.env
     environment:
@@ -260,10 +233,7 @@ services:
       TZ: Asia/Shanghai
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
-      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       DAILY_BRIEF_ENABLED: ${DAILY_BRIEF_ENABLED:-true}
       DAILY_BRIEF_INTERVAL_MS: ${DAILY_BRIEF_INTERVAL_MS:-3600000}
       DAILY_BRIEF_REPORT_HOUR: ${DAILY_BRIEF_REPORT_HOUR:-10}
@@ -281,7 +251,7 @@ services:
       dockerfile: Dockerfile
     container_name: hotspot-bitable-export
     restart: unless-stopped
-    command: npm run start:bitable-export
+    command: sh -lc 'export POSTGRES_URL="postgres://$${POSTGRES_USER:?missing}:$${POSTGRES_PASSWORD:?missing}@postgres:5432/$${POSTGRES_DB:-hotspot}"; npm run start:bitable-export'
     env_file:
       - ../.env
     environment:
@@ -289,10 +259,7 @@ services:
       TZ: Asia/Shanghai
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-hotspot_api}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-hotspot_api_change_me}
       CLICKHOUSE_DB: hotspot
-      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/hotspot
       FEISHU_BITABLE_ENABLED: ${FEISHU_BITABLE_ENABLED:-true}
       FEISHU_BITABLE_SCHEDULE_HOUR: ${FEISHU_BITABLE_SCHEDULE_HOUR:-10}
       FEISHU_BITABLE_SCHEDULE_MINUTE: ${FEISHU_BITABLE_SCHEDULE_MINUTE:-5}

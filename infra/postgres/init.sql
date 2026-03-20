@@ -44,6 +44,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_rules_app_name
 CREATE TABLE IF NOT EXISTS alerts (
   id BIGSERIAL PRIMARY KEY,
   app_key TEXT NOT NULL,
+  platform TEXT NOT NULL DEFAULT '__all__',
   rule_id BIGINT REFERENCES rules(id) ON DELETE SET NULL,
   severity TEXT NOT NULL CHECK (severity IN ('P0', 'P1', 'P2')),
   status TEXT NOT NULL CHECK (status IN ('open', 'resolved')),
@@ -61,12 +62,14 @@ CREATE TABLE IF NOT EXISTS alerts (
   resolved_at TIMESTAMPTZ
 );
 
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT '__all__';
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_open_fingerprint
   ON alerts (fingerprint)
   WHERE status = 'open';
 
 CREATE INDEX IF NOT EXISTS idx_alerts_lookup
-  ON alerts (app_key, status, severity, created_at DESC);
+  ON alerts (app_key, platform, status, severity, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_rules_app_enabled
   ON rules (app_key, enabled);

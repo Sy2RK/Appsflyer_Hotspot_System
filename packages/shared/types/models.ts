@@ -47,6 +47,7 @@ export interface AppConfigRecord {
 export interface AlertRecord {
   id: number;
   app_key: string;
+  platform: string;
   rule_id: number | null;
   severity: 'P0' | 'P1' | 'P2';
   status: 'open' | 'resolved';

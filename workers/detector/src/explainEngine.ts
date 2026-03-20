@@ -58,6 +58,7 @@ function listWindowHours(windowStart: Date, windowEnd: Date): number[] {
 
 export async function explainAnomaly(params: {
   appKey: string;
+  platform?: string;
   windowStart: Date;
   windowEnd: Date;
   metricRule: MetricRule;
@@ -65,7 +66,7 @@ export async function explainAnomaly(params: {
   topN?: number;
   direction: 'spike' | 'drop' | 'zero';
 }): Promise<ExplainResult> {
-  const { appKey, windowStart, windowEnd, metricRule, direction } = params;
+  const { appKey, platform, windowStart, windowEnd, metricRule, direction } = params;
   const baselineDays = params.baselineDays ?? 7;
   const topN = params.topN ?? 5;
 
@@ -76,6 +77,7 @@ export async function explainAnomaly(params: {
   const eventNameFilter = buildEventNameFilter(metricRule);
   const hoursList = listWindowHours(windowStart, windowEnd);
   const hoursSql = hoursList.length ? hoursList.join(',') : '0';
+  const platformClause = platform && platform !== '__all__' ? 'AND platform = {platform:String}' : '';
 
   const items: Contributor[] = [];
 
@@ -93,10 +95,12 @@ export async function explainAnomaly(params: {
        WHERE app_key = {app_key:String}
          AND event_time >= toDateTime({window_start:String})
          AND event_time < toDateTime({window_end:String})
+         ${platformClause}
          ${eventNameFilter}
        GROUP BY dim_key`,
       {
         app_key: appKey,
+        platform: platform ?? '',
         window_start: toCHDate(windowStart),
         window_end: toCHDate(windowEnd)
       }
@@ -115,6 +119,7 @@ export async function explainAnomaly(params: {
          WHERE app_key = {app_key:String}
            AND event_time >= toDateTime({baseline_start:String})
            AND event_time < toDateTime({baseline_end:String})
+           ${platformClause}
            AND toHour(event_time) IN (${hoursSql})
            ${eventNameFilter}
          GROUP BY d, dim_key
@@ -122,6 +127,7 @@ export async function explainAnomaly(params: {
        GROUP BY dim_key`,
       {
         app_key: appKey,
+        platform: platform ?? '',
         baseline_start: toCHDate(baselineStart),
         baseline_end: toCHDate(baselineEnd)
       }

@@ -49,6 +49,8 @@
 - 启动 / 验证手册：`docs/RUNBOOK.md`
 - Agent 部署手册：`docs/DEPLOYMENT_AGENT.md`
   - 面向远程服务器冷启动部署，适合低能力 Agent 线性执行
+- 老环境升级清单：`docs/UPGRADE_CHECKLIST.md`
+  - 面向已有运行中环境的增量升级与 schema / 凭据收口
 
 ## 快速开始
 
@@ -63,6 +65,18 @@ docker compose up -d --build
 
 - API: `http://localhost:3000`
 - WebUI: `http://localhost:3000/ui`
+
+生产环境补充要求：
+
+- 必须显式配置：
+  - `ADMIN_BASIC_AUTH_USER`
+  - `ADMIN_BASIC_AUTH_PASSWORD`
+  - `POSTGRES_USER`
+  - `POSTGRES_PASSWORD`
+  - `POSTGRES_DB`
+  - `CLICKHOUSE_USER`
+  - `CLICKHOUSE_PASSWORD`
+- `/ui` 与 `/api/*` 现在统一走登录页 + Cookie 会话，不再依赖浏览器原生 Basic Auth 弹窗
 
 ## 最近补充
 

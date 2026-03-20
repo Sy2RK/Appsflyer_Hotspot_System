@@ -31,17 +31,17 @@
           <div class="login-card-head">
             <p class="login-card-kicker">安全访问</p>
             <h2>输入管理员凭证</h2>
-            <p>默认账号为 <strong>GuruASAadmin</strong>。密码由管理员线下提供。</p>
+            <p>请输入管理员提供的账号与密码。登录成功后会在当前浏览器保留会话。</p>
           </div>
 
           <form id="loginForm" class="login-form" autocomplete="off">
             <label class="login-field">
               <span>账号</span>
-              <input id="loginAccountInput" name="account" type="text" value="GuruASAadmin" />
+              <input id="loginAccountInput" name="account" type="text" autocomplete="username" />
             </label>
             <label class="login-field">
               <span>密码</span>
-              <input id="loginPasswordInput" name="password" type="password" placeholder="请输入管理员密码" />
+              <input id="loginPasswordInput" name="password" type="password" autocomplete="current-password" placeholder="请输入管理员密码" />
             </label>
             <button id="loginSubmitBtn" class="login-submit" type="submit">进入控制台</button>
           </form>

@@ -476,7 +476,7 @@ async function queryPendingBudgetCounts(reportDate: string, filters: DailyBriefF
 async function queryOpenAlertCounts(filters: DailyBriefFilters): Promise<Map<string, number>> {
   const appKey = cleanText(filters.appKey);
   const platform = normalizePlatformValue(filters.platform);
-  if (normalizeMediaSources(filters.mediaSources).length > 0 || platform) {
+  if (normalizeMediaSources(filters.mediaSources).length > 0) {
     return new Map();
   }
 
@@ -486,15 +486,26 @@ async function queryOpenAlertCounts(filters: DailyBriefFilters): Promise<Map<str
     values.push(appKey);
     clauses.push(`app_key = $${values.length}`);
   }
-  const result = await pgQuery<{ app_key: string; total: string }>(
-    `SELECT app_key, to_char(count(*), 'FM999999999999999') AS total
+  if (platform) {
+    values.push(platform);
+    clauses.push(`platform = $${values.length}`);
+  } else {
+    values.push('__all__');
+    clauses.push(`platform = $${values.length}`);
+  }
+  const result = await pgQuery<{ app_key: string; platform: string; total: string }>(
+    `SELECT app_key, platform, to_char(count(*), 'FM999999999999999') AS total
        FROM alerts
       WHERE ${clauses.join(' AND ')}
-      GROUP BY app_key`
-    ,
+      GROUP BY app_key, platform`,
     values
   );
-  return new Map(result.rows.map((row) => [row.app_key, Number(row.total || 0)]));
+  return new Map(
+    result.rows.map((row) => [
+      `${row.app_key}|${normalizePlatformValue(row.platform) || '__all__'}`,
+      Number(row.total || 0)
+    ])
+  );
 }
 
 function buildDisplayMaps(apps: AppConfigRecord[]): {
@@ -720,16 +731,19 @@ export async function buildDailyBriefPreview(
       })
     ]);
 
+  const normalizedPlatform = normalizePlatformValue(filters.platform);
   const alertHighlights =
-    mediaSourcesApplied.length > 0 || normalizePlatformValue(filters.platform)
+    mediaSourcesApplied.length > 0
       ? []
       : await listAlerts({
           status: 'open',
           limit: 5,
-          appKey: cleanText(filters.appKey) || undefined
+          appKey: cleanText(filters.appKey) || undefined,
+          platform: normalizedPlatform || '__all__'
         }).then((rows) =>
           rows.map((row) => ({
             app_key: row.app_key,
+            platform: row.platform,
             severity: row.severity,
             metric: row.metric,
             delta_value: row.delta_value,
@@ -742,7 +756,12 @@ export async function buildDailyBriefPreview(
   const appRows = appMetrics.map((row) => ({
     ...row,
     display_name: resolveProductViewName(appByKey.get(row.app_key), row.platform),
-    open_alerts: mediaSourcesApplied.length > 0 || normalizePlatformValue(filters.platform) ? 0 : openAlertCounts.get(row.app_key) ?? 0,
+    open_alerts:
+      mediaSourcesApplied.length > 0
+        ? 0
+        : normalizedPlatform
+          ? openAlertCounts.get(`${row.app_key}|${row.platform}`) ?? 0
+          : openAlertCounts.get(`${row.app_key}|__all__`) ?? 0,
     pending_budget_actions: pendingBudgetCounts.get(`${row.app_key}|${row.platform}`) ?? 0
   }));
 
@@ -754,7 +773,7 @@ export async function buildDailyBriefPreview(
     total_cost: appRows.reduce((sum, row) => sum + row.total_cost, 0),
     blended_ecpi: 0,
     open_alerts:
-      mediaSourcesApplied.length > 0 || normalizePlatformValue(filters.platform)
+      mediaSourcesApplied.length > 0
         ? 0
         : Array.from(openAlertCounts.values()).reduce((sum, value) => sum + value, 0),
     pending_budget_actions: Array.from(pendingBudgetCounts.values()).reduce((sum, value) => sum + value, 0)

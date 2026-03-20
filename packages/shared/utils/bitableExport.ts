@@ -62,6 +62,8 @@ export interface BitableExportRunResult {
   selected_fields: string[];
   deleted_count: number;
   record_count: number;
+  export_status: 'success' | 'partial_success' | 'failed';
+  export_error?: string | null;
   notify: {
     ok: boolean;
     status?: number;
@@ -501,7 +503,38 @@ async function queryPullRows(reportDate: string): Promise<Record<string, unknown
 
 async function queryAsaRows(reportDate: string): Promise<Record<string, unknown>[]> {
   const rows = await chQuery<Record<string, unknown>>(
-    `SELECT
+    `WITH
+      latest_ready AS (
+        SELECT
+          app_key,
+          platform,
+          date,
+          max(snapshot_id) AS snapshot_id
+        FROM asa_slice_snapshots
+        WHERE status = 'ready'
+          AND date = toDate({reportDate:String})
+        GROUP BY app_key, platform, date
+      ),
+      legacy_installs AS (
+        SELECT
+          app_key,
+          platform,
+          install_date AS date,
+          toUInt64(0) AS snapshot_id
+        FROM asa_raw_installs
+        WHERE snapshot_id = 0
+          AND install_date = toDate({reportDate:String})
+          AND (app_key, platform, install_date) NOT IN (
+            SELECT app_key, platform, date FROM latest_ready
+          )
+        GROUP BY app_key, platform, install_date
+      ),
+      latest_slices AS (
+        SELECT * FROM latest_ready
+        UNION ALL
+        SELECT * FROM legacy_installs
+      )
+      SELECT
         dataset_type,
         install_date_text,
         install_time_text,
@@ -534,8 +567,12 @@ async function queryAsaRows(reportDate: string): Promise<Record<string, unknown>
           currency,
           event_uid,
           raw_json
-        FROM asa_raw_installs
-        WHERE install_date = toDate({reportDate:String})
+        FROM asa_raw_installs AS installs
+        INNER JOIN latest_slices AS latest
+          ON latest.app_key = installs.app_key
+         AND latest.platform = installs.platform
+         AND latest.date = installs.install_date
+         AND latest.snapshot_id = installs.snapshot_id
         UNION ALL
         SELECT
           'in_app_event' AS dataset_type,
@@ -553,8 +590,12 @@ async function queryAsaRows(reportDate: string): Promise<Record<string, unknown>
           currency,
           event_uid,
           raw_json
-        FROM asa_raw_in_app_events
-        WHERE install_date = toDate({reportDate:String})
+        FROM asa_raw_in_app_events AS events
+        INNER JOIN latest_slices AS latest
+          ON latest.app_key = events.app_key
+         AND latest.platform = events.platform
+         AND latest.date = events.install_date
+         AND latest.snapshot_id = events.snapshot_id
       )
       ORDER BY app_key, platform, keyword, campaign, adset, dataset_type, install_time_text, event_time_text`,
     { reportDate }
@@ -724,10 +765,26 @@ function buildRecordFields(
 }
 
 function buildNotifyCard(result: BitableExportRunResult): Record<string, unknown> {
+  const template =
+    result.export_status === 'failed' ? 'red' : result.export_status === 'partial_success' ? 'orange' : 'blue';
+  const summaryText =
+    result.export_status === 'partial_success'
+      ? '导入成功，但旧快照清理不完整'
+      : result.notify.ok
+        ? '导入并通知成功'
+        : '导入完成，但群通知失败';
+  const detailText =
+    result.export_status === 'partial_success'
+      ? result.export_error || '已写入新快照，但旧快照清理不完整，可能存在重复历史记录。'
+      : result.export_status === 'failed'
+        ? result.export_error || '导出失败'
+        : result.notify.ok
+          ? '本次导出与通知均已完成。'
+          : result.notify.error || '群通知失败';
   return {
     config: { wide_screen_mode: true },
     header: {
-      template: result.notify.ok ? 'blue' : 'red',
+      template,
       title: {
         tag: 'plain_text',
         content: `原始数据表格推送｜${result.label}｜${result.report_date}`
@@ -738,7 +795,7 @@ function buildNotifyCard(result: BitableExportRunResult): Record<string, unknown
         tag: 'div',
         text: {
           tag: 'lark_md',
-          content: `**结果**：${result.notify.ok ? '导入并通知成功' : '导入完成，但群通知失败'}\n**目标表**：${result.table_name}\n**导入记录**：${result.record_count}\n**清理旧记录**：${result.deleted_count}\n**字段数**：${result.selected_fields.length}`
+          content: `**结果**：${summaryText}\n**目标表**：${result.table_name}\n**导入记录**：${result.record_count}\n**清理旧记录**：${result.deleted_count}\n**字段数**：${result.selected_fields.length}\n**说明**：${detailText}`
         }
       },
       {
@@ -870,7 +927,9 @@ export async function runBitableExport(
         : baseTableUrl(table.table_id),
     selected_fields: selectedFields,
     deleted_count: deletedCount,
-    record_count: recordPayloads.length
+    record_count: recordPayloads.length,
+    export_status: cleanupError ? ('partial_success' as const) : ('success' as const),
+    export_error: cleanupError
   };
 
   const notifyOverride: AlertChannelConfig = {

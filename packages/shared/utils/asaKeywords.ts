@@ -53,6 +53,7 @@ interface AsaInstallRow {
   country: string;
   cost_value: number;
   currency: string;
+  snapshot_id: number;
   event_uid: string;
   raw_json: string;
 }
@@ -84,6 +85,7 @@ interface AsaInAppEventRow {
   event_revenue_usd: number;
   cost_value: number;
   currency: string;
+  snapshot_id: number;
   event_uid: string;
   raw_json: string;
 }
@@ -104,6 +106,7 @@ interface AsaKeywordDailyMetricInsertRow {
   average_ecpi: number;
   cpp: number;
   d7_roas: number;
+  snapshot_id: number;
   version: number;
 }
 
@@ -196,6 +199,83 @@ const RAW_MEDIA_SOURCE = 'apple search ads';
 const MASTER_MEDIA_SOURCE = 'apple search ads';
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ASA_KEYWORD_METRICS_TABLE = 'asa_keyword_daily_metrics_v2';
+const ASA_SLICE_SNAPSHOT_TABLE = 'asa_slice_snapshots';
+
+function buildLatestAsaSliceRangeCtes(table: string, dateColumn: string): string {
+  return `
+    latest_ready AS (
+      SELECT
+        app_key,
+        platform,
+        date,
+        max(snapshot_id) AS snapshot_id
+      FROM ${ASA_SLICE_SNAPSHOT_TABLE}
+      WHERE status = 'ready'
+        AND date >= toDate({from:String})
+        AND date <= toDate({to:String})
+      GROUP BY app_key, platform, date
+    ),
+    legacy_slices AS (
+      SELECT
+        app_key,
+        platform,
+        ${dateColumn} AS date,
+        toUInt64(0) AS snapshot_id
+      FROM ${table}
+      WHERE snapshot_id = 0
+        AND ${dateColumn} >= toDate({from:String})
+        AND ${dateColumn} <= toDate({to:String})
+        AND (app_key, platform, ${dateColumn}) NOT IN (
+          SELECT app_key, platform, date FROM latest_ready
+        )
+      GROUP BY app_key, platform, ${dateColumn}
+    ),
+    latest_slices AS (
+      SELECT * FROM latest_ready
+      UNION ALL
+      SELECT * FROM legacy_slices
+    )
+  `;
+}
+
+function buildLatestAsaSliceDateCtes(table: string, dateColumn: string): string {
+  return `
+    latest_ready AS (
+      SELECT
+        app_key,
+        platform,
+        date,
+        max(snapshot_id) AS snapshot_id
+      FROM ${ASA_SLICE_SNAPSHOT_TABLE}
+      WHERE status = 'ready'
+        AND date = toDate({reportDate:String})
+      GROUP BY app_key, platform, date
+    ),
+    legacy_slices AS (
+      SELECT
+        app_key,
+        platform,
+        ${dateColumn} AS date,
+        toUInt64(0) AS snapshot_id
+      FROM ${table}
+      WHERE snapshot_id = 0
+        AND ${dateColumn} = toDate({reportDate:String})
+        AND (app_key, platform, ${dateColumn}) NOT IN (
+          SELECT app_key, platform, date FROM latest_ready
+        )
+      GROUP BY app_key, platform, ${dateColumn}
+    ),
+    latest_slices AS (
+      SELECT * FROM latest_ready
+      UNION ALL
+      SELECT * FROM legacy_slices
+    )
+  `;
+}
+
+function createAsaSnapshotId(): number {
+  return Date.now();
+}
 
 const RAW_HEADER_ALIASES: Record<string, string> = {
   'media source': 'media_source',
@@ -510,6 +590,7 @@ function toAsaInstallRows(app: AppConfigRecord, platformHint: string, rows: CsvR
         country: firstNonEmpty(row, ['country'], 'unknown'),
         cost_value: toNumber(firstNonEmpty(row, ['cost_value', 'cost'])),
         currency: firstNonEmpty(row, ['currency'], 'USD'),
+        snapshot_id: 0,
         event_uid: installSignature(app.app_key, platformHint, row).padEnd(32, '0').slice(0, 32),
         raw_json: JSON.stringify(row)
       };
@@ -539,6 +620,7 @@ function toAsaEventRows(app: AppConfigRecord, platformHint: string, rows: CsvRow
         event_revenue_usd: toNumber(firstNonEmpty(row, ['event_revenue_usd', 'event_revenue'])),
         cost_value: toNumber(firstNonEmpty(row, ['cost_value', 'cost'])),
         currency: firstNonEmpty(row, ['currency'], 'USD'),
+        snapshot_id: 0,
         event_uid: eventSignature(app.app_key, platformHint, row).padEnd(32, '0').slice(0, 32),
         raw_json: JSON.stringify(row)
       };
@@ -618,7 +700,9 @@ function recommendationSummary(action: string, stage: ProductStage, currentEcpi:
 
 async function queryAsaMetricWindow(from: string, to: string): Promise<AsaKeywordDailyMetricInsertRow[]> {
   return chQuery<AsaKeywordDailyMetricInsertRow>(
-    `SELECT
+    `WITH
+      ${buildLatestAsaSliceRangeCtes(ASA_KEYWORD_METRICS_TABLE, 'date')}
+      SELECT
         toString(m.date) AS date,
         m.app_key AS app_key,
         m.platform AS platform,
@@ -634,10 +718,14 @@ async function queryAsaMetricWindow(from: string, to: string): Promise<AsaKeywor
         m.average_ecpi AS average_ecpi,
         m.cpp AS cpp,
         m.d7_roas AS d7_roas,
+        m.snapshot_id AS snapshot_id,
         m.version AS version
       FROM ${ASA_KEYWORD_METRICS_TABLE} AS m FINAL
-      WHERE m.date >= toDate({from:String})
-        AND m.date <= toDate({to:String})`,
+      INNER JOIN latest_slices AS s
+        ON s.app_key = m.app_key
+       AND s.platform = m.platform
+       AND s.date = m.date
+       AND s.snapshot_id = m.snapshot_id`,
     { from, to }
   );
 }
@@ -929,6 +1017,7 @@ function aggregateDailyMetrics(
       average_ecpi: row.average_ecpi,
       cpp: row.purchase_count > 0 ? row.total_cost / row.purchase_count : 0,
       d7_roas: row.total_cost > 0 ? row.revenue_d7 / row.total_cost : 0,
+      snapshot_id: 0,
       version: Date.now()
     };
   });
@@ -938,42 +1027,87 @@ async function replaceAsaSlice(params: {
   appKey: string;
   platform: string;
   date: string;
+  snapshotId: number;
   installRows: AsaInstallRow[];
   eventRows: AsaInAppEventRow[];
   metricRows: AsaKeywordDailyMetricInsertRow[];
+  logger?: LoggerLike;
 }): Promise<void> {
   const queryParams = {
     app_key: params.appKey,
     platform: params.platform,
-    date: params.date
+    date: params.date,
+    snapshot_id: params.snapshotId
   };
-  await chExec(
-    `ALTER TABLE asa_raw_installs
-      DELETE WHERE app_key = {app_key:String}
-        AND platform = {platform:String}
-        AND install_date = toDate({date:String})
-      SETTINGS mutations_sync = 2`,
-    queryParams
-  );
-  await chExec(
-    `ALTER TABLE asa_raw_in_app_events
-      DELETE WHERE app_key = {app_key:String}
-        AND platform = {platform:String}
-        AND install_date = toDate({date:String})
-      SETTINGS mutations_sync = 2`,
-    queryParams
-  );
-  await chExec(
-    `ALTER TABLE ${ASA_KEYWORD_METRICS_TABLE}
-      DELETE WHERE app_key = {app_key:String}
-        AND platform = {platform:String}
-        AND date = toDate({date:String})
-      SETTINGS mutations_sync = 2`,
-    queryParams
-  );
-  await chInsertJSON('asa_raw_installs', params.installRows);
-  await chInsertJSON('asa_raw_in_app_events', params.eventRows);
-  await chInsertJSON(ASA_KEYWORD_METRICS_TABLE, params.metricRows);
+
+  const installRows = params.installRows.map((row) => ({ ...row, snapshot_id: params.snapshotId }));
+  const eventRows = params.eventRows.map((row) => ({ ...row, snapshot_id: params.snapshotId }));
+  const metricRows = params.metricRows.map((row) => ({
+    ...row,
+    snapshot_id: params.snapshotId,
+    version: params.snapshotId
+  }));
+
+  await chInsertJSON('asa_raw_installs', installRows);
+  await chInsertJSON('asa_raw_in_app_events', eventRows);
+  await chInsertJSON(ASA_KEYWORD_METRICS_TABLE, metricRows);
+  await chInsertJSON(ASA_SLICE_SNAPSHOT_TABLE, [
+    {
+      app_key: params.appKey,
+      platform: params.platform,
+      date: params.date,
+      snapshot_id: params.snapshotId,
+      status: 'ready',
+      created_at: toClickHouseDateTime(new Date().toISOString())
+    }
+  ]);
+
+  try {
+    await chExec(
+      `ALTER TABLE asa_raw_installs
+        DELETE WHERE app_key = {app_key:String}
+          AND platform = {platform:String}
+          AND install_date = toDate({date:String})
+          AND snapshot_id != {snapshot_id:UInt64}
+        SETTINGS mutations_sync = 2`,
+      queryParams
+    );
+    await chExec(
+      `ALTER TABLE asa_raw_in_app_events
+        DELETE WHERE app_key = {app_key:String}
+          AND platform = {platform:String}
+          AND install_date = toDate({date:String})
+          AND snapshot_id != {snapshot_id:UInt64}
+        SETTINGS mutations_sync = 2`,
+      queryParams
+    );
+    await chExec(
+      `ALTER TABLE ${ASA_KEYWORD_METRICS_TABLE}
+        DELETE WHERE app_key = {app_key:String}
+          AND platform = {platform:String}
+          AND date = toDate({date:String})
+          AND snapshot_id != {snapshot_id:UInt64}
+        SETTINGS mutations_sync = 2`,
+      queryParams
+    );
+    await chExec(
+      `ALTER TABLE ${ASA_SLICE_SNAPSHOT_TABLE}
+        DELETE WHERE app_key = {app_key:String}
+          AND platform = {platform:String}
+          AND date = toDate({date:String})
+          AND snapshot_id != {snapshot_id:UInt64}
+        SETTINGS mutations_sync = 2`,
+      queryParams
+    );
+  } catch (error) {
+    params.logger?.warn?.('asa_snapshot_cleanup_incomplete', {
+      app_key: params.appKey,
+      platform: params.platform,
+      date: params.date,
+      snapshot_id: params.snapshotId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLike): Promise<AsaCycleResult> {
@@ -995,14 +1129,17 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
       const installRows = toAsaInstallRows(target.app, target.platform, installsCsv);
       const eventRows = toAsaEventRows(target.app, target.platform, eventsCsv);
       const metricRows = aggregateDailyMetrics(installRows, eventRows, masterMetrics);
+      const snapshotId = createAsaSnapshotId();
 
       await replaceAsaSlice({
         appKey: target.app.app_key,
         platform: target.platform,
         date,
+        snapshotId,
         installRows,
         eventRows,
-        metricRows
+        metricRows,
+        logger
       });
 
       installRowCount += installRows.length;
@@ -1065,32 +1202,34 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
   const summaryWhere: string[] = [];
   const summaryParams: Record<string, unknown> = {};
   if (filter.appKey) {
-    summaryWhere.push('app_key = {appKey:String}');
+    summaryWhere.push('m.app_key = {appKey:String}');
     summaryParams.appKey = filter.appKey;
   }
   if (filter.platform) {
-    summaryWhere.push('platform = {platform:String}');
+    summaryWhere.push('m.platform = {platform:String}');
     summaryParams.platform = filter.platform;
   }
   if (filter.from) {
-    summaryWhere.push('date >= toDate({from:String})');
+    summaryWhere.push('m.date >= toDate({from:String})');
     summaryParams.from = filter.from;
   }
   if (filter.to) {
-    summaryWhere.push('date <= toDate({to:String})');
+    summaryWhere.push('m.date <= toDate({to:String})');
     summaryParams.to = filter.to;
   }
   if (filter.keyword) {
-    summaryWhere.push('positionCaseInsensitive(keyword, {keyword:String}) > 0');
+    summaryWhere.push('positionCaseInsensitive(m.keyword, {keyword:String}) > 0');
     summaryParams.keyword = filter.keyword;
   }
   if (filter.campaign) {
-    summaryWhere.push('positionCaseInsensitive(campaign, {campaign:String}) > 0');
+    summaryWhere.push('positionCaseInsensitive(m.campaign, {campaign:String}) > 0');
     summaryParams.campaign = filter.campaign;
   }
   const summaryQuery = summaryWhere.length ? `WHERE ${summaryWhere.join(' AND ')}` : '';
   const summaryRows = await chQuery<AsaKeywordSummary & { keyword_count: number }>(
-    `SELECT
+    `WITH
+      ${buildLatestAsaSliceRangeCtes(ASA_KEYWORD_METRICS_TABLE, 'date')}
+      SELECT
         keyword_count,
         installs,
         total_cost,
@@ -1104,7 +1243,12 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
           sum(total_cost) AS total_cost,
           sum(purchase_count) AS purchase_count,
           sum(revenue_d7) AS revenue_d7
-        FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL
+        FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL AS m
+        INNER JOIN latest_slices AS s
+          ON s.app_key = m.app_key
+         AND s.platform = m.platform
+         AND s.date = m.date
+         AND s.snapshot_id = m.snapshot_id
         ${summaryQuery}
       )`,
     summaryParams
@@ -1141,7 +1285,9 @@ export async function queryAsaKeywordTrend(
   adset: string
 ): Promise<AsaKeywordDailyMetricInsertRow[]> {
   return chQuery<AsaKeywordDailyMetricInsertRow>(
-    `SELECT
+    `WITH
+      ${buildLatestAsaSliceRangeCtes(ASA_KEYWORD_METRICS_TABLE, 'date')}
+      SELECT
         toString(date) AS date,
         app_key,
         platform,
@@ -1158,14 +1304,19 @@ export async function queryAsaKeywordTrend(
         cpp,
         d7_roas,
         version
-      FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL
-      WHERE app_key = {appKey:String}
-        AND platform = {platform:String}
-        AND keyword = {keyword:String}
-        AND campaign = {campaign:String}
-        AND adset = {adset:String}
+      FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL AS m
+      INNER JOIN latest_slices AS s
+        ON s.app_key = m.app_key
+       AND s.platform = m.platform
+       AND s.date = m.date
+       AND s.snapshot_id = m.snapshot_id
+      WHERE m.app_key = {appKey:String}
+        AND m.platform = {platform:String}
+        AND m.keyword = {keyword:String}
+        AND m.campaign = {campaign:String}
+        AND m.adset = {adset:String}
       ORDER BY date ASC`,
-    { appKey, platform, keyword, campaign, adset }
+    { appKey, platform, keyword, campaign, adset, from: '1970-01-01', to: '2099-12-31' }
   );
 }
 

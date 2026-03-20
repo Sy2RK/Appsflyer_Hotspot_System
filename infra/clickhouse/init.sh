@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+API_PASSWORD="${CLICKHOUSE_API_PASSWORD:-${CLICKHOUSE_PASSWORD:-}}"
+
+if [ -z "${API_PASSWORD}" ]; then
+  echo "Missing CLICKHOUSE_API_PASSWORD or CLICKHOUSE_PASSWORD" >&2
+  exit 1
+fi
+
+ESCAPED_API_PASSWORD=$(printf "%s" "${API_PASSWORD}" | sed "s/'/''/g")
+
+clickhouse-client --multiquery <<SQL
+CREATE DATABASE IF NOT EXISTS hotspot;
+CREATE USER IF NOT EXISTS hotspot_api HOST ANY IDENTIFIED BY '${ESCAPED_API_PASSWORD}';
+ALTER USER IF EXISTS hotspot_api HOST ANY IDENTIFIED BY '${ESCAPED_API_PASSWORD}';
+GRANT SELECT, INSERT, ALTER, OPTIMIZE ON hotspot.* TO hotspot_api;
+SQL

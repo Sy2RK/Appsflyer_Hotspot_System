@@ -30,6 +30,8 @@ export interface RuleRecord {
 }
 
 export interface AppRuleRecord extends RuleRecord {
+  ios_pull_app_id: string;
+  android_pull_app_id: string;
   timezone: string;
   notify_webhook_url: string | null;
   notify_feishu_app_id: string | null;
@@ -39,6 +41,7 @@ export interface AppRuleRecord extends RuleRecord {
 
 export interface AlertsFilter {
   appKey?: string;
+  platform?: string;
   status?: 'open' | 'resolved';
   severity?: 'P0' | 'P1' | 'P2';
   from?: string;
@@ -313,7 +316,8 @@ export async function listRules(appKey?: string): Promise<RuleRecord[]> {
 export async function listEnabledRulesWithApp(): Promise<AppRuleRecord[]> {
   const result = await pgQuery<AppRuleRecord>(
     `SELECT r.id, r.app_key, r.name, r.enabled, r.rule_json, r.created_at, r.updated_at,
-            a.timezone, a.notify_webhook_url, a.notify_feishu_app_id, a.notify_feishu_app_secret, a.notify_feishu_chat_id
+            a.ios_pull_app_id, a.android_pull_app_id, a.timezone,
+            a.notify_webhook_url, a.notify_feishu_app_id, a.notify_feishu_app_secret, a.notify_feishu_chat_id
        FROM rules r
        JOIN apps a ON a.app_key = r.app_key
       WHERE r.enabled = true`
@@ -380,6 +384,10 @@ export async function listAlerts(filters: AlertsFilter): Promise<AlertRecord[]> 
     values.push(filters.appKey);
     clauses.push(`app_key = $${values.length}`);
   }
+  if (filters.platform) {
+    values.push(filters.platform);
+    clauses.push(`platform = $${values.length}`);
+  }
   if (filters.status) {
     values.push(filters.status);
     clauses.push(`status = $${values.length}`);
@@ -401,7 +409,7 @@ export async function listAlerts(filters: AlertsFilter): Promise<AlertRecord[]> 
   values.push(filters.limit ?? 200);
 
   const result = await pgQuery<AlertRecord>(
-    `SELECT id, app_key, rule_id, severity, status, metric, "window", current_value, baseline_value,
+    `SELECT id, app_key, platform, rule_id, severity, status, metric, "window", current_value, baseline_value,
             delta_value, delta_ratio, top_contributors, explanation, fingerprint, created_at,
             updated_at, resolved_at
        FROM alerts
@@ -416,7 +424,7 @@ export async function listAlerts(filters: AlertsFilter): Promise<AlertRecord[]> 
 
 export async function getAlertById(id: number): Promise<AlertRecord | null> {
   const result = await pgQuery<AlertRecord>(
-    `SELECT id, app_key, rule_id, severity, status, metric, "window", current_value, baseline_value,
+    `SELECT id, app_key, platform, rule_id, severity, status, metric, "window", current_value, baseline_value,
             delta_value, delta_ratio, top_contributors, explanation, fingerprint, created_at,
             updated_at, resolved_at
        FROM alerts
@@ -429,6 +437,7 @@ export async function getAlertById(id: number): Promise<AlertRecord | null> {
 
 export interface CreateAlertInput {
   app_key: string;
+  platform: string;
   rule_id: number | null;
   severity: 'P0' | 'P1' | 'P2';
   status: 'open' | 'resolved';
@@ -446,11 +455,11 @@ export interface CreateAlertInput {
 export async function createAlert(input: CreateAlertInput): Promise<AlertRecord> {
   const result = await pgQuery<AlertRecord>(
     `INSERT INTO alerts (
-      app_key, rule_id, severity, status, metric, "window", current_value, baseline_value,
+      app_key, platform, rule_id, severity, status, metric, "window", current_value, baseline_value,
       delta_value, delta_ratio, top_contributors, explanation, fingerprint
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8,
-      $9, $10, $11, $12, $13
+      $9, $10, $11, $12, $13, $14
     )
     ON CONFLICT (fingerprint) WHERE status = 'open' DO UPDATE SET
       updated_at = NOW(),
@@ -460,11 +469,12 @@ export async function createAlert(input: CreateAlertInput): Promise<AlertRecord>
       delta_ratio = EXCLUDED.delta_ratio,
       top_contributors = EXCLUDED.top_contributors,
       explanation = EXCLUDED.explanation
-    RETURNING id, app_key, rule_id, severity, status, metric, "window", current_value, baseline_value,
+    RETURNING id, app_key, platform, rule_id, severity, status, metric, "window", current_value, baseline_value,
               delta_value, delta_ratio, top_contributors, explanation, fingerprint, created_at,
               updated_at, resolved_at`,
     [
       input.app_key,
+      input.platform,
       input.rule_id,
       input.severity,
       input.status,
@@ -487,7 +497,7 @@ export async function findRecentOpenAlertByFingerprint(
   silenceMinutes: number
 ): Promise<AlertRecord | null> {
   const result = await pgQuery<AlertRecord>(
-    `SELECT id, app_key, rule_id, severity, status, metric, "window", current_value, baseline_value,
+    `SELECT id, app_key, platform, rule_id, severity, status, metric, "window", current_value, baseline_value,
             delta_value, delta_ratio, top_contributors, explanation, fingerprint, created_at,
             updated_at, resolved_at
        FROM alerts
@@ -504,6 +514,7 @@ export async function findRecentOpenAlertByFingerprint(
 
 export async function resolveOpenAlertsByRuleMetric(
   appKey: string,
+  platform: string,
   ruleId: number,
   metric: string,
   window: string
@@ -514,12 +525,13 @@ export async function resolveOpenAlertsByRuleMetric(
             updated_at = NOW(),
             resolved_at = NOW()
       WHERE app_key = $1
-        AND rule_id = $2
-        AND metric = $3
-        AND "window" = $4
+        AND platform = $2
+        AND rule_id = $3
+        AND metric = $4
+        AND "window" = $5
         AND status = 'open'
       RETURNING id`,
-    [appKey, ruleId, metric, window]
+    [appKey, platform, ruleId, metric, window]
   );
 
   return result.rowCount ?? 0;
@@ -527,21 +539,23 @@ export async function resolveOpenAlertsByRuleMetric(
 
 export async function listOpenAlertsByRuleMetric(
   appKey: string,
+  platform: string,
   ruleId: number,
   metric: string,
   window: string
 ): Promise<AlertRecord[]> {
   const result = await pgQuery<AlertRecord>(
-    `SELECT id, app_key, rule_id, severity, status, metric, "window", current_value, baseline_value,
+    `SELECT id, app_key, platform, rule_id, severity, status, metric, "window", current_value, baseline_value,
             delta_value, delta_ratio, top_contributors, explanation, fingerprint, created_at,
             updated_at, resolved_at
        FROM alerts
       WHERE app_key = $1
-        AND rule_id = $2
-        AND metric = $3
-        AND "window" = $4
+        AND platform = $2
+        AND rule_id = $3
+        AND metric = $4
+        AND "window" = $5
         AND status = 'open'`,
-    [appKey, ruleId, metric, window]
+    [appKey, platform, ruleId, metric, window]
   );
 
   return result.rows;
