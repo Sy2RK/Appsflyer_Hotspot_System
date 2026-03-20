@@ -355,6 +355,17 @@ Request:
 ### `POST /api/budget/recommendations/recompute`
 手动触发预算建议生成（含 Qwen 文案增强）。
 
+### `GET /api/budget/recommendations/recompute/status`
+查询当前预算建议生成进度。
+
+返回重点字段：
+- `running`: 是否仍在生成
+- `generated_total`: 当前已生成建议数
+- `total_candidates`: 当前已识别的总候选建议数
+- `processed_apps` / `total_apps`: 应用级处理进度
+- `current_app`: 当前正在处理的应用
+- `error`: 失败时的错误信息
+
 预算建议当前关键字段:
 - `current_ecpi`: 当前官方 `average_ecpi`
 - `target_ecpi`: 同 app / 同平台近期关键词 eCPI 中位基线

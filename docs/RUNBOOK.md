@@ -286,6 +286,17 @@ curl -X POST "http://localhost:3000/api/budget/recommendations/recompute" \
   -d '{}'
 ```
 
+查看生成进度：
+
+```bash
+curl -G "http://localhost:3000/api/budget/recommendations/recompute/status"
+```
+
+WebUI 行为：
+- 预算建议模块会显示进度条
+- 进度文案格式为：`已生成建议 / 总建议`
+- 生成中会额外显示当前应用处理进度
+
 查询建议列表：
 
 ```bash

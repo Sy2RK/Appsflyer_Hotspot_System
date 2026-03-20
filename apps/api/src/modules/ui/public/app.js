@@ -34,6 +34,8 @@ const state = {
   dailyBriefSelectedMediaSources: []
 };
 
+let budgetRecomputePollTimer = null;
+
 const PUSH_METRIC_OPTIONS = [
   { value: 'revenue', label: '收入（revenue）' },
   { value: 'event_count', label: '事件数（event_count）' },
@@ -170,6 +172,10 @@ const el = {
   budgetNextPageBtn: document.getElementById('budgetNextPageBtn'),
   budgetPaginationInfo: document.getElementById('budgetPaginationInfo'),
   budgetRecomputeBtn: document.getElementById('budgetRecomputeBtn'),
+  budgetRecomputeProgress: document.getElementById('budgetRecomputeProgress'),
+  budgetRecomputeProgressBar: document.getElementById('budgetRecomputeProgressBar'),
+  budgetRecomputeProgressText: document.getElementById('budgetRecomputeProgressText'),
+  budgetRecomputeProgressHint: document.getElementById('budgetRecomputeProgressHint'),
   budgetRuleHelpBtn: document.getElementById('budgetRuleHelpBtn'),
 
   asaStageForm: document.getElementById('asaStageForm'),
@@ -2696,14 +2702,29 @@ async function triggerBudgetRecompute() {
   el.budgetRecomputeBtn.disabled = true;
   el.budgetRecomputeBtn.textContent = '生成中...';
   try {
+    renderBudgetRecomputeProgress({
+      running: true,
+      generated_total: 0,
+      total_candidates: 0,
+      total_apps: state.apps.length,
+      processed_apps: 0,
+      current_app: ''
+    });
+    pollBudgetRecomputeStatus().catch((err) => showToast(err.message || '预算建议进度加载失败', true));
     const body = await api('/api/budget/recommendations/recompute', {
       method: 'POST',
       body: JSON.stringify({})
     });
     const result = body.data || {};
+    stopBudgetRecomputePolling();
+    await loadBudgetRecomputeStatus().catch(() => null);
     showToast(`预算建议生成完成：新增 ${result.generated_total || 0} 条`);
     state.budgetPage = 1;
     await loadBudgetRecommendations(undefined, 1);
+  } catch (error) {
+    stopBudgetRecomputePolling();
+    await loadBudgetRecomputeStatus().catch(() => null);
+    throw error;
   } finally {
     el.budgetRecomputeBtn.disabled = false;
     el.budgetRecomputeBtn.textContent = originalText;
@@ -2722,6 +2743,87 @@ function updateAsaSummary(summary = {}) {
   el.asaSummaryRoas.textContent = totalCost > 0 ? `${toFixed2(summary.d7_roas || 0)}x` : '-';
   el.asaSummaryRoas.title = totalCost > 0 && revenueD7 <= 0 ? '当前未观察到 D7 收入' : '';
   el.asaSummaryEcpi.title = totalCost > 0 && installs <= 0 ? '当前有花费但没有安装，eCPI 不可计算' : '';
+}
+
+function stopBudgetRecomputePolling() {
+  if (budgetRecomputePollTimer) {
+    clearTimeout(budgetRecomputePollTimer);
+    budgetRecomputePollTimer = null;
+  }
+}
+
+function renderBudgetRecomputeProgress(progress = {}) {
+  if (
+    !el.budgetRecomputeProgress ||
+    !el.budgetRecomputeProgressBar ||
+    !el.budgetRecomputeProgressText ||
+    !el.budgetRecomputeProgressHint
+  ) {
+    return;
+  }
+
+  const running = Boolean(progress.running);
+  const generated = Number(progress.generated_total || 0);
+  const total = Number(progress.total_candidates || 0);
+  const processedApps = Number(progress.processed_apps || 0);
+  const totalApps = Number(progress.total_apps || 0);
+  const currentApp = String(progress.current_app || '').trim();
+  const error = String(progress.error || '').trim();
+  if (el.budgetRecomputeBtn) {
+    el.budgetRecomputeBtn.disabled = running;
+    el.budgetRecomputeBtn.textContent = running ? '生成中...' : '生成建议';
+  }
+
+  if (!running && !error && total <= 0 && generated <= 0) {
+    el.budgetRecomputeProgress.classList.add('hidden');
+    el.budgetRecomputeProgressBar.style.width = '0%';
+    el.budgetRecomputeProgressBar.classList.remove('is-indeterminate');
+    return;
+  }
+
+  el.budgetRecomputeProgress.classList.remove('hidden');
+  const width = total > 0 ? Math.min(100, Math.max(0, (generated / total) * 100)) : running ? 12 : 100;
+  el.budgetRecomputeProgressBar.style.width = `${width}%`;
+  el.budgetRecomputeProgressBar.classList.toggle('is-indeterminate', running && total <= 0);
+  el.budgetRecomputeProgressText.textContent = `已生成建议 ${generated} / ${total}`;
+
+  if (error) {
+    el.budgetRecomputeProgressHint.textContent = `生成失败：${error}`;
+    return;
+  }
+
+  if (running) {
+    if (currentApp) {
+      el.budgetRecomputeProgressHint.textContent = `正在处理 ${currentApp}（应用 ${Math.min(processedApps + 1, totalApps || 1)} / ${totalApps || '-'}）`;
+    } else if (total > 0) {
+      el.budgetRecomputeProgressHint.textContent = `候选建议已确定，正在生成说明与入库。`;
+    } else {
+      el.budgetRecomputeProgressHint.textContent = '正在扫描候选建议，请稍候...';
+    }
+    return;
+  }
+
+  el.budgetRecomputeProgressHint.textContent =
+    total > 0
+      ? `本轮已完成，共处理 ${totalApps} 个应用，成功生成 ${generated} 条建议。`
+      : `本轮已完成，共处理 ${totalApps} 个应用，未生成新的建议。`;
+}
+
+async function loadBudgetRecomputeStatus() {
+  const body = await api('/api/budget/recommendations/recompute/status');
+  const progress = body.data || {};
+  renderBudgetRecomputeProgress(progress);
+  return progress;
+}
+
+async function pollBudgetRecomputeStatus() {
+  stopBudgetRecomputePolling();
+  const progress = await loadBudgetRecomputeStatus();
+  if (progress.running) {
+    budgetRecomputePollTimer = setTimeout(() => {
+      pollBudgetRecomputeStatus().catch((error) => showToast(error.message || '预算建议进度加载失败', true));
+    }, 1200);
+  }
 }
 
 function asaHasSpendWithoutInstalls(totalCost, installs) {
@@ -3179,38 +3281,49 @@ async function refreshOverviewTotals() {
   state.openAlertTotalCount = Array.isArray(openAlertResp.data) ? openAlertResp.data.length : 0;
 }
 
+async function safeRefresh(stepName, loader) {
+  try {
+    await loader();
+  } catch (error) {
+    console.error(`[refreshAll] ${stepName} failed`, error);
+    showToast(`${stepName}加载失败：${error.message || '请稍后重试'}`, true);
+  }
+}
+
 async function refreshAll() {
   await loadApps();
   await refreshOverviewTotals();
   await loadRuntimeSchedule();
+  const now = new Date();
+  updateOverviewCards(now);
 
   const firstApp = state.apps[0]?.app_key || '';
-  await loadRules(firstApp);
+  await safeRefresh('规则列表', () => loadRules(firstApp));
 
   el.alertsAppSelect.value = firstApp;
-  await loadAlerts();
+  await safeRefresh('告警列表', () => loadAlerts());
 
   if (firstApp) {
     el.metricsAppSelect.value = firstApp;
-    await loadMetrics();
+    await safeRefresh('趋势图', () => loadMetrics());
   }
 
   state.pullPage = 1;
-  await loadPullRecords(undefined, 1);
+  await safeRefresh('Pull 明细', () => loadPullRecords(undefined, 1));
 
   state.keywordPage = 1;
-  await loadKeywordLifecycle(undefined, 1);
+  await safeRefresh('关键词生命周期', () => loadKeywordLifecycle(undefined, 1));
 
   state.budgetPage = 1;
-  await loadBudgetRecommendations(undefined, 1);
-  await loadAsaStageConfigs();
+  await safeRefresh('预算建议', () => loadBudgetRecommendations(undefined, 1));
+  await safeRefresh('预算建议进度', () => loadBudgetRecomputeStatus());
+  await safeRefresh('ASA 阶段配置', () => loadAsaStageConfigs());
   state.asaKeywordPage = 1;
-  await loadAsaKeywords(undefined, 1);
-  await loadOperationLogs();
-  await loadDailyBriefMediaSources(true);
-  await loadBitableExportConfigs();
+  await safeRefresh('ASA 关键词', () => loadAsaKeywords(undefined, 1));
+  await safeRefresh('操作日志', () => loadOperationLogs());
+  await safeRefresh('日报媒体源', () => loadDailyBriefMediaSources(true));
+  await safeRefresh('多维表格配置', () => loadBitableExportConfigs());
 
-  const now = new Date();
   el.lastUpdated.textContent = `更新时间 ${now.toLocaleTimeString()}`;
   updateOverviewCards(now);
 }

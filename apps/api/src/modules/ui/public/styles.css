@@ -213,6 +213,68 @@ h4 {
   min-width: 0;
 }
 
+.budget-recompute-panel {
+  min-width: min(360px, 100%);
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
+.budget-progress {
+  width: min(360px, 100%);
+  padding: 12px 14px;
+  border: 1px solid #d7e9f7;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f8fcff, #f1f8fd);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+.budget-progress-track {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: #dfeef8;
+}
+
+.budget-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #18b1ce 0%, #0d8db8 100%);
+  box-shadow: 0 6px 18px rgba(14, 165, 198, 0.28);
+  transition: width 220ms ease;
+}
+
+.budget-progress-fill.is-indeterminate {
+  width: 32%;
+  animation: budget-progress-shift 1.25s ease-in-out infinite;
+}
+
+.budget-progress-copy {
+  margin-top: 8px;
+  display: grid;
+  gap: 2px;
+}
+
+.budget-progress-copy strong {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+@keyframes budget-progress-shift {
+  0% {
+    transform: translateX(-20%);
+  }
+  50% {
+    transform: translateX(120%);
+  }
+  100% {
+    transform: translateX(-20%);
+  }
+}
+
 .title-with-help {
   display: inline-flex;
   align-items: center;
@@ -2175,6 +2237,15 @@ pre {
   .card-head-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .budget-recompute-panel {
+    min-width: 0;
+    justify-items: stretch;
+  }
+
+  .budget-progress {
+    width: 100%;
   }
 
   .detail-grid {

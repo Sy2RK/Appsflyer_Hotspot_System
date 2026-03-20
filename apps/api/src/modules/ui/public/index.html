@@ -604,7 +604,18 @@
                   </div>
                   <p>半自动预算调控建议（仅建议，不自动执行）。</p>
                 </div>
-                <button id="budgetRecomputeBtn" class="btn btn-primary" type="button">生成建议</button>
+                <div class="budget-recompute-panel">
+                  <button id="budgetRecomputeBtn" class="btn btn-primary" type="button">生成建议</button>
+                  <div id="budgetRecomputeProgress" class="budget-progress hidden" aria-live="polite">
+                    <div class="budget-progress-track">
+                      <div id="budgetRecomputeProgressBar" class="budget-progress-fill"></div>
+                    </div>
+                    <div class="budget-progress-copy">
+                      <strong id="budgetRecomputeProgressText">已生成建议 0 / 0</strong>
+                      <span id="budgetRecomputeProgressHint" class="hint">正在准备预算建议候选...</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 

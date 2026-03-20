@@ -37,6 +37,21 @@ export interface BudgetAdvisorCycleResult {
   details: BudgetAdvisorCycleDetail[];
 }
 
+export interface BudgetAdvisorProgressSnapshot {
+  started_at: string;
+  lookback_days: number;
+  total_apps: number;
+  processed_apps: number;
+  current_app: string | null;
+  generated_total: number;
+  total_candidates: number;
+  success_count: number;
+  failed_count: number;
+  skipped_count: number;
+}
+
+export type BudgetAdvisorProgressHandler = (snapshot: BudgetAdvisorProgressSnapshot) => void;
+
 interface BudgetKeywordFact {
   app_key: string;
   platform: string;
@@ -355,7 +370,8 @@ function resolveTargetEcpi(params: {
 
 export async function runBudgetAdvisorCycle(
   lookbackDays: number,
-  logger?: BudgetAdvisorLogger
+  logger?: BudgetAdvisorLogger,
+  onProgress?: BudgetAdvisorProgressHandler
 ): Promise<BudgetAdvisorCycleResult> {
   const startedAt = new Date();
   const date = yesterdayDateString();
@@ -363,15 +379,39 @@ export async function runBudgetAdvisorCycle(
   const apps = await listApps();
   const details: BudgetAdvisorCycleDetail[] = [];
   let generatedTotal = 0;
+  let totalCandidates = 0;
+  let processedApps = 0;
+  let successCount = 0;
+  let failedCount = 0;
+  let skippedCount = 0;
+  let currentApp: string | null = null;
+
+  const emitProgress = () => {
+    onProgress?.({
+      started_at: startedAt.toISOString(),
+      lookback_days: Math.max(1, Math.floor(lookbackDays)),
+      total_apps: apps.length,
+      processed_apps: processedApps,
+      current_app: currentApp,
+      generated_total: generatedTotal,
+      total_candidates: totalCandidates,
+      success_count: successCount,
+      failed_count: failedCount,
+      skipped_count: skippedCount
+    });
+  };
 
   logInfo(logger, 'budget_advisor_cycle_started', {
     lookback_days: lookbackDays,
     apps: apps.length,
     report_date: date
   });
+  emitProgress();
 
   for (const app of apps) {
     try {
+      currentApp = app.app_key;
+      emitProgress();
       const [states, facts] = await Promise.all([
         listKeywordLifecycleStatesByApp(app.app_key),
         queryBudgetKeywordFacts(app.app_key, date)
@@ -385,6 +425,10 @@ export async function runBudgetAdvisorCycle(
           generated: 0,
           status: 'skipped'
         });
+        processedApps += 1;
+        skippedCount += 1;
+        currentApp = null;
+        emitProgress();
         continue;
       }
 
@@ -412,6 +456,15 @@ export async function runBudgetAdvisorCycle(
       }
 
       let generated = 0;
+      const candidates: Array<{
+        fact: BudgetKeywordFact;
+        state: KeywordLifecycleStateRow;
+        targetEcpi: number;
+        volumeTier: VolumeTier;
+        decision: ReturnType<typeof buildDeterministicDecision>;
+        metricSettings: ReturnType<typeof resolvePrimaryMetric>;
+      }> = [];
+
       for (const fact of facts) {
         const state = stateMap.get(stateKey(fact.platform, fact.keyword, fact.match_type));
         if (!state) {
@@ -438,7 +491,21 @@ export async function runBudgetAdvisorCycle(
           continue;
         }
 
-        const metricSettings = resolvePrimaryMetric(app.app_key, fact.platform);
+        candidates.push({
+          fact,
+          state,
+          targetEcpi,
+          volumeTier,
+          decision,
+          metricSettings: resolvePrimaryMetric(app.app_key, fact.platform)
+        });
+      }
+
+      totalCandidates += candidates.length;
+      emitProgress();
+
+      for (const candidate of candidates) {
+        const { fact, state, targetEcpi, decision, metricSettings } = candidate;
         const currentCost = Math.max(0, fact.last7_cost);
         const suggestedBudget = Math.max(0, currentCost * (1 + decision.changeRatio));
         const expectedInstallsDelta =
@@ -521,6 +588,8 @@ export async function runBudgetAdvisorCycle(
         });
 
         generated += 1;
+        generatedTotal += 1;
+        emitProgress();
       }
 
       details.push({
@@ -528,7 +597,14 @@ export async function runBudgetAdvisorCycle(
         generated,
         status: generated > 0 ? 'ok' : 'skipped'
       });
-      generatedTotal += generated;
+      processedApps += 1;
+      if (generated > 0) {
+        successCount += 1;
+      } else {
+        skippedCount += 1;
+      }
+      currentApp = null;
+      emitProgress();
     } catch (error) {
       const errorText = error instanceof Error ? error.message : String(error);
       details.push({
@@ -541,6 +617,10 @@ export async function runBudgetAdvisorCycle(
         app_key: app.app_key,
         error: errorText
       });
+      processedApps += 1;
+      failedCount += 1;
+      currentApp = null;
+      emitProgress();
     }
   }
 
@@ -552,9 +632,9 @@ export async function runBudgetAdvisorCycle(
     lookback_days: Math.max(1, Math.floor(lookbackDays)),
     apps: apps.length,
     generated_total: generatedTotal,
-    success_count: details.filter((item) => item.status === 'ok').length,
-    failed_count: details.filter((item) => item.status === 'failed').length,
-    skipped_count: details.filter((item) => item.status === 'skipped').length,
+    success_count: successCount,
+    failed_count: failedCount,
+    skipped_count: skippedCount,
     details
   };
 

@@ -10,6 +10,7 @@
   - 统一编辑 `Pull 时间` 与 `推送时间`
   - `bitable-export` 自动使用 `推送时间 + 5 分钟`
 - 通用投放项 / 广告系列监控与预算建议
+  - 手动生成预算建议时支持进度条与 `已生成建议 / 总建议` 实时展示
 - ASA 关键词专项管理
   - Raw Data 获取关键词与收入
   - Master API 获取关键词级 cost / installs / average eCPI

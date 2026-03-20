@@ -720,7 +720,10 @@ async function queryAsaMetricWindow(from: string, to: string): Promise<AsaKeywor
         m.d7_roas AS d7_roas,
         m.snapshot_id AS snapshot_id,
         m.version AS version
-      FROM ${ASA_KEYWORD_METRICS_TABLE} AS m FINAL
+      FROM (
+        SELECT *
+        FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL
+      ) AS m
       INNER JOIN latest_slices AS s
         ON s.app_key = m.app_key
        AND s.platform = m.platform
@@ -1243,7 +1246,10 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
           sum(total_cost) AS total_cost,
           sum(purchase_count) AS purchase_count,
           sum(revenue_d7) AS revenue_d7
-        FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL AS m
+        FROM (
+          SELECT *
+          FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL
+        ) AS m
         INNER JOIN latest_slices AS s
           ON s.app_key = m.app_key
          AND s.platform = m.platform
@@ -1304,7 +1310,10 @@ export async function queryAsaKeywordTrend(
         cpp,
         d7_roas,
         version
-      FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL AS m
+      FROM (
+        SELECT *
+        FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL
+      ) AS m
       INNER JOIN latest_slices AS s
         ON s.app_key = m.app_key
        AND s.platform = m.platform

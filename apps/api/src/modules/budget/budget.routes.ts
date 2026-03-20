@@ -3,13 +3,34 @@ import {
   queryBudgetRecommendations,
   setBudgetRecommendationStatus
 } from '@shared/utils/repositories.js';
-import { runBudgetAdvisorCycle } from '@shared/utils/budgetAdvisor.js';
+import { runBudgetAdvisorCycle, BudgetAdvisorProgressSnapshot } from '@shared/utils/budgetAdvisor.js';
 import { logger } from '../../common/logger/logger.js';
 import { env } from '@shared/config/env.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 
 const router = Router();
 let recomputeRunning = false;
+type BudgetRecomputeStatus = BudgetAdvisorProgressSnapshot & {
+  running: boolean;
+  finished_at: string | null;
+  error: string | null;
+};
+
+let recomputeStatus: BudgetRecomputeStatus = {
+  running: false,
+  started_at: '',
+  finished_at: null,
+  error: null,
+  lookback_days: env.budgetAdvisorLookbackDays,
+  total_apps: 0,
+  processed_apps: 0,
+  current_app: null,
+  generated_total: 0,
+  total_candidates: 0,
+  success_count: 0,
+  failed_count: 0,
+  skipped_count: 0
+};
 
 function isDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -139,7 +160,41 @@ router.post('/api/budget/recommendations/recompute', async (req, res, next) => {
       return res.status(409).json({ ok: false, error: 'budget_recompute_running' });
     }
     recomputeRunning = true;
-    const result = await runBudgetAdvisorCycle(env.budgetAdvisorLookbackDays, logger);
+    recomputeStatus = {
+      running: true,
+      started_at: new Date().toISOString(),
+      finished_at: null,
+      error: null,
+      lookback_days: env.budgetAdvisorLookbackDays,
+      total_apps: 0,
+      processed_apps: 0,
+      current_app: null,
+      generated_total: 0,
+      total_candidates: 0,
+      success_count: 0,
+      failed_count: 0,
+      skipped_count: 0
+    };
+    const result = await runBudgetAdvisorCycle(env.budgetAdvisorLookbackDays, logger, (snapshot) => {
+      recomputeStatus = {
+        ...recomputeStatus,
+        ...snapshot,
+        running: true,
+        finished_at: null,
+        error: null
+      };
+    });
+    recomputeStatus = {
+      ...recomputeStatus,
+      running: false,
+      finished_at: new Date().toISOString(),
+      current_app: null,
+      error: null,
+      generated_total: result.generated_total,
+      success_count: result.success_count,
+      failed_count: result.failed_count,
+      skipped_count: result.skipped_count
+    };
     await writeOperationLog(
       {
         source: 'api.budget',
@@ -157,6 +212,13 @@ router.post('/api/budget/recommendations/recompute', async (req, res, next) => {
     logger.error('budget_recompute_failed', {
       error: error instanceof Error ? error.message : String(error)
     });
+    recomputeStatus = {
+      ...recomputeStatus,
+      running: false,
+      finished_at: new Date().toISOString(),
+      current_app: null,
+      error: error instanceof Error ? error.message : String(error)
+    };
     await writeOperationLog(
       {
         source: 'api.budget',
@@ -175,6 +237,10 @@ router.post('/api/budget/recommendations/recompute', async (req, res, next) => {
   } finally {
     recomputeRunning = false;
   }
+});
+
+router.get('/api/budget/recommendations/recompute/status', async (_req, res) => {
+  return res.json({ ok: true, data: recomputeStatus });
 });
 
 export default router;
