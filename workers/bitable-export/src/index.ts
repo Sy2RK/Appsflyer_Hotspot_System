@@ -3,12 +3,16 @@ import { env } from '@shared/config/env.js';
 import { runScheduledBitableExports } from '@shared/utils/bitableExport.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 import {
+  getTzParts,
   hasReachedDailyTime,
-  msUntilNextDailyTime,
   nextDailyTimeLocalString
 } from '@shared/utils/schedule.js';
+import { getBitableScheduleTarget } from '@shared/utils/runtimeSchedule.js';
 
 let running = false;
+let lastRunMarker = '';
+let lastScheduleMarker = '';
+const SCHEDULE_POLL_MS = 30 * 1000;
 
 async function tick(): Promise<void> {
   if (running) {
@@ -24,12 +28,10 @@ async function tick(): Promise<void> {
         source: 'worker.bitable_export',
         action: 'scheduled_bitable_export_tick',
         target_type: 'bitable_export',
-        target_key: `${env.feishuBitableScheduleHour}:${env.feishuBitableScheduleMinute}`,
+        target_key: 'runtime_push_time_plus_5m',
         status: 'success',
         summary: '定时多维表格导出检查完成',
         detail_json: {
-          report_hour: env.feishuBitableScheduleHour,
-          report_minute: env.feishuBitableScheduleMinute,
           result_count: results.length
         }
       },
@@ -44,7 +46,7 @@ async function tick(): Promise<void> {
         source: 'worker.bitable_export',
         action: 'scheduled_bitable_export_tick',
         target_type: 'bitable_export',
-        target_key: `${env.feishuBitableScheduleHour}:${env.feishuBitableScheduleMinute}`,
+        target_key: 'runtime_push_time_plus_5m',
         status: 'failed',
         summary: '定时多维表格导出检查失败',
         detail_json: {
@@ -59,49 +61,40 @@ async function tick(): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
-  if (
-    hasReachedDailyTime(
-      env.feishuBitableScheduleHour,
-      env.feishuBitableScheduleMinute,
-      env.timezone
-    )
-  ) {
-    await tick();
-  } else {
-    logger.info('bitable_export_wait_until_window', {
-      timezone: env.timezone,
-      report_hour: env.feishuBitableScheduleHour,
-      report_minute: env.feishuBitableScheduleMinute
-    });
-  }
+  const scheduleLoop = async (): Promise<void> => {
+    try {
+      const target = await getBitableScheduleTarget();
+      const now = new Date();
+      const parts = getTzParts(now, env.timezone);
+      const dateKey = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+      const runMarker = `${dateKey}|${target.time}`;
+      const scheduleMarker = `${runMarker}|${nextDailyTimeLocalString(target.hour, target.minute, env.timezone, now)}`;
 
-  const scheduleNext = (): void => {
-    const delay = msUntilNextDailyTime(
-      env.feishuBitableScheduleHour,
-      env.feishuBitableScheduleMinute,
-      env.timezone
-    );
-    logger.info('bitable_export_next_scheduled', {
-      timezone: env.timezone,
-      report_hour: env.feishuBitableScheduleHour,
-      report_minute: env.feishuBitableScheduleMinute,
-      delay_ms: delay,
-      next_run_local: nextDailyTimeLocalString(
-        env.feishuBitableScheduleHour,
-        env.feishuBitableScheduleMinute,
-        env.timezone
-      )
-    });
-    setTimeout(async () => {
-      try {
-        await tick();
-      } finally {
-        scheduleNext();
+      if (scheduleMarker !== lastScheduleMarker) {
+        lastScheduleMarker = scheduleMarker;
+        logger.info('bitable_export_next_scheduled', {
+          timezone: env.timezone,
+          report_time: target.time,
+          next_run_local: nextDailyTimeLocalString(target.hour, target.minute, env.timezone, now)
+        });
       }
-    }, delay);
+
+      if (hasReachedDailyTime(target.hour, target.minute, env.timezone, now) && lastRunMarker !== runMarker) {
+        lastRunMarker = runMarker;
+        await tick();
+      }
+    } finally {
+      setTimeout(() => {
+        scheduleLoop().catch((error) => {
+          logger.error('bitable_export_schedule_loop_failed', {
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
+      }, SCHEDULE_POLL_MS);
+    }
   };
 
-  scheduleNext();
+  await scheduleLoop();
 }
 
 bootstrap().catch((error) => {

@@ -335,6 +335,102 @@ h4 {
   padding: 14px;
 }
 
+.schedule-panel {
+  margin-top: 14px;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #cfe2ef;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(125, 213, 233, 0.18), transparent 34%),
+    linear-gradient(180deg, #fcfeff 0%, #f4fbff 100%);
+  box-shadow: 0 16px 34px rgba(10, 38, 64, 0.05);
+}
+
+.schedule-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.schedule-panel-badges {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.schedule-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid #b6dfec;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.schedule-badge-muted {
+  color: var(--text-secondary);
+  border-color: #d7e6f1;
+}
+
+.schedule-form {
+  display: grid;
+  grid-template-columns: minmax(150px, 200px) minmax(150px, 200px) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.schedule-field input {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fcff 100%);
+}
+
+.schedule-actions {
+  display: flex;
+  align-items: end;
+  justify-content: flex-start;
+}
+
+.schedule-actions .btn {
+  min-width: 118px;
+}
+
+.schedule-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.schedule-meta-card {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px 15px;
+  border: 1px solid #d6e5f1;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.schedule-meta-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
+.schedule-meta-card strong {
+  font-size: 14px;
+  line-height: 1.6;
+  color: #12395d;
+}
+
 .bitable-panel {
   margin-top: 14px;
   border: 1px solid var(--border);
@@ -1928,6 +2024,11 @@ pre {
     grid-template-columns: 1fr;
   }
 
+  .schedule-form,
+  .schedule-meta-grid {
+    grid-template-columns: 1fr;
+  }
+
   .split-layout {
     grid-template-columns: 1fr;
   }
@@ -2006,6 +2107,7 @@ pre {
   }
 
   .bitable-panel-head,
+  .schedule-panel-head,
   .bitable-export-card-head,
   .bitable-export-target,
   .bitable-export-field-head,
@@ -2020,6 +2122,14 @@ pre {
 
   .bitable-export-actions {
     grid-template-columns: 1fr;
+  }
+
+  .schedule-form {
+    grid-template-columns: 1fr;
+  }
+
+  .schedule-actions .btn {
+    width: 100%;
   }
 
   .form-grid,

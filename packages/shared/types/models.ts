@@ -383,3 +383,11 @@ export interface BitableExportConfigRecord {
   created_at: string;
   updated_at: string;
 }
+
+export interface RuntimeScheduleConfigRecord {
+  singleton_key: string;
+  pull_time: string;
+  push_time: string;
+  created_at: string;
+  updated_at: string;
+}

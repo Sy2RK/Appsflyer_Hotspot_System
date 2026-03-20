@@ -2,9 +2,13 @@ import { env } from '@shared/config/env.js';
 import { runScheduledDailyBrief } from '@shared/utils/dailyBrief.js';
 import { logger } from '@api/common/logger/logger.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
-import { hasReachedDailyHour, msUntilNextDailyHour, nextDailyHourLocalString } from '@shared/utils/schedule.js';
+import { getTzParts, hasReachedDailyTime, nextDailyTimeLocalString } from '@shared/utils/schedule.js';
+import { getPushScheduleTarget } from '@shared/utils/runtimeSchedule.js';
 
 let running = false;
+let lastRunMarker = '';
+let lastScheduleMarker = '';
+const SCHEDULE_POLL_MS = 30 * 1000;
 
 async function tick(): Promise<void> {
   if (running) {
@@ -20,12 +24,10 @@ async function tick(): Promise<void> {
         source: 'worker.daily_brief',
         action: 'scheduled_daily_brief_tick',
         target_type: 'daily_brief',
-        target_key: String(env.dailyBriefReportHour),
+        target_key: 'runtime_push_time',
         status: 'success',
         summary: '定时每日报告检查完成',
-        detail_json: {
-          report_hour: env.dailyBriefReportHour
-        }
+        detail_json: {}
       },
       logger
     );
@@ -38,7 +40,7 @@ async function tick(): Promise<void> {
         source: 'worker.daily_brief',
         action: 'scheduled_daily_brief_tick',
         target_type: 'daily_brief',
-        target_key: String(env.dailyBriefReportHour),
+        target_key: 'runtime_push_time',
         status: 'failed',
         summary: '定时每日报告检查失败',
         detail_json: {
@@ -53,33 +55,40 @@ async function tick(): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
-  if (hasReachedDailyHour(env.dailyBriefReportHour, env.timezone)) {
-    await tick();
-  } else {
-    logger.info('daily_brief_wait_until_window', {
-      timezone: env.timezone,
-      report_hour: env.dailyBriefReportHour
-    });
-  }
+  const scheduleLoop = async (): Promise<void> => {
+    try {
+      const target = await getPushScheduleTarget();
+      const now = new Date();
+      const parts = getTzParts(now, env.timezone);
+      const dateKey = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+      const runMarker = `${dateKey}|${target.time}`;
+      const scheduleMarker = `${runMarker}|${nextDailyTimeLocalString(target.hour, target.minute, env.timezone, now)}`;
 
-  const scheduleNext = (): void => {
-    const delay = msUntilNextDailyHour(env.dailyBriefReportHour, env.timezone);
-    logger.info('daily_brief_next_scheduled', {
-      timezone: env.timezone,
-      report_hour: env.dailyBriefReportHour,
-      delay_ms: delay,
-      next_run_local: nextDailyHourLocalString(env.dailyBriefReportHour, env.timezone)
-    });
-    setTimeout(async () => {
-      try {
-        await tick();
-      } finally {
-        scheduleNext();
+      if (scheduleMarker !== lastScheduleMarker) {
+        lastScheduleMarker = scheduleMarker;
+        logger.info('daily_brief_next_scheduled', {
+          timezone: env.timezone,
+          report_time: target.time,
+          next_run_local: nextDailyTimeLocalString(target.hour, target.minute, env.timezone, now)
+        });
       }
-    }, delay);
+
+      if (hasReachedDailyTime(target.hour, target.minute, env.timezone, now) && lastRunMarker !== runMarker) {
+        lastRunMarker = runMarker;
+        await tick();
+      }
+    } finally {
+      setTimeout(() => {
+        scheduleLoop().catch((error) => {
+          logger.error('daily_brief_schedule_loop_failed', {
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
+      }, SCHEDULE_POLL_MS);
+    }
   };
 
-  scheduleNext();
+  await scheduleLoop();
 }
 
 bootstrap().catch((error) => {

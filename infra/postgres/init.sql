@@ -273,6 +273,14 @@ CREATE TABLE IF NOT EXISTS bitable_export_configs (
 CREATE INDEX IF NOT EXISTS idx_bitable_export_configs_lookup
   ON bitable_export_configs (enabled, source_type, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS runtime_schedule_configs (
+  singleton_key TEXT PRIMARY KEY,
+  pull_time TEXT NOT NULL DEFAULT '09:00',
+  push_time TEXT NOT NULL DEFAULT '10:00',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS pull_cycle_locks (
   name TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL,
@@ -478,6 +486,12 @@ BEFORE UPDATE ON bitable_export_configs
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 
+DROP TRIGGER IF EXISTS trg_runtime_schedule_configs_updated_at ON runtime_schedule_configs;
+CREATE TRIGGER trg_runtime_schedule_configs_updated_at
+BEFORE UPDATE ON runtime_schedule_configs
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
 DROP TRIGGER IF EXISTS trg_pull_content_guards_updated_at ON pull_content_guards;
 CREATE TRIGGER trg_pull_content_guards_updated_at
 BEFORE UPDATE ON pull_content_guards
@@ -652,3 +666,7 @@ SELECT
   TRUE
 FROM apps
 ON CONFLICT (app_key, priority, regex_pattern) DO NOTHING;
+
+INSERT INTO runtime_schedule_configs (singleton_key, pull_time, push_time)
+VALUES ('global', '09:00', '10:00')
+ON CONFLICT (singleton_key) DO NOTHING;

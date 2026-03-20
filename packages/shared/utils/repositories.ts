@@ -15,7 +15,8 @@ import {
   KeywordLifecycleStateRow,
   OperationLogRecord,
   ProductStage,
-  ProductStageConfigRecord
+  ProductStageConfigRecord,
+  RuntimeScheduleConfigRecord
 } from '../types/models.js';
 
 export interface RuleRecord {
@@ -1180,6 +1181,45 @@ export async function updateBitableExportSyncResult(input: {
     ...result.rows[0],
     selected_fields: normalizeSelectedFields(result.rows[0]?.selected_fields)
   };
+}
+
+export async function ensureRuntimeScheduleConfig(
+  defaultPullTime: string,
+  defaultPushTime: string
+): Promise<RuntimeScheduleConfigRecord> {
+  await pgQuery(
+    `INSERT INTO runtime_schedule_configs (singleton_key, pull_time, push_time)
+     VALUES ('global', $1, $2)
+     ON CONFLICT (singleton_key) DO NOTHING`,
+    [defaultPullTime, defaultPushTime]
+  );
+
+  const result = await pgQuery<RuntimeScheduleConfigRecord>(
+    `SELECT singleton_key, pull_time, push_time, created_at, updated_at
+       FROM runtime_schedule_configs
+      WHERE singleton_key = 'global'
+      LIMIT 1`
+  );
+
+  return result.rows[0];
+}
+
+export async function upsertRuntimeScheduleConfig(input: {
+  pull_time: string;
+  push_time: string;
+}): Promise<RuntimeScheduleConfigRecord> {
+  const result = await pgQuery<RuntimeScheduleConfigRecord>(
+    `INSERT INTO runtime_schedule_configs (singleton_key, pull_time, push_time)
+     VALUES ('global', $1, $2)
+     ON CONFLICT (singleton_key) DO UPDATE SET
+       pull_time = EXCLUDED.pull_time,
+       push_time = EXCLUDED.push_time,
+       updated_at = NOW()
+     RETURNING singleton_key, pull_time, push_time, created_at, updated_at`,
+    [input.pull_time, input.push_time]
+  );
+
+  return result.rows[0];
 }
 
 export interface CreateOperationLogInput {

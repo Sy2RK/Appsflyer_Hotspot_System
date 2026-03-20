@@ -20,7 +20,8 @@ import {
 import { pgQuery } from './postgres.js';
 import { sendAlertNotification, sendFeishuInteractiveCardNotification, type AlertChannelConfig } from './notifier.js';
 import { resolveProductViewName } from './displayName.js';
-import { getCurrentHourInTimezone, getDailyBriefDefaultReportDate } from './dailyBrief.js';
+import { getDailyBriefDefaultReportDate } from './dailyBrief.js';
+import { getPushScheduleTarget } from './runtimeSchedule.js';
 import type {
   AppConfigRecord,
   AsaKeywordRecommendationRow,
@@ -1453,11 +1454,21 @@ export async function runScheduledAsaKeywordBrief(logger: LoggerLike): Promise<v
     return;
   }
 
-  const currentHour = getCurrentHourInTimezone(new Date(), env.timezone);
-  if (currentHour < env.asaDailyBriefReportHour) {
+  const schedule = await getPushScheduleTarget();
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: env.timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+  const currentHour = Number(parts.find((part) => part.type === 'hour')?.value ?? '0');
+  const currentMinute = Number(parts.find((part) => part.type === 'minute')?.value ?? '0');
+
+  if (currentHour < schedule.hour || (currentHour === schedule.hour && currentMinute < schedule.minute)) {
     logger.info?.('asa_daily_brief_skip_before_window', {
       current_hour: currentHour,
-      report_hour: env.asaDailyBriefReportHour
+      current_minute: currentMinute,
+      report_time: schedule.time
     });
     return;
   }

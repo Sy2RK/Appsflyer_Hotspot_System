@@ -2,6 +2,7 @@ import { env } from '../config/env.js';
 import { md5Hex } from './hash.js';
 import { chQuery } from './clickhouse.js';
 import { pgQuery } from './postgres.js';
+import { getPushScheduleTarget } from './runtimeSchedule.js';
 import {
   getDailyBriefDispatch,
   listAlerts,
@@ -175,13 +176,17 @@ function filtersToRouteKey(filters: DailyBriefFilters, prefix = 'manual'): strin
   return `${prefix}:${md5Hex(payload)}`;
 }
 
-function getTzParts(date: Date, timeZone: string): { year: number; month: number; day: number; hour: number } {
+function getTzParts(
+  date: Date,
+  timeZone: string
+): { year: number; month: number; day: number; hour: number; minute: number } {
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
+    minute: '2-digit',
     hourCycle: 'h23'
   });
   const parts = formatter.formatToParts(date);
@@ -190,7 +195,8 @@ function getTzParts(date: Date, timeZone: string): { year: number; month: number
     year: pick('year'),
     month: pick('month'),
     day: pick('day'),
-    hour: pick('hour')
+    hour: pick('hour'),
+    minute: pick('minute')
   };
 }
 
@@ -974,11 +980,17 @@ export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> 
     return;
   }
 
-  const currentHour = getCurrentHourInTimezone(new Date(), env.timezone);
-  if (currentHour < env.dailyBriefReportHour) {
+  const schedule = await getPushScheduleTarget();
+  const currentParts = getTzParts(new Date(), env.timezone);
+  const beforeWindow =
+    currentParts.hour < schedule.hour ||
+    (currentParts.hour === schedule.hour && currentParts.minute < schedule.minute);
+
+  if (beforeWindow) {
     logger.info('daily_brief_skip_before_window', {
-      current_hour: currentHour,
-      report_hour: env.dailyBriefReportHour
+      current_hour: currentParts.hour,
+      current_minute: currentParts.minute,
+      report_time: schedule.time
     });
     return;
   }

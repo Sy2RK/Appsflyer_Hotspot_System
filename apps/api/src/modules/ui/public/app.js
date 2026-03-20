@@ -8,6 +8,7 @@ const state = {
   asaKeywordRows: [],
   asaStageConfigs: [],
   bitableExportSources: [],
+  runtimeSchedule: null,
   operationLogs: [],
   editingAppKey: '',
   ruleTotalCount: 0,
@@ -75,6 +76,13 @@ const el = {
   ovRules: document.getElementById('ovRules'),
   ovOpenAlerts: document.getElementById('ovOpenAlerts'),
   ovLatestRefresh: document.getElementById('ovLatestRefresh'),
+  runtimeScheduleForm: document.getElementById('runtimeScheduleForm'),
+  runtimePullTimeInput: document.getElementById('runtimePullTimeInput'),
+  runtimePushTimeInput: document.getElementById('runtimePushTimeInput'),
+  saveRuntimeScheduleBtn: document.getElementById('saveRuntimeScheduleBtn'),
+  runtimeSchedulePullSummary: document.getElementById('runtimeSchedulePullSummary'),
+  runtimeSchedulePushSummary: document.getElementById('runtimeSchedulePushSummary'),
+  runtimeScheduleStatus: document.getElementById('runtimeScheduleStatus'),
   dailyBriefForm: document.getElementById('dailyBriefForm'),
   dailyBriefDateInput: document.getElementById('dailyBriefDateInput'),
   previewDailyBriefBtn: document.getElementById('previewDailyBriefBtn'),
@@ -87,6 +95,7 @@ const el = {
   dailyBriefClearMediaBtn: document.getElementById('dailyBriefClearMediaBtn'),
   bitableExportReportDateInput: document.getElementById('bitableExportReportDateInput'),
   bitableExportCards: document.getElementById('bitableExportCards'),
+  bitableSchedulePrimaryNote: document.getElementById('bitableSchedulePrimaryNote'),
 
   appForm: document.getElementById('appForm'),
   appSubmitBtn: document.getElementById('appSubmitBtn'),
@@ -357,6 +366,19 @@ function toLocalDate(date) {
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+function isValidTimeValue(value) {
+  return /^([01]\d|2[0-3]):([0-5]\d)$/.test(String(value || '').trim());
+}
+
+function addMinutesToTimeValue(value, minutes) {
+  if (!isValidTimeValue(value)) {
+    return '--:--';
+  }
+  const [hour, minute] = String(value).split(':').map(Number);
+  const total = ((hour * 60 + minute + minutes) % (24 * 60) + 24 * 60) % (24 * 60);
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
 function asNumber(value, fallback = 0) {
@@ -1879,6 +1901,93 @@ function renderDailyBriefModal(payload, mode) {
   setDailyBriefModalOpen(true);
 }
 
+function renderRuntimeSchedule(snapshot) {
+  const pullTime = String(snapshot?.pull_time || '09:00').trim();
+  const pushTime = String(snapshot?.push_time || '10:00').trim();
+  const bitableTime = String(snapshot?.bitable_time || addMinutesToTimeValue(pushTime, 5)).trim();
+  const timezone = String(snapshot?.timezone || 'Asia/Shanghai').trim();
+  const updatedAt = snapshot?.updated_at ? fmtTime(snapshot.updated_at) : '-';
+
+  if (el.runtimePullTimeInput) {
+    el.runtimePullTimeInput.value = isValidTimeValue(pullTime) ? pullTime : '09:00';
+  }
+  if (el.runtimePushTimeInput) {
+    el.runtimePushTimeInput.value = isValidTimeValue(pushTime) ? pushTime : '10:00';
+  }
+
+  if (el.runtimeSchedulePullSummary) {
+    el.runtimeSchedulePullSummary.textContent = `Puller 与 ASA 数据准备将在 ${pullTime} 开始。`;
+  }
+  if (el.runtimeSchedulePushSummary) {
+    el.runtimeSchedulePushSummary.textContent = `通用日报与 ASA 简报将在 ${pushTime} 发送，多维表格自动顺延至 ${bitableTime}。`;
+  }
+  if (el.runtimeScheduleStatus) {
+    el.runtimeScheduleStatus.textContent = `当前全局调度：Pull ${pullTime} ｜ Push ${pushTime} ｜ 多维表格 ${bitableTime} ｜ 时区 ${timezone} ｜ 最近更新 ${updatedAt}`;
+  }
+  if (el.bitableSchedulePrimaryNote) {
+    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（${timezone}）自动执行。Pull 复用当前 Base 中的既有表；ASA Raw 会在同一 Base 下自动创建 / 复用独立表。`;
+  }
+}
+
+function renderRuntimeSchedulePreview() {
+  const pullTime = String(el.runtimePullTimeInput?.value || '09:00').trim() || '09:00';
+  const pushTime = String(el.runtimePushTimeInput?.value || '10:00').trim() || '10:00';
+  const bitableTime = addMinutesToTimeValue(pushTime, 5);
+
+  if (el.runtimeSchedulePullSummary) {
+    el.runtimeSchedulePullSummary.textContent = `Puller 与 ASA 数据准备将在 ${pullTime} 开始。`;
+  }
+  if (el.runtimeSchedulePushSummary) {
+    el.runtimeSchedulePushSummary.textContent = `通用日报与 ASA 简报将在 ${pushTime} 发送，多维表格自动顺延至 ${bitableTime}。`;
+  }
+  if (el.bitableSchedulePrimaryNote) {
+    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（Asia/Shanghai）自动执行。Pull 复用当前 Base 中的既有表；ASA Raw 会在同一 Base 下自动创建 / 复用独立表。`;
+  }
+}
+
+async function loadRuntimeSchedule() {
+  const body = await api('/api/runtime-schedule');
+  state.runtimeSchedule = body.data || null;
+  renderRuntimeSchedule(state.runtimeSchedule);
+}
+
+async function saveRuntimeSchedule(event) {
+  if (event) {
+    event.preventDefault();
+  }
+
+  const pullTime = String(el.runtimePullTimeInput?.value || '').trim();
+  const pushTime = String(el.runtimePushTimeInput?.value || '').trim();
+
+  if (!isValidTimeValue(pullTime)) {
+    throw new Error('请输入有效的 Pull 时间');
+  }
+  if (!isValidTimeValue(pushTime)) {
+    throw new Error('请输入有效的推送时间');
+  }
+
+  const originalText = el.saveRuntimeScheduleBtn?.textContent || '保存时间';
+  if (el.saveRuntimeScheduleBtn) {
+    el.saveRuntimeScheduleBtn.disabled = true;
+    el.saveRuntimeScheduleBtn.textContent = '保存中...';
+  }
+
+  try {
+    const body = await api('/api/runtime-schedule', {
+      method: 'POST',
+      body: JSON.stringify({ pullTime, pushTime })
+    });
+    state.runtimeSchedule = body.data || null;
+    renderRuntimeSchedule(state.runtimeSchedule);
+    showToast(`已更新全局调度：Pull ${pullTime} / Push ${pushTime}`);
+  } finally {
+    if (el.saveRuntimeScheduleBtn) {
+      el.saveRuntimeScheduleBtn.disabled = false;
+      el.saveRuntimeScheduleBtn.textContent = originalText;
+    }
+  }
+}
+
 async function previewDailyBrief(event) {
   if (event) {
     event.preventDefault();
@@ -3067,6 +3176,7 @@ async function refreshOverviewTotals() {
 async function refreshAll() {
   await loadApps();
   await refreshOverviewTotals();
+  await loadRuntimeSchedule();
 
   const firstApp = state.apps[0]?.app_key || '';
   await loadRules(firstApp);
@@ -3108,6 +3218,13 @@ async function bootstrap() {
   setDefaultAsaDateRange();
   setDefaultDailyBriefDate();
   setDefaultBitableExportDate();
+  if (el.runtimePullTimeInput) {
+    el.runtimePullTimeInput.value = '09:00';
+  }
+  if (el.runtimePushTimeInput) {
+    el.runtimePushTimeInput.value = '10:00';
+  }
+  renderRuntimeSchedulePreview();
   syncAppFeishuSection();
   applyUniformFieldLabels();
   setActiveNav('section-overview');
@@ -3279,6 +3396,12 @@ el.budgetRecomputeBtn.addEventListener('click', () =>
 );
 el.closeBudgetDetailModalBtn.addEventListener('click', () => setBudgetDetailModalOpen(false));
 el.budgetDetailModalBackdrop.addEventListener('click', () => setBudgetDetailModalOpen(false));
+
+el.runtimeScheduleForm?.addEventListener('submit', (e) =>
+  saveRuntimeSchedule(e).catch((err) => showToast(err.message || '调度时间保存失败', true))
+);
+el.runtimePullTimeInput?.addEventListener('input', renderRuntimeSchedulePreview);
+el.runtimePushTimeInput?.addEventListener('input', renderRuntimeSchedulePreview);
 
 el.refreshAllBtn.addEventListener('click', () =>
   refreshAll().catch((err) => showToast(err.message || '刷新失败', true))

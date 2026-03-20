@@ -67,6 +67,43 @@
               </article>
             </div>
 
+            <div class="schedule-panel">
+              <div class="card-head card-head-compact schedule-panel-head">
+                <div>
+                  <h4>全局调度设置</h4>
+                  <p>统一控制 Pull 与各类日报的每日自动执行时间。当前时区固定为 UTC+8（Asia/Shanghai）。</p>
+                </div>
+                <div class="schedule-panel-badges">
+                  <span class="schedule-badge">UTC+8</span>
+                  <span class="schedule-badge schedule-badge-muted">统一作用于 Pull / ASA / 日报</span>
+                </div>
+              </div>
+              <form id="runtimeScheduleForm" class="schedule-form" autocomplete="off">
+                <label class="filter-field schedule-field">
+                  <span class="field-label">Pull 时间</span>
+                  <input id="runtimePullTimeInput" type="time" step="60" />
+                </label>
+                <label class="filter-field schedule-field">
+                  <span class="field-label">推送时间</span>
+                  <input id="runtimePushTimeInput" type="time" step="60" />
+                </label>
+                <div class="schedule-actions">
+                  <button id="saveRuntimeScheduleBtn" class="btn btn-primary" type="submit">保存时间</button>
+                </div>
+              </form>
+              <div class="schedule-meta-grid">
+                <article class="schedule-meta-card">
+                  <span class="schedule-meta-label">数据准备</span>
+                  <strong id="runtimeSchedulePullSummary">Puller 与 ASA 数据准备将在 09:00 开始。</strong>
+                </article>
+                <article class="schedule-meta-card">
+                  <span class="schedule-meta-label">消息推送</span>
+                  <strong id="runtimeSchedulePushSummary">通用日报与 ASA 简报将在 10:00 发送，多维表格自动顺延 5 分钟。</strong>
+                </article>
+              </div>
+              <div id="runtimeScheduleStatus" class="hint">当前使用系统默认时间：Pull 09:00，推送 10:00，多维表格 10:05。</div>
+            </div>
+
             <div class="brief-panel">
               <div class="card-head card-head-compact">
                 <h4>每日简报</h4>
@@ -116,7 +153,7 @@
 
               <div class="bitable-note-card">
                 <strong>运行说明</strong>
-                <p>每日 10:05（Asia/Shanghai）自动执行。Pull 复用当前 Base 中的既有表；ASA Raw 会在同一 Base 下自动创建 / 复用独立表。</p>
+                <p id="bitableSchedulePrimaryNote">每日 10:05（Asia/Shanghai）自动执行。Pull 复用当前 Base 中的既有表；ASA Raw 会在同一 Base 下自动创建 / 复用独立表。</p>
                 <p>字段顺序按系统目录固定输出。每次导入会先清理对应日期旧记录，再做整日全量覆盖，避免重复。</p>
               </div>
             </div>

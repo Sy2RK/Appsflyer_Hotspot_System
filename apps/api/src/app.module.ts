@@ -12,6 +12,7 @@ import dailyBriefRoutes from './modules/dailyBrief/dailyBrief.routes.js';
 import bitableExportsRoutes from './modules/bitableExports/bitableExports.routes.js';
 import operationLogsRoutes from './modules/operationLogs/operationLogs.routes.js';
 import asaKeywordsRoutes from './modules/asaKeywords/asaKeywords.routes.js';
+import runtimeScheduleRoutes from './modules/runtimeSchedule/runtimeSchedule.routes.js';
 import uiRoutes from './modules/ui/ui.routes.js';
 import { requestIdMiddleware } from './common/utils/request.js';
 import { logger } from './common/logger/logger.js';
@@ -42,6 +43,7 @@ export function createApp(): express.Express {
   app.use(dailyBriefRoutes);
   app.use(bitableExportsRoutes);
   app.use(asaKeywordsRoutes);
+  app.use(runtimeScheduleRoutes);
   app.use(operationLogsRoutes);
   app.use(alertsRoutes);
   app.use(rulesRoutes);
