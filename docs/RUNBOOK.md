@@ -59,6 +59,14 @@ docker compose up -d --build
 - ClickHouse HTTP: `http://localhost:8123`
 - Postgres: `localhost:5432`
 
+登录行为：
+- 未登录浏览器访问 `/ui` / `/ui/` 会跳转到 `/login`
+- 未登录访问 `/api/*` 会返回 `401`
+- 登录成功后通过 Cookie 保留会话
+- Cookie 仅在 HTTPS 或 `x-forwarded-proto=https` 时附加 `Secure`
+  - 本地 HTTP 调试可正常使用
+  - 生产环境应通过 HTTPS 暴露
+
 > `infra/postgres/init.sql` 会预置 3 个 app：
 > - `ai-video-plus` -> `id6746191879`
 > - `ai-screen-time-coach` -> `id6756569023`

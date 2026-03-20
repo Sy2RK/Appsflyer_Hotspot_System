@@ -31,16 +31,16 @@ router.post('/auth/login', (req, res) => {
   const nextPath = resolveAdminRedirectTarget(typeof body.next === 'string' ? body.next : undefined);
 
   if (account !== env.adminBasicAuthUser || password !== env.adminBasicAuthPassword) {
-    clearAdminSessionCookie(res);
+    clearAdminSessionCookie(req, res);
     return res.status(401).json({ ok: false, error: 'invalid_credentials' });
   }
 
-  setAdminSessionCookie(res);
+  setAdminSessionCookie(req, res);
   return res.json({ ok: true, redirect_to: nextPath });
 });
 
-router.post('/auth/logout', (_req, res) => {
-  clearAdminSessionCookie(res);
+router.post('/auth/logout', (req, res) => {
+  clearAdminSessionCookie(req, res);
   return res.json({ ok: true });
 });
 

@@ -42,6 +42,17 @@ function buildSessionToken(user: string, password: string): string {
   return crypto.createHash('sha256').update(`${user}\u0000${password}`).digest('hex');
 }
 
+function shouldUseSecureCookie(req: Request): boolean {
+  if (req.secure) {
+    return true;
+  }
+  const forwardedProto = String(req.header('x-forwarded-proto') || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  return forwardedProto === 'https';
+}
+
 function isSafeRedirectTarget(raw: string | undefined): boolean {
   if (!raw) return false;
   return raw.startsWith('/') && !raw.startsWith('//') && !raw.startsWith('/login') && !raw.startsWith('/auth/');
@@ -65,8 +76,8 @@ export function isAdminAuthenticated(req: Request): boolean {
   return cookieToken === buildSessionToken(env.adminBasicAuthUser, env.adminBasicAuthPassword);
 }
 
-export function setAdminSessionCookie(res: Response): void {
-  const secure = env.nodeEnv === 'production';
+export function setAdminSessionCookie(req: Request, res: Response): void {
+  const secure = shouldUseSecureCookie(req);
   const value = encodeURIComponent(buildSessionToken(env.adminBasicAuthUser, env.adminBasicAuthPassword));
   res.append(
     'Set-Cookie',
@@ -74,8 +85,8 @@ export function setAdminSessionCookie(res: Response): void {
   );
 }
 
-export function clearAdminSessionCookie(res: Response): void {
-  const secure = env.nodeEnv === 'production';
+export function clearAdminSessionCookie(req: Request, res: Response): void {
+  const secure = shouldUseSecureCookie(req);
   res.append(
     'Set-Cookie',
     `${ADMIN_SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`

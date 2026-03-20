@@ -77,6 +77,12 @@ docker compose up -d --build
   - `CLICKHOUSE_USER`
   - `CLICKHOUSE_PASSWORD`
 - `/ui` 与 `/api/*` 现在统一走登录页 + Cookie 会话，不再依赖浏览器原生 Basic Auth 弹窗
+- 未登录访问浏览器页面时：
+  - `/ui` / `/ui/` 会跳转到 `/login`
+  - `/api/*` 仍返回 `401`
+- 登录 Cookie 仅在 HTTPS 或 `x-forwarded-proto=https` 时附加 `Secure`
+  - 本地 `http://127.0.0.1:3000` 可正常登录验证
+  - 线上建议始终走 HTTPS / 反向代理
 
 ## 最近补充
 

@@ -244,6 +244,8 @@ curl http://localhost:3000/health
 - 访问 `/ui` 会跳到 `/login`
 - 登录页不再显示默认账号/密码
 - 未配置 `ADMIN_BASIC_AUTH_*` 时，生产环境 API 不应成功启动
+- 本地 HTTP 登录应正常保留会话
+- 线上 HTTPS / 反向代理场景下，登录 Cookie 应携带 `Secure`
 
 ### 8.3 规则 DSL 校验检查
 
@@ -357,6 +359,8 @@ docker compose logs --tail=200 api
 - `.env` 里的 `ADMIN_BASIC_AUTH_USER`
 - `.env` 里的 `ADMIN_BASIC_AUTH_PASSWORD`
 - 浏览器是否保留了旧 cookie
+- 当前访问是否为 HTTP 还是 HTTPS
+- 反向代理是否正确传递了 `x-forwarded-proto=https`
 
 必要时清理 cookie 后重试。
 
