@@ -53,6 +53,7 @@ export const env = {
   feishuBitablePullTableId: process.env.FEISHU_BITABLE_PULL_TABLE_ID ?? '',
   feishuBitablePullViewId: process.env.FEISHU_BITABLE_PULL_VIEW_ID ?? '',
   feishuBitableAsaTableName: process.env.FEISHU_BITABLE_ASA_TABLE_NAME ?? 'ASA Raw 明细',
+  feishuBitableActionTableName: process.env.FEISHU_BITABLE_ACTION_TABLE_NAME ?? '投放执行表',
   pullToken: process.env.APPSFLYER_PULL_TOKEN ?? '',
   masterApiToken:
     process.env.APPSFLYER_MASTER_API_TOKEN ??

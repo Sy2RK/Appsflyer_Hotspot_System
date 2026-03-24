@@ -36,12 +36,10 @@ cp .env.example .env
 # DAILY_BRIEF_TITLE_PREFIX=Hotspot 每日简报
 # ASA keyword 数据准备时间默认与 Pull 一致
 # ASA_KEYWORD_REPORT_HOUR=9
-# Feishu 多维表格原始数据推送默认使用“推送时间 + 5 分钟”
+# Feishu 多维表格投放执行表默认使用“推送时间 + 5 分钟”
 # FEISHU_BITABLE_ENABLED=true
 # FEISHU_BITABLE_APP_TOKEN=KlGhboFKLahZJssn17QcdLqTnhc
-# FEISHU_BITABLE_PULL_TABLE_ID=tblARnjXQhrXquyh
-# FEISHU_BITABLE_PULL_VIEW_ID=vewPHa9uUi
-# FEISHU_BITABLE_ASA_TABLE_NAME=ASA Raw 明细
+# FEISHU_BITABLE_ACTION_TABLE_NAME=投放执行表
 # FEISHU_BITABLE_SCHEDULE_HOUR=10
 # FEISHU_BITABLE_SCHEDULE_MINUTE=5
 # Qwen（OpenAI兼容）
@@ -81,7 +79,7 @@ Web UI 新增能力:
 - 预算建议页面（筛选、分页、详情弹窗、状态流转、手动生成、eCPI 分级规则说明）
 - ASA 关键词管理页面（真实 ASA keyword、阶段配置、专项简报 / 建议发送）
 - 每日报告页面（结构化预览、飞书 `interactive` 卡片发送、阈值说明）
-- 原始数据表格推送页面（Pull 明细 / ASA Raw -> Feishu 多维表格 + 群通知）
+- 投放执行表推送页面（通用投放建议 + ASA 关键词建议 -> 单张 Feishu 执行表 + 群通知）
 - 操作日志页面（查看手动操作与定时任务执行记录）
 - UI 文案默认中文（专有名词保留英文），规则见 `AGENTS.md`
 
@@ -392,7 +390,7 @@ WebUI 路径：
 
 ---
 
-## 5.9 验证 Feishu 多维表格原始数据推送
+## 5.9 验证 Feishu 投放执行表推送
 
 查询当前导出配置：
 
@@ -400,76 +398,33 @@ WebUI 路径：
 curl "http://localhost:3000/api/bitable-exports/configs"
 ```
 
-保存 Pull 明细表配置：
+保存投放执行表配置：
 
 ```bash
-curl -X POST "http://localhost:3000/api/bitable-exports/configs/pull_daily" \
+curl -X POST "http://localhost:3000/api/bitable-exports/configs/delivery_actions" \
   -H "Content-Type: application/json" \
   -d '{
     "enabled": true,
-    "chatId": "oc_xxx",
-    "selectedFields": [
-      "date",
-      "app_key",
-      "platform",
-      "media_source",
-      "country",
-      "campaign",
-      "clicks",
-      "installs",
-      "total_cost",
-      "average_ecpi",
-      "source_report",
-      "ingest_time"
-    ]
+    "chatId": "oc_xxx"
   }'
 ```
 
-保存 ASA Raw 表配置：
-
-```bash
-curl -X POST "http://localhost:3000/api/bitable-exports/configs/asa_raw" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "enabled": true,
-    "chatId": "oc_xxx",
-    "selectedFields": [
-      "dataset_type",
-      "install_date",
-      "install_time",
-      "app_key",
-      "platform",
-      "keyword",
-      "campaign",
-      "adset",
-      "event_revenue_usd"
-    ]
-  }'
-```
-
-手动执行 Pull 明细导出：
+手动执行投放执行表导出：
 
 ```bash
 curl -X POST "http://localhost:3000/api/bitable-exports/run" \
   -H "Content-Type: application/json" \
-  -d '{"sourceType":"pull_daily","reportDate":"2026-03-17"}'
-```
-
-手动执行 ASA Raw 导出：
-
-```bash
-curl -X POST "http://localhost:3000/api/bitable-exports/run" \
-  -H "Content-Type: application/json" \
-  -d '{"sourceType":"asa_raw","reportDate":"2026-03-17"}'
+  -d '{"sourceType":"delivery_actions","reportDate":"2026-03-17"}'
 ```
 
 预期：
-- Pull 明细写入固定表 `tblARnjXQhrXquyh`
-- ASA Raw 在同一 Base 下自动创建 / 复用 `ASA Raw 明细`
+- 系统在同一 Base 下创建 / 复用固定的 `投放执行表`
+- 表内同时包含通用投放建议与 ASA 关键词建议
+- 不再出现 `raw_json`、`event_uid` 之类技术字段
 - 群里收到一条 Feishu 交互卡片，包含：
-  - 数据源
   - 报告日期
-  - 导入记录数
+  - 总条数
+  - 通用投放 / ASA 关键词条数
   - 表链接
 
 定时任务：

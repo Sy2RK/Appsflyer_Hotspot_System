@@ -465,9 +465,8 @@ Request:
 查询 Feishu 多维表格导出配置快照。
 
 返回：
-- `sources`: 两类导出源配置
-  - `pull_daily`
-  - `asa_raw`
+- `sources`: 当前固定只返回一种导出源配置
+  - `delivery_actions`
 
 每个 source 包含：
 - `label`
@@ -477,41 +476,36 @@ Request:
 - `target_table_hint`
 
 说明：
-- `pull_daily` 固定复用已存在的 Pull 表
-- `asa_raw` 固定在同一 Base 下自动创建 / 复用 `ASA Raw 明细`
+- `delivery_actions` 会在同一 Base 下创建 / 复用固定的 `投放执行表`
+- 表内只保留可执行信息，不再导出 Pull 明细 / ASA Raw / `raw_json`
 - 第一版不开放 Base / Table ID 前端编辑
 
 ### `POST /api/bitable-exports/configs/:sourceType`
-保存某个原始数据表格推送配置。
+保存投放执行表推送配置。
 
 Path 参数：
-- `sourceType`: `pull_daily | asa_raw`
+- `sourceType`: `delivery_actions`
 
 Request:
 ```json
 {
   "enabled": true,
-  "chatId": "oc_xxx",
-  "selectedFields": [
-    "date",
-    "app_key",
-    "platform"
-  ]
+  "chatId": "oc_xxx"
 }
 ```
 
 说明：
 - `enabled=true` 且 `chatId` 非空时，才会被每日 `bitable_time` 定时任务纳入执行
-- `selectedFields` 仅允许选择后端固定字段目录中的列
+- 字段列为系统固定输出，接口传入的 `selectedFields` 会被忽略
 - `bitable_time` 固定按全局 `push_time + 5 分钟` 计算
 
 ### `POST /api/bitable-exports/run`
-手动执行一次原始数据导出到 Feishu 多维表格，并向指定群聊发送结果通知。
+手动执行一次投放执行表导出到 Feishu 多维表格，并向指定群聊发送结果通知。
 
 Request:
 ```json
 {
-  "sourceType": "pull_daily",
+  "sourceType": "delivery_actions",
   "reportDate": "2026-03-18"
 }
 ```
@@ -525,17 +519,18 @@ Request:
 - `selected_fields`
 - `deleted_count`
 - `record_count`
+- `breakdown`
 - `notify`
 
 说明：
-- 每次都按 `reportDate` 先删后写，保证同一天在目标表中不会重复
+- 每次都按 `reportDate` 快照替换，保证表内始终保留最新执行清单
 - 群通知使用与现有日报相同的 Feishu bot
-- `pull_daily`：
-  - 数据来自 `pull_aggregate_daily`
-  - 目标表为固定 `tblARnjXQhrXquyh`
-- `asa_raw`：
-  - 数据来自 `asa_raw_installs + asa_raw_in_app_events`
-  - 目标表会在同一 Base 下自动创建 / 复用
+- `delivery_actions`：
+  - 仅导出当前仍待处理的建议项（`pending`）
+  - 通用投放部分来自 `budget_recommendations + keyword_lifecycle_states`
+  - ASA 部分来自 `asa_keyword_recommendations + asa_keyword_states`
+  - 表内使用 `验证结果` 字段；新建议默认写入 `待验证`，同一天重导时会按投放项同步键保留已有填写结果
+  - 目标表会在同一 Base 下自动创建 / 复用 `投放执行表`
 
 ### `GET /api/operation-logs?source=&status=&limit=`
 查询系统操作日志。

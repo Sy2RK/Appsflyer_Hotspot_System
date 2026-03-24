@@ -6,6 +6,7 @@ import {
   AsaKeywordRouteRecord,
   AsaKeywordStateRow,
   BitableExportConfigRecord,
+  BitableExportRecordRefRecord,
   BudgetRecommendationRow,
   BudgetRecommendationStatus,
   BitableExportSourceType,
@@ -1195,6 +1196,84 @@ export async function updateBitableExportSyncResult(input: {
     ...result.rows[0],
     selected_fields: normalizeSelectedFields(result.rows[0]?.selected_fields)
   };
+}
+
+export async function listBitableExportRecordRefs(
+  sourceType: BitableExportSourceType,
+  reportDate: string,
+  tableId?: string
+): Promise<BitableExportRecordRefRecord[]> {
+  const result = await pgQuery<BitableExportRecordRefRecord>(
+    `SELECT id, source_type, report_date::text AS report_date, table_id, snapshot_id, sync_key, record_id, validation_result, created_at, updated_at
+       FROM bitable_export_record_refs
+      WHERE source_type = $1
+        AND report_date = $2::date
+        AND ($3::text IS NULL OR table_id = $3::text)
+      ORDER BY created_at DESC, id DESC`,
+    [sourceType, reportDate, tableId ?? null]
+  );
+  return result.rows;
+}
+
+export async function upsertBitableExportRecordRefs(
+  rows: Array<{
+    source_type: BitableExportSourceType;
+    report_date: string;
+    table_id: string;
+    snapshot_id: string;
+    sync_key: string;
+    record_id: string;
+    validation_result?: string | null;
+  }>
+): Promise<void> {
+  if (rows.length === 0) {
+    return;
+  }
+  await pgQuery(
+    `INSERT INTO bitable_export_record_refs (
+      source_type, report_date, table_id, snapshot_id, sync_key, record_id, validation_result
+    )
+    SELECT
+      x.source_type,
+      x.report_date::date,
+      x.table_id,
+      x.snapshot_id,
+      x.sync_key,
+      x.record_id,
+      NULLIF(x.validation_result, '')
+    FROM jsonb_to_recordset($1::jsonb) AS x(
+      source_type text,
+      report_date text,
+      table_id text,
+      snapshot_id text,
+      sync_key text,
+      record_id text,
+      validation_result text
+    )
+    ON CONFLICT (source_type, record_id) DO UPDATE SET
+      report_date = EXCLUDED.report_date,
+      table_id = EXCLUDED.table_id,
+      snapshot_id = EXCLUDED.snapshot_id,
+      sync_key = EXCLUDED.sync_key,
+      validation_result = EXCLUDED.validation_result,
+      updated_at = NOW()`,
+    [JSON.stringify(rows)]
+  );
+}
+
+export async function deleteBitableExportRecordRefsByRecordIds(
+  sourceType: BitableExportSourceType,
+  recordIds: string[]
+): Promise<void> {
+  if (recordIds.length === 0) {
+    return;
+  }
+  await pgQuery(
+    `DELETE FROM bitable_export_record_refs
+      WHERE source_type = $1
+        AND record_id = ANY($2::text[])`,
+    [sourceType, recordIds]
+  );
 }
 
 export async function ensureRuntimeScheduleConfig(

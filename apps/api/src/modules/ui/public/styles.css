@@ -600,6 +600,13 @@ h4 {
   gap: 10px;
 }
 
+.bitable-export-field-block-static {
+  padding: 14px 16px;
+  border: 1px solid rgba(188, 216, 235, 0.72);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fcfeff 0%, #f4fbff 100%);
+}
+
 .bitable-export-field-head {
   display: flex;
   align-items: center;
@@ -615,6 +622,27 @@ h4 {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 6px;
+}
+
+.bitable-field-grid-static {
+  margin-bottom: 2px;
+}
+
+.bitable-field-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 1px solid #d3e3ef;
+  background: #f9fcff;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.bitable-field-pill-muted {
+  border-style: dashed;
 }
 
 .bitable-field-chip {

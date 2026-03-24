@@ -259,13 +259,13 @@ CREATE INDEX IF NOT EXISTS idx_operation_logs_lookup
 
 CREATE TABLE IF NOT EXISTS bitable_export_configs (
   id BIGSERIAL PRIMARY KEY,
-  source_type TEXT NOT NULL UNIQUE CHECK (source_type IN ('pull_daily', 'asa_raw')),
+  source_type TEXT NOT NULL UNIQUE CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')),
   enabled BOOLEAN NOT NULL DEFAULT FALSE,
   target_table_id TEXT,
   target_table_name TEXT,
   chat_id TEXT,
   selected_fields JSONB NOT NULL DEFAULT '[]'::jsonb,
-  last_status TEXT NOT NULL DEFAULT 'idle' CHECK (last_status IN ('idle', 'success', 'failed')),
+  last_status TEXT NOT NULL DEFAULT 'idle' CHECK (last_status IN ('idle', 'success', 'failed', 'partial_success')),
   last_error TEXT,
   last_synced_at TIMESTAMPTZ,
   last_record_count INTEGER NOT NULL DEFAULT 0,
@@ -273,8 +273,45 @@ CREATE TABLE IF NOT EXISTS bitable_export_configs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE bitable_export_configs
+  DROP CONSTRAINT IF EXISTS bitable_export_configs_source_type_check;
+
+ALTER TABLE bitable_export_configs
+  ADD CONSTRAINT bitable_export_configs_source_type_check
+  CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')) NOT VALID;
+
+ALTER TABLE bitable_export_configs
+  VALIDATE CONSTRAINT bitable_export_configs_source_type_check;
+
+ALTER TABLE bitable_export_configs
+  DROP CONSTRAINT IF EXISTS bitable_export_configs_last_status_check;
+
+ALTER TABLE bitable_export_configs
+  ADD CONSTRAINT bitable_export_configs_last_status_check
+  CHECK (last_status IN ('idle', 'success', 'failed', 'partial_success')) NOT VALID;
+
+ALTER TABLE bitable_export_configs
+  VALIDATE CONSTRAINT bitable_export_configs_last_status_check;
+
 CREATE INDEX IF NOT EXISTS idx_bitable_export_configs_lookup
   ON bitable_export_configs (enabled, source_type, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS bitable_export_record_refs (
+  id BIGSERIAL PRIMARY KEY,
+  source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')),
+  report_date DATE NOT NULL,
+  table_id TEXT NOT NULL DEFAULT '',
+  snapshot_id TEXT NOT NULL DEFAULT '',
+  sync_key TEXT NOT NULL DEFAULT '',
+  record_id TEXT NOT NULL,
+  validation_result TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (source_type, record_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bitable_export_record_refs_lookup
+  ON bitable_export_record_refs (source_type, report_date, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS runtime_schedule_configs (
   singleton_key TEXT PRIMARY KEY,
@@ -486,6 +523,12 @@ EXECUTE FUNCTION set_updated_at();
 DROP TRIGGER IF EXISTS trg_bitable_export_configs_updated_at ON bitable_export_configs;
 CREATE TRIGGER trg_bitable_export_configs_updated_at
 BEFORE UPDATE ON bitable_export_configs
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_bitable_export_record_refs_updated_at ON bitable_export_record_refs;
+CREATE TRIGGER trg_bitable_export_record_refs_updated_at
+BEFORE UPDATE ON bitable_export_record_refs
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 

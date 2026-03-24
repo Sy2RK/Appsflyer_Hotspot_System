@@ -9,7 +9,7 @@ import { logger } from '../../common/logger/logger.js';
 import type { BitableExportSourceType } from '@shared/types/models.js';
 
 const router = Router();
-const SOURCE_TYPES = new Set<BitableExportSourceType>(['pull_daily', 'asa_raw']);
+const SOURCE_TYPES = new Set<BitableExportSourceType>(['delivery_actions']);
 let manualRunLock = false;
 
 function isSourceType(value: unknown): value is BitableExportSourceType {
@@ -39,15 +39,11 @@ router.post('/api/bitable-exports/configs/:sourceType', async (req, res, next) =
     const body = (req.body ?? {}) as Record<string, unknown>;
     const enabled = body.enabled === true;
     const chatId = typeof body.chatId === 'string' ? body.chatId.trim() : '';
-    const selectedFields = Array.isArray(body.selectedFields)
-      ? body.selectedFields.map((item) => String(item || '').trim()).filter(Boolean)
-      : [];
 
     const saved = await saveBitableExportConfig({
       sourceType,
       enabled,
-      chatId,
-      selectedFields
+      chatId
     });
 
     await writeOperationLog(
@@ -62,7 +58,7 @@ router.post('/api/bitable-exports/configs/:sourceType', async (req, res, next) =
           source_type: sourceType,
           enabled,
           chat_id: chatId || null,
-          selected_field_count: selectedFields.length
+          selected_field_count: saved.config.selected_fields.length
         }
       },
       logger
@@ -100,8 +96,11 @@ router.post('/api/bitable-exports/run', async (req, res, next) => {
         action: 'manual_bitable_export_run',
         target_type: 'bitable_export',
         target_key: `${sourceType}|${reportDate}`,
-        status: result.notify.ok ? 'success' : 'failed',
-        summary: `${result.label} 手动导出 ${reportDate}`,
+        status: result.export_status === 'success' && result.notify.ok ? 'success' : 'failed',
+        summary:
+          result.export_status === 'partial_success'
+            ? `${result.label} 手动导出 ${reportDate}（部分成功）`
+            : `${result.label} 手动导出 ${reportDate}`,
         detail_json: result
       },
       logger

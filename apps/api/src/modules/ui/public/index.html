@@ -141,8 +141,8 @@
             <div class="bitable-panel">
               <div class="card-head card-head-compact bitable-panel-head">
                 <div>
-                  <h4>原始数据表格推送</h4>
-                  <p>复用现有 Feishu 机器人，把 Pull 明细和 ASA Raw 导入多维表格，并向指定群聊发送导入结果。</p>
+                  <h4>投放执行表推送</h4>
+                  <p>只保留当前待处理的执行清单，并预留“验证结果”字段，方便后续按结果判断建议是否有效。</p>
                 </div>
                 <label class="filter-field bitable-report-date-field">
                   <span class="field-label">手动导出日期</span>
@@ -154,8 +154,8 @@
 
               <div class="bitable-note-card">
                 <strong>运行说明</strong>
-                <p id="bitableSchedulePrimaryNote">每日 10:05（Asia/Shanghai）自动执行。Pull 复用当前 Base 中的既有表；ASA Raw 会在同一 Base 下自动创建 / 复用独立表。</p>
-                <p>字段顺序按系统目录固定输出。每次导入会先清理对应日期旧记录，再做整日全量覆盖，避免重复。</p>
+                <p id="bitableSchedulePrimaryNote">每日 10:05（Asia/Shanghai）自动执行。系统会在同一 Base 下创建 / 复用一张固定的「投放执行表」，并覆盖为最新执行清单。</p>
+                <p>表内只保留对实际投放有用的字段，不再推送 Pull 明细、ASA Raw 或 `raw_json` 这类技术字段。新建议默认写入“待验证”；同一天再次导出时，系统会按投放项保留你已填写的验证结果。</p>
               </div>
             </div>
           </section>

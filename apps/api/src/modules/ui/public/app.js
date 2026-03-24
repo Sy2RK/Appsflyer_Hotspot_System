@@ -1937,7 +1937,7 @@ function renderRuntimeSchedule(snapshot) {
     el.runtimeScheduleStatus.textContent = `当前全局调度：Pull ${pullTime} ｜ Push ${pushTime} ｜ 多维表格 ${bitableTime} ｜ 时区 ${timezone} ｜ 最近更新 ${updatedAt}`;
   }
   if (el.bitableSchedulePrimaryNote) {
-    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（${timezone}）自动执行。Pull 复用当前 Base 中的既有表；ASA Raw 会在同一 Base 下自动创建 / 复用独立表。`;
+    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（${timezone}）自动执行。系统会在同一 Base 下创建 / 复用一张固定的「投放执行表」，并覆盖为最新执行清单。`;
   }
 }
 
@@ -1953,7 +1953,7 @@ function renderRuntimeSchedulePreview() {
     el.runtimeSchedulePushSummary.textContent = `通用日报与 ASA 简报将在 ${pushTime} 发送，多维表格自动顺延至 ${bitableTime}。`;
   }
   if (el.bitableSchedulePrimaryNote) {
-    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（Asia/Shanghai）自动执行。Pull 复用当前 Base 中的既有表；ASA Raw 会在同一 Base 下自动创建 / 复用独立表。`;
+    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（Asia/Shanghai）自动执行。系统会在同一 Base 下创建 / 复用一张固定的「投放执行表」，并覆盖为最新执行清单。`;
   }
 }
 
@@ -2053,13 +2053,15 @@ function bitableExportStatusLabel(status) {
   const mapping = {
     idle: '未执行',
     success: '成功',
-    failed: '失败'
+    failed: '失败',
+    partial_success: '部分成功'
   };
   return mapping[status] || status || '-';
 }
 
 function bitableExportStatusBadgeClass(status) {
   if (status === 'success') return 'badge-open';
+  if (status === 'partial_success') return 'badge-P1';
   if (status === 'failed') return 'badge-P0';
   return 'badge-P2';
 }
@@ -2086,6 +2088,8 @@ function renderBitableExportCards() {
       const lastError = String(config.last_error || '').trim();
       const chatId = String(config.chat_id || '').trim();
       const isEnabled = config.enabled === true;
+      const fieldLabels = Array.isArray(source.fields) ? source.fields.map((field) => String(field.label || '').trim()).filter(Boolean) : [];
+      const outputPreview = fieldLabels.slice(0, 8);
 
       return `
         <article class="bitable-export-card" data-source-type="${escapeHtml(source.source_type)}">
@@ -2123,28 +2127,22 @@ function renderBitableExportCards() {
             </label>
           </div>
 
-          <div class="bitable-export-field-block">
+          <div class="bitable-export-field-block bitable-export-field-block-static">
             <div class="bitable-export-field-head">
-              <strong>字段列选择</strong>
-              <span class="hint">已选 ${selected.length}/${(source.fields || []).length} 列</span>
+              <strong>执行表字段</strong>
+              <span class="hint">固定输出 ${selected.length || fieldLabels.length}/${fieldLabels.length} 列</span>
             </div>
-            <div class="bitable-field-grid">
-              ${(Array.isArray(source.fields) ? source.fields : [])
-                .map(
-                  (field) => `
-                    <label class="bitable-field-chip">
-                      <input
-                        type="checkbox"
-                        data-role="selected-field"
-                        value="${escapeHtml(field.key)}"
-                        ${selected.includes(field.key) ? 'checked' : ''}
-                      />
-                      <span>${escapeHtml(field.label)}</span>
-                    </label>
-                  `
-                )
+            <div class="bitable-field-grid bitable-field-grid-static">
+              ${outputPreview
+                .map((label) => `<span class="bitable-field-pill">${escapeHtml(label)}</span>`)
                 .join('')}
+              ${
+                fieldLabels.length > outputPreview.length
+                  ? `<span class="bitable-field-pill bitable-field-pill-muted">以及另外 ${fieldLabels.length - outputPreview.length} 列</span>`
+                  : ''
+              }
             </div>
+            <p class="hint">系统固定输出产品、平台、媒体源、主指标、建议动作、状态与理由，不再允许在页面里拼装原始技术列。</p>
           </div>
 
           <div class="bitable-export-status">
@@ -2190,14 +2188,10 @@ function collectBitableExportCardPayload(sourceType) {
 
   const enabledInput = card.querySelector('[data-role="enabled"]');
   const chatIdInput = card.querySelector('[data-role="chat-id"]');
-  const selectedFieldInputs = Array.from(card.querySelectorAll('[data-role="selected-field"]:checked'));
 
   return {
     enabled: enabledInput instanceof HTMLInputElement ? enabledInput.checked : false,
-    chatId: chatIdInput instanceof HTMLInputElement ? String(chatIdInput.value || '').trim() : '',
-    selectedFields: selectedFieldInputs
-      .map((input) => (input instanceof HTMLInputElement ? String(input.value || '').trim() : ''))
-      .filter(Boolean)
+    chatId: chatIdInput instanceof HTMLInputElement ? String(chatIdInput.value || '').trim() : ''
   };
 }
 
@@ -2209,7 +2203,7 @@ function refreshBitableFieldCount(card) {
   const total = card.querySelectorAll('[data-role="selected-field"]').length;
   const label = card.querySelector('.bitable-export-field-head .hint');
   if (label) {
-    label.textContent = `已选 ${checked}/${total} 列`;
+    label.textContent = total > 0 ? `已选 ${checked}/${total} 列` : '固定输出字段';
   }
 }
 
@@ -2231,7 +2225,7 @@ async function saveBitableExportCard(sourceType) {
     item.source_type === sourceType ? next : item
   );
   renderBitableExportCards();
-  showToast(`${sourceType === 'pull_daily' ? 'Pull 明细表' : 'ASA Raw 表'} 配置已保存`);
+  showToast(`${next?.label || '投放执行表'} 配置已保存`);
 }
 
 async function runBitableExportCard(sourceType) {
@@ -2256,7 +2250,9 @@ async function runBitableExportCard(sourceType) {
     await loadBitableExportConfigs();
     await loadOperationLogs();
     showToast(
-      `${result.label || (sourceType === 'pull_daily' ? 'Pull 明细表' : 'ASA Raw 表')} 已导入 ${result.record_count || 0} 行`
+      result.export_status === 'partial_success'
+        ? `${result.label || '投放执行表'} 已刷新 ${result.record_count || 0} 条执行项，但旧快照清理不完整`
+        : `${result.label || '投放执行表'} 已刷新 ${result.record_count || 0} 条执行项`
     );
   } finally {
     if (button instanceof HTMLButtonElement) {
@@ -3600,7 +3596,9 @@ el.bitableExportCards?.addEventListener('change', (event) => {
     return;
   }
   const card = target.closest('.bitable-export-card');
-  refreshBitableFieldCount(card);
+  if (target.dataset.role === 'selected-field') {
+    refreshBitableFieldCount(card);
+  }
 });
 el.dailyBriefModalCloseBtn.addEventListener('click', () => setDailyBriefModalOpen(false));
 el.dailyBriefModalBackdrop.addEventListener('click', () => setDailyBriefModalOpen(false));

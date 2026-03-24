@@ -1,10 +1,13 @@
 import { env } from '../config/env.js';
 import type { BitableExportConfigRecord, BitableExportSourceType } from '../types/models.js';
-import { chQuery } from './clickhouse.js';
+import { pgQuery } from './postgres.js';
 import {
+  deleteBitableExportRecordRefsByRecordIds,
   getBitableExportConfig,
   listBitableExportConfigs,
+  listBitableExportRecordRefs,
   upsertBitableExportConfig,
+  upsertBitableExportRecordRefs,
   updateBitableExportSyncResult
 } from './repositories.js';
 import { getFeishuTenantAccessToken, sendFeishuInteractiveCardNotification, type AlertChannelConfig } from './notifier.js';
@@ -43,6 +46,13 @@ interface BitableRecordItem {
   fields: Record<string, unknown>;
 }
 
+interface BitableRecordRef {
+  record_id: string;
+  snapshot_id: string;
+  sync_key: string;
+  validation_result: string;
+}
+
 interface BitableSourceSnapshot {
   source_type: BitableExportSourceType;
   label: string;
@@ -50,6 +60,28 @@ interface BitableSourceSnapshot {
   config: BitableExportConfigRecord;
   table_url: string;
   target_table_hint: string;
+}
+
+interface DeliveryActionRow {
+  report_date: string;
+  product_name: string;
+  platform: string;
+  media_source: string;
+  item_type: string;
+  item_name: string;
+  campaign: string;
+  adset: string;
+  stage: string;
+  primary_metric: string;
+  current_value: string;
+  target_value: string;
+  cost_reference: number;
+  volume_reference: string;
+  action: string;
+  adjustment_ratio: number;
+  validation_result: string;
+  reason: string;
+  updated_at: string;
 }
 
 export interface BitableExportRunResult {
@@ -64,6 +96,10 @@ export interface BitableExportRunResult {
   record_count: number;
   export_status: 'success' | 'partial_success' | 'failed';
   export_error?: string | null;
+  breakdown: {
+    campaign_actions: number;
+    asa_actions: number;
+  };
   notify: {
     ok: boolean;
     status?: number;
@@ -72,6 +108,13 @@ export interface BitableExportRunResult {
   };
 }
 
+const SOURCE_TYPE: BitableExportSourceType = 'delivery_actions';
+const SOURCE_LABEL = '投放执行表';
+const TARGET_TABLE_HINT = '固定为单张执行清单，只保留对投放同学有用的建议信息。';
+const ACTION_TABLE_NAME = String(env.feishuBitableActionTableName || '投放执行表').trim() || '投放执行表';
+const LEGACY_CONFIG_CONFLICT_ERROR =
+  'legacy_config_conflict: 原 Pull 明细表 与 ASA Raw 表配置不一致，已停止自动迁移，请在页面重新确认 Chat ID 与启用状态。';
+
 const SYSTEM_FIELDS: BitableFieldDefinition[] = [
   { key: '_report_date', label: '同步报告日期', value_type: 'text', default_selected: true, system: true },
   { key: '_sync_key', label: '同步键', value_type: 'text', default_selected: true, system: true },
@@ -79,77 +122,43 @@ const SYSTEM_FIELDS: BitableFieldDefinition[] = [
   { key: '_synced_at', label: '同步时间', value_type: 'datetime', default_selected: true, system: true }
 ];
 
-const PULL_FIELDS: BitableFieldDefinition[] = [
-  { key: 'date', label: '日期', value_type: 'datetime', date_only: true, default_selected: true },
-  { key: 'app_key', label: '应用 Key', value_type: 'text', default_selected: true },
+const ACTION_FIELDS: BitableFieldDefinition[] = [
+  { key: 'report_date', label: '报告日期', value_type: 'datetime', date_only: true, default_selected: true },
+  { key: 'product_name', label: '产品名', value_type: 'text', default_selected: true },
   { key: 'platform', label: '平台', value_type: 'text', default_selected: true },
   { key: 'media_source', label: '媒体源', value_type: 'text', default_selected: true },
-  { key: 'country', label: '国家', value_type: 'text', default_selected: true },
-  { key: 'campaign', label: '广告系列', value_type: 'text', default_selected: true },
-  { key: 'agency_pmd', label: 'Agency PMD', value_type: 'text', default_selected: false },
-  { key: 'impressions', label: '展示量', value_type: 'number', default_selected: false },
-  { key: 'clicks', label: '点击量', value_type: 'number', default_selected: true },
-  { key: 'ctr', label: 'CTR', value_type: 'number', default_selected: false },
-  { key: 'installs', label: '安装量', value_type: 'number', default_selected: true },
-  { key: 'conversion_rate', label: '转化率', value_type: 'number', default_selected: false },
-  { key: 'sessions', label: 'Sessions', value_type: 'number', default_selected: false },
-  { key: 'loyal_users', label: 'Loyal Users', value_type: 'number', default_selected: false },
-  { key: 'loyal_users_installs_ratio', label: 'Loyal Users / Installs', value_type: 'number', default_selected: false },
-  { key: 'total_cost', label: '成本', value_type: 'number', default_selected: true },
-  { key: 'average_ecpi', label: '平均 eCPI', value_type: 'number', default_selected: true },
-  { key: 'source_report', label: '报表来源', value_type: 'text', default_selected: true },
-  { key: 'revenue', label: '收入', value_type: 'number', default_selected: false },
-  { key: 'events', label: '事件数', value_type: 'number', default_selected: false },
-  { key: 'ingest_time', label: '入库时间', value_type: 'datetime', default_selected: true },
-  { key: 'raw_json', label: '原始 JSON', value_type: 'text', default_selected: false }
-];
-
-const ASA_FIELDS: BitableFieldDefinition[] = [
-  { key: 'dataset_type', label: '数据类型', value_type: 'text', default_selected: true },
-  { key: 'install_date', label: '安装日期', value_type: 'datetime', date_only: true, default_selected: true },
-  { key: 'install_time', label: '安装时间', value_type: 'datetime', default_selected: true },
-  { key: 'event_time', label: '事件时间', value_type: 'datetime', default_selected: false },
-  { key: 'app_key', label: '应用 Key', value_type: 'text', default_selected: true },
-  { key: 'platform', label: '平台', value_type: 'text', default_selected: true },
-  { key: 'keyword', label: '关键词', value_type: 'text', default_selected: true },
+  { key: 'item_type', label: '投放项类型', value_type: 'text', default_selected: true },
+  { key: 'item_name', label: '投放项名称', value_type: 'text', default_selected: true },
   { key: 'campaign', label: '广告系列', value_type: 'text', default_selected: true },
   { key: 'adset', label: '广告组', value_type: 'text', default_selected: true },
-  { key: 'country', label: '国家', value_type: 'text', default_selected: false },
-  { key: 'event_name', label: '事件名', value_type: 'text', default_selected: false },
-  { key: 'event_revenue_usd', label: '收入 USD', value_type: 'number', default_selected: true },
-  { key: 'currency', label: '币种', value_type: 'text', default_selected: false },
-  { key: 'event_uid', label: '事件 UID', value_type: 'text', default_selected: false },
-  { key: 'raw_json', label: '原始 JSON', value_type: 'text', default_selected: false }
+  { key: 'stage', label: '阶段', value_type: 'text', default_selected: true },
+  { key: 'primary_metric', label: '主指标', value_type: 'text', default_selected: true },
+  { key: 'current_value', label: '当前表现', value_type: 'text', default_selected: true },
+  { key: 'target_value', label: '目标表现', value_type: 'text', default_selected: true },
+  { key: 'cost_reference', label: '成本参考', value_type: 'number', default_selected: true },
+  { key: 'volume_reference', label: '量级参考', value_type: 'text', default_selected: true },
+  { key: 'action', label: '建议动作', value_type: 'text', default_selected: true },
+  { key: 'adjustment_ratio', label: '调整幅度(%)', value_type: 'number', default_selected: true },
+  { key: 'validation_result', label: '验证结果', value_type: 'text', default_selected: true },
+  { key: 'reason', label: '建议理由', value_type: 'text', default_selected: true },
+  { key: 'updated_at', label: '最近更新时间', value_type: 'datetime', default_selected: true }
 ];
 
-const SOURCE_LABELS: Record<BitableExportSourceType, string> = {
-  pull_daily: 'Pull 明细表',
-  asa_raw: 'ASA Raw 表'
-};
+const DEFAULT_SELECTED_FIELDS: string[] = ACTION_FIELDS.filter((field) => field.default_selected).map((field) => field.key);
 
-const DEFAULT_SELECTED_FIELDS: Record<BitableExportSourceType, string[]> = {
-  pull_daily: PULL_FIELDS.filter((field) => field.default_selected).map((field) => field.key),
-  asa_raw: ASA_FIELDS.filter((field) => field.default_selected).map((field) => field.key)
-};
-
-const SOURCE_FIELDS: Record<BitableExportSourceType, BitableFieldDefinition[]> = {
-  pull_daily: PULL_FIELDS,
-  asa_raw: ASA_FIELDS
-};
-
-function fieldCatalog(sourceType: BitableExportSourceType): BitableFieldDefinition[] {
-  return [...SYSTEM_FIELDS, ...SOURCE_FIELDS[sourceType]];
+function fieldCatalog(): BitableFieldDefinition[] {
+  return [...SYSTEM_FIELDS, ...ACTION_FIELDS];
 }
 
-function defaultConfig(sourceType: BitableExportSourceType): BitableExportConfigRecord {
+function defaultConfig(): BitableExportConfigRecord {
   return {
     id: 0,
-    source_type: sourceType,
+    source_type: SOURCE_TYPE,
     enabled: false,
-    target_table_id: sourceType === 'pull_daily' ? env.feishuBitablePullTableId || null : null,
-    target_table_name: sourceType === 'pull_daily' ? 'Pull 明细表' : env.feishuBitableAsaTableName || 'ASA Raw 明细',
+    target_table_id: null,
+    target_table_name: ACTION_TABLE_NAME,
     chat_id: null,
-    selected_fields: DEFAULT_SELECTED_FIELDS[sourceType],
+    selected_fields: DEFAULT_SELECTED_FIELDS,
     last_status: 'idle',
     last_error: null,
     last_synced_at: null,
@@ -159,35 +168,41 @@ function defaultConfig(sourceType: BitableExportSourceType): BitableExportConfig
   };
 }
 
-function mergeConfig(
-  sourceType: BitableExportSourceType,
-  dbConfig?: BitableExportConfigRecord | null
-): BitableExportConfigRecord {
-  const base = defaultConfig(sourceType);
+function mergeConfig(dbConfig?: BitableExportConfigRecord | null): BitableExportConfigRecord {
+  const base = defaultConfig();
   if (!dbConfig) {
     return base;
   }
   return {
     ...base,
     ...dbConfig,
-    selected_fields: Array.isArray(dbConfig.selected_fields) && dbConfig.selected_fields.length > 0
-      ? dbConfig.selected_fields
-      : base.selected_fields,
+    selected_fields: base.selected_fields,
     target_table_id: dbConfig.target_table_id || base.target_table_id,
     target_table_name: dbConfig.target_table_name || base.target_table_name
   };
 }
 
-function baseTableUrl(tableId: string, viewId?: string | null): string {
+function normalizeChatId(value: string | null | undefined): string {
+  return String(value || '').trim();
+}
+
+function hasLegacyConfigConflict(
+  legacyPull: BitableExportConfigRecord | undefined,
+  legacyAsa: BitableExportConfigRecord | undefined
+): boolean {
+  if (!legacyPull || !legacyAsa) {
+    return false;
+  }
+  return normalizeChatId(legacyPull.chat_id) !== normalizeChatId(legacyAsa.chat_id) || Boolean(legacyPull.enabled) !== Boolean(legacyAsa.enabled);
+}
+
+function baseTableUrl(tableId: string): string {
   const baseUrl = String(env.feishuBitableBaseUrl || '').trim().replace(/\/+$/, '');
   const appToken = String(env.feishuBitableAppToken || '').trim();
   if (!baseUrl || !appToken || !tableId) {
     return '';
   }
   const params = new URLSearchParams({ table: tableId });
-  if (viewId) {
-    params.set('view', viewId);
-  }
   return `${baseUrl}/${appToken}?${params.toString()}`;
 }
 
@@ -322,7 +337,7 @@ async function createBitableTable(appToken: string, tableName: string): Promise<
     }
   );
   if (!data.table_id) {
-    throw new Error('Feishu ASA table create succeeded without table_id');
+    throw new Error('Feishu execution table create succeeded without table_id');
   }
   return {
     table_id: data.table_id,
@@ -357,15 +372,11 @@ async function listBitableFields(appToken: string, tableId: string): Promise<Bit
 
 async function createBitableField(appToken: string, tableId: string, field: BitableFieldDefinition): Promise<void> {
   const fieldSpec = fieldTypeToFeishu(field);
-  await feishuJsonRequest(
-    'POST',
-    `/bitable/v1/apps/${appToken}/tables/${tableId}/fields`,
-    {
-      field_name: field.label,
-      type: fieldSpec.type,
-      property: fieldSpec.property ?? {}
-    }
-  );
+  await feishuJsonRequest('POST', `/bitable/v1/apps/${appToken}/tables/${tableId}/fields`, {
+    field_name: field.label,
+    type: fieldSpec.type,
+    property: fieldSpec.property ?? {}
+  });
 }
 
 function isFeishuFieldNameDuplicatedError(error: unknown): boolean {
@@ -398,6 +409,20 @@ async function listBitableRecords(appToken: string, tableId: string): Promise<Bi
   return items;
 }
 
+async function getBitableRecord(appToken: string, tableId: string, recordId: string): Promise<BitableRecordItem> {
+  const data = await feishuJsonRequest<{ record?: { record_id?: string; fields?: Record<string, unknown> } }>(
+    'GET',
+    `/bitable/v1/apps/${appToken}/tables/${tableId}/records/${recordId}`
+  );
+  if (!data.record?.record_id) {
+    throw new Error(`Feishu bitable record missing record_id: ${recordId}`);
+  }
+  return {
+    record_id: data.record.record_id,
+    fields: data.record.fields || {}
+  };
+}
+
 async function deleteBitableRecord(appToken: string, tableId: string, recordId: string): Promise<void> {
   await feishuJsonRequest('DELETE', `/bitable/v1/apps/${appToken}/tables/${tableId}/records/${recordId}`);
 }
@@ -406,268 +431,327 @@ async function batchCreateBitableRecords(
   appToken: string,
   tableId: string,
   rows: Array<Record<string, unknown>>
-): Promise<void> {
+): Promise<string[]> {
+  const createdRecordIds: string[] = [];
   for (let index = 0; index < rows.length; index += 200) {
     const chunk = rows.slice(index, index + 200).map((fields) => ({ fields }));
-    await feishuJsonRequest('POST', `/bitable/v1/apps/${appToken}/tables/${tableId}/records/batch_create`, {
+    const data = await feishuJsonRequest<{ records?: Array<{ record_id?: string }> }>(
+      'POST',
+      `/bitable/v1/apps/${appToken}/tables/${tableId}/records/batch_create`,
+      {
       records: chunk
-    });
+      }
+    );
+    const ids = (data.records || []).map((record) => String(record.record_id || '')).filter(Boolean);
+    if (ids.length !== chunk.length) {
+      throw new Error(`Feishu bitable batch create returned ${ids.length}/${chunk.length} record ids`);
+    }
+    createdRecordIds.push(...ids);
   }
+  return createdRecordIds;
 }
 
 async function ensureDefaultConfigs(): Promise<void> {
+  const configs = await listBitableExportConfigs();
+  const bySource = new Map(configs.map((row) => [row.source_type, row]));
+  const existing = bySource.get(SOURCE_TYPE);
+  const legacyPull = bySource.get('pull_daily' as BitableExportSourceType);
+  const legacyAsa = bySource.get('asa_raw' as BitableExportSourceType);
+  const legacyConflict = hasLegacyConfigConflict(legacyPull, legacyAsa);
+  if (existing) {
+    if (!existing.target_table_name) {
+      await upsertBitableExportConfig({
+        source_type: SOURCE_TYPE,
+        target_table_name: ACTION_TABLE_NAME,
+        selected_fields: DEFAULT_SELECTED_FIELDS
+      });
+    }
+    return;
+  }
+
+  if (legacyConflict) {
+    await upsertBitableExportConfig({
+      source_type: SOURCE_TYPE,
+      enabled: false,
+      chat_id: null,
+      target_table_name: ACTION_TABLE_NAME,
+      selected_fields: DEFAULT_SELECTED_FIELDS
+    });
+    await updateBitableExportSyncResult({
+      source_type: SOURCE_TYPE,
+      target_table_name: ACTION_TABLE_NAME,
+      last_status: 'failed',
+      last_error: LEGACY_CONFIG_CONFLICT_ERROR,
+      last_synced_at: null,
+      last_record_count: 0
+    });
+    return;
+  }
+
+  const legacySeed = legacyPull ?? legacyAsa;
+  const legacyChatId = normalizeChatId(legacySeed?.chat_id);
+  const legacyEnabled = Boolean(legacySeed?.enabled);
+
   await upsertBitableExportConfig({
-    source_type: 'pull_daily',
-    target_table_id: env.feishuBitablePullTableId || null,
-    target_table_name: 'Pull 明细表',
-    selected_fields: DEFAULT_SELECTED_FIELDS.pull_daily
-  });
-  await upsertBitableExportConfig({
-    source_type: 'asa_raw',
-    target_table_name: env.feishuBitableAsaTableName || 'ASA Raw 明细',
-    selected_fields: DEFAULT_SELECTED_FIELDS.asa_raw
+    source_type: SOURCE_TYPE,
+    enabled: legacyEnabled,
+    chat_id: legacyChatId || null,
+    target_table_name: ACTION_TABLE_NAME,
+    selected_fields: DEFAULT_SELECTED_FIELDS
   });
 }
 
-function normalizeSelectedFields(sourceType: BitableExportSourceType, selectedFields: string[]): string[] {
-  const allowed = new Set(SOURCE_FIELDS[sourceType].map((field) => field.key));
-  const normalized = selectedFields.filter((field) => allowed.has(field));
-  return normalized.length > 0 ? normalized : DEFAULT_SELECTED_FIELDS[sourceType];
+function normalizeSelectedFields(selectedFields: string[]): string[] {
+  return DEFAULT_SELECTED_FIELDS;
 }
 
-function pullFieldRow(raw: Record<string, unknown>): Record<string, unknown> {
-  return {
-    date: String(raw.date || ''),
-    app_key: String(raw.app_key || ''),
-    platform: String(raw.platform || ''),
-    media_source: String(raw.media_source || ''),
-    country: String(raw.country || ''),
-    campaign: String(raw.campaign || ''),
-    agency_pmd: String(raw.agency_pmd || ''),
-    impressions: Number(raw.impressions || 0),
-    clicks: Number(raw.clicks || 0),
-    ctr: Number(raw.ctr || 0),
-    installs: Number(raw.installs || 0),
-    conversion_rate: Number(raw.conversion_rate || 0),
-    sessions: Number(raw.sessions || 0),
-    loyal_users: Number(raw.loyal_users || 0),
-    loyal_users_installs_ratio: Number(raw.loyal_users_installs_ratio || 0),
-    total_cost: Number(raw.total_cost || 0),
-    average_ecpi: Number(raw.average_ecpi || 0),
-    source_report: String(raw.source_report || ''),
-    revenue: Number(raw.revenue || 0),
-    events: Number(raw.events || 0),
-    ingest_time: String(raw.ingest_time || ''),
-    raw_json: String(raw.raw_json || '')
-  };
+function platformLabel(platform: string): string {
+  if (platform === 'ios') return 'iOS';
+  if (platform === 'android') return 'Android';
+  if (!platform || platform === 'unknown') return '未知';
+  return platform;
 }
 
-async function queryPullRows(reportDate: string): Promise<Record<string, unknown>[]> {
-  const rows = await chQuery<Record<string, unknown>>(
+function budgetMetricLabel(primaryMetric: string, metricMode: string): string {
+  if (primaryMetric === 'roas') {
+    return metricMode === 'roas_pending_revenue' ? 'ROAS（收入回流中）' : 'ROAS';
+  }
+  return 'eCPI';
+}
+
+function formatBudgetCurrentValue(row: Record<string, unknown>): string {
+  if (String(row.primary_metric || '') === 'roas') {
+    const currentRoas = Number(row.current_roas || 0);
+    const currentEcpi = Number(row.current_ecpi || 0);
+    if (String(row.metric_mode || '') === 'roas_pending_revenue') {
+      return `ROAS 回流中 / 当前 eCPI $${currentEcpi.toFixed(2)}`;
+    }
+    return `ROAS ${currentRoas.toFixed(2)} / eCPI $${currentEcpi.toFixed(2)}`;
+  }
+  return `eCPI $${Number(row.current_ecpi || 0).toFixed(2)}`;
+}
+
+function formatBudgetTargetValue(row: Record<string, unknown>): string {
+  if (String(row.primary_metric || '') === 'roas') {
+    const targetRoas = Number(row.target_roas || 0);
+    const targetEcpi = Number(row.target_ecpi || 0);
+    return `目标 ROAS ${targetRoas.toFixed(2)} / 目标 eCPI $${targetEcpi.toFixed(2)}`;
+  }
+  return `目标 eCPI $${Number(row.target_ecpi || 0).toFixed(2)}`;
+}
+
+function formatBudgetVolumeReference(row: Record<string, unknown>): string {
+  const lastInstalls = Number(row.last_installs || 0);
+  const tier = String(row.volume_tier || '').trim();
+  if (lastInstalls > 0 && tier) {
+    return `最新日安装 ${lastInstalls.toFixed(0)} / 量级 ${tier}`;
+  }
+  if (lastInstalls > 0) {
+    return `最新日安装 ${lastInstalls.toFixed(0)}`;
+  }
+  if (tier) {
+    return `量级 ${tier}`;
+  }
+  return '待补充';
+}
+
+function formatAsaMetricLabel(primaryMetric: string): string {
+  return primaryMetric === 'd7_roas_cpp' ? 'D7 ROAS + CPP' : 'eCPI';
+}
+
+function formatAsaCurrentValue(row: Record<string, unknown>): string {
+  if (String(row.primary_metric || '') === 'd7_roas_cpp') {
+    return `ROAS ${Number(row.current_d7_roas || 0).toFixed(2)} / CPP $${Number(row.current_cpp || 0).toFixed(2)}`;
+  }
+  const ecpi = Number(row.current_ecpi || 0);
+  return ecpi > 0 ? `eCPI $${ecpi.toFixed(2)}` : 'eCPI —（有花费无安装）';
+}
+
+function formatAsaTargetValue(row: Record<string, unknown>): string {
+  if (String(row.primary_metric || '') === 'd7_roas_cpp') {
+    return `目标 ROAS ${Number(row.target_d7_roas || 0).toFixed(2)} / 目标 CPP $${Number(row.target_cpp || 0).toFixed(2)}`;
+  }
+  return `目标 eCPI $${Number(row.target_ecpi || 0).toFixed(2)}`;
+}
+
+function formatAsaVolumeReference(row: Record<string, unknown>): string {
+  const installs7d = Number(row.installs_7d || 0);
+  const purchases7d = Number(row.purchase_count_7d || 0);
+  return `近7日安装 ${installs7d.toFixed(0)} / 购买 ${purchases7d.toFixed(0)}`;
+}
+
+async function queryBudgetActionRows(reportDate: string): Promise<DeliveryActionRow[]> {
+  const result = await pgQuery<Record<string, unknown>>(
     `SELECT
-        toString(date) AS report_date,
-        app_key,
-        platform,
-        media_source,
-        country,
-        campaign,
-        agency_pmd,
-        impressions,
-        clicks,
-        ctr,
-        installs,
-        conversion_rate,
-        sessions,
-        loyal_users,
-        loyal_users_installs_ratio,
-        total_cost,
-        average_ecpi,
-        source_report,
-        revenue,
-        events,
-        formatDateTime(ingest_time, '%F %T') AS ingest_time_text,
-        raw_json
-       FROM pull_aggregate_daily
-      WHERE date = toDate({reportDate:String})
-      ORDER BY app_key, platform, media_source, country, campaign, ingest_time`,
-    { reportDate }
+        br.date::text AS report_date,
+        COALESCE(
+          NULLIF(CASE WHEN br.platform = 'ios' THEN a.ios_display_name WHEN br.platform = 'android' THEN a.android_display_name ELSE '' END, ''),
+          NULLIF(a.display_name, ''),
+          br.app_key
+        ) AS product_name,
+        br.platform,
+        br.media_source,
+        br.keyword AS item_name,
+        '' AS campaign,
+        '' AS adset,
+        COALESCE(ks.current_stage, '待观察') AS stage,
+        br.primary_metric,
+        br.metric_mode,
+        br.current_ecpi,
+        br.target_ecpi,
+        br.current_roas,
+        br.target_roas,
+        br.current_cost,
+        br.volume_tier,
+        COALESCE(ks.last_installs, 0) AS last_installs,
+        br.action,
+        br.change_ratio,
+        br.status,
+        br.reason_code,
+        COALESCE(br.llm_summary->>'summary_cn', '') AS reason_summary,
+        br.updated_at::text AS updated_at
+       FROM budget_recommendations br
+       JOIN apps a ON a.app_key = br.app_key
+       LEFT JOIN keyword_lifecycle_states ks
+         ON ks.app_key = br.app_key
+        AND ks.platform = br.platform
+        AND ks.keyword = br.keyword
+        AND ks.match_type = br.match_type
+      WHERE br.date = $1::date
+        AND br.status = 'pending'
+      ORDER BY br.updated_at DESC,
+      br.id DESC`,
+    [reportDate]
   );
-  return rows.map((row) =>
-    pullFieldRow({
-      ...row,
-      date: row.report_date,
-      ingest_time: row.ingest_time_text
-    })
-  );
-}
 
-async function queryAsaRows(reportDate: string): Promise<Record<string, unknown>[]> {
-  const rows = await chQuery<Record<string, unknown>>(
-    `WITH
-      latest_ready AS (
-        SELECT
-          app_key,
-          platform,
-          date,
-          max(snapshot_id) AS snapshot_id
-        FROM asa_slice_snapshots
-        WHERE status = 'ready'
-          AND date = toDate({reportDate:String})
-        GROUP BY app_key, platform, date
-      ),
-      legacy_installs AS (
-        SELECT
-          app_key,
-          platform,
-          install_date AS date,
-          toUInt64(0) AS snapshot_id
-        FROM asa_raw_installs
-        WHERE snapshot_id = 0
-          AND install_date = toDate({reportDate:String})
-          AND (app_key, platform, install_date) NOT IN (
-            SELECT app_key, platform, date FROM latest_ready
-          )
-        GROUP BY app_key, platform, install_date
-      ),
-      latest_slices AS (
-        SELECT * FROM latest_ready
-        UNION ALL
-        SELECT * FROM legacy_installs
-      )
-      SELECT
-        dataset_type,
-        install_date_text,
-        install_time_text,
-        event_time_text,
-        app_key,
-        platform,
-        keyword,
-        campaign,
-        adset,
-        country,
-        event_name,
-        event_revenue_usd,
-        currency,
-        event_uid,
-        raw_json
-      FROM (
-        SELECT
-          'install' AS dataset_type,
-          toString(install_date) AS install_date_text,
-          formatDateTime(install_time, '%F %T') AS install_time_text,
-          '' AS event_time_text,
-          app_key,
-          platform,
-          keyword,
-          campaign,
-          adset,
-          country,
-          '' AS event_name,
-          0.0 AS event_revenue_usd,
-          currency,
-          event_uid,
-          raw_json
-        FROM asa_raw_installs AS installs
-        INNER JOIN latest_slices AS latest
-          ON latest.app_key = installs.app_key
-         AND latest.platform = installs.platform
-         AND latest.date = installs.install_date
-         AND latest.snapshot_id = installs.snapshot_id
-        UNION ALL
-        SELECT
-          'in_app_event' AS dataset_type,
-          toString(install_date) AS install_date_text,
-          formatDateTime(install_time, '%F %T') AS install_time_text,
-          formatDateTime(event_time, '%F %T') AS event_time_text,
-          app_key,
-          platform,
-          keyword,
-          campaign,
-          adset,
-          country,
-          event_name,
-          event_revenue_usd,
-          currency,
-          event_uid,
-          raw_json
-        FROM asa_raw_in_app_events AS events
-        INNER JOIN latest_slices AS latest
-          ON latest.app_key = events.app_key
-         AND latest.platform = events.platform
-         AND latest.date = events.install_date
-         AND latest.snapshot_id = events.snapshot_id
-      )
-      ORDER BY app_key, platform, keyword, campaign, adset, dataset_type, install_time_text, event_time_text`,
-    { reportDate }
-  );
-  return rows.map((row) => ({
-    dataset_type: String(row.dataset_type || ''),
-    install_date: String(row.install_date_text || ''),
-    install_time: String(row.install_time_text || ''),
-    event_time: String(row.event_time_text || ''),
-    app_key: String(row.app_key || ''),
-    platform: String(row.platform || ''),
-    keyword: String(row.keyword || ''),
+  return result.rows.map((row) => ({
+    report_date: String(row.report_date || reportDate),
+    product_name: String(row.product_name || row.app_key || ''),
+    platform: platformLabel(String(row.platform || 'unknown')),
+    media_source: String(row.media_source || '未知媒体'),
+    item_type: '通用投放',
+    item_name: String(row.item_name || ''),
     campaign: String(row.campaign || ''),
-    adset: String(row.adset || ''),
-    country: String(row.country || ''),
-    event_name: String(row.event_name || ''),
-    event_revenue_usd: Number(row.event_revenue_usd || 0),
-    currency: String(row.currency || ''),
-    event_uid: String(row.event_uid || ''),
-    raw_json: String(row.raw_json || '')
+    adset: '',
+    stage: String(row.stage || '待观察'),
+    primary_metric: budgetMetricLabel(String(row.primary_metric || ''), String(row.metric_mode || '')),
+    current_value: formatBudgetCurrentValue(row),
+    target_value: formatBudgetTargetValue(row),
+    cost_reference: Number(row.current_cost || 0),
+    volume_reference: formatBudgetVolumeReference(row),
+    action: String(row.action || 'hold'),
+    adjustment_ratio: Math.abs(Number(row.change_ratio || 0) * 100),
+    validation_result: '待验证',
+    reason: String(row.reason_summary || row.reason_code || '暂无补充说明'),
+    updated_at: String(row.updated_at || '')
   }));
 }
 
-function syncKeyForRow(sourceType: BitableExportSourceType, row: Record<string, unknown>): string {
-  if (sourceType === 'pull_daily') {
-    return [
-      row.date,
-      row.app_key,
-      row.platform,
-      row.media_source,
-      row.country,
-      row.campaign,
-      row.source_report,
-      row.ingest_time
-    ]
-      .map((item) => String(item || '').trim())
-      .join('|');
-  }
+async function queryAsaActionRows(reportDate: string): Promise<DeliveryActionRow[]> {
+  const result = await pgQuery<Record<string, unknown>>(
+    `SELECT
+        ar.date::text AS report_date,
+        COALESCE(
+          NULLIF(CASE WHEN ar.platform = 'ios' THEN a.ios_display_name WHEN ar.platform = 'android' THEN a.android_display_name ELSE '' END, ''),
+          NULLIF(a.display_name, ''),
+          ar.app_key
+        ) AS product_name,
+        ar.platform,
+        'Apple Search Ads' AS media_source,
+        ar.keyword AS item_name,
+        ar.campaign,
+        ar.adset,
+        COALESCE(s.current_stage, '待观察') AS stage,
+        ar.primary_metric,
+        ar.current_ecpi,
+        ar.current_cpp,
+        ar.current_d7_roas,
+        ar.target_ecpi,
+        ar.target_cpp,
+        ar.target_d7_roas,
+        COALESCE(s.total_cost_7d, 0) AS total_cost_7d,
+        COALESCE(s.installs_7d, 0) AS installs_7d,
+        COALESCE(s.purchase_count_7d, 0) AS purchase_count_7d,
+        ar.action,
+        ar.change_ratio,
+        ar.status,
+        ar.reason_code,
+        COALESCE(ar.llm_summary->>'summary_cn', '') AS reason_summary,
+        ar.updated_at::text AS updated_at
+       FROM asa_keyword_recommendations ar
+       JOIN apps a ON a.app_key = ar.app_key
+       LEFT JOIN asa_keyword_states s
+         ON s.app_key = ar.app_key
+        AND s.platform = ar.platform
+        AND s.keyword = ar.keyword
+        AND s.campaign = ar.campaign
+        AND s.adset = ar.adset
+      WHERE ar.date = $1::date
+        AND ar.status = 'pending'
+      ORDER BY ar.updated_at DESC,
+      ar.id DESC`,
+    [reportDate]
+  );
+
+  return result.rows.map((row) => ({
+    report_date: String(row.report_date || reportDate),
+    product_name: String(row.product_name || row.app_key || ''),
+    platform: platformLabel(String(row.platform || 'unknown')),
+    media_source: 'Apple Search Ads',
+    item_type: 'ASA 关键词',
+    item_name: String(row.item_name || ''),
+    campaign: String(row.campaign || ''),
+    adset: String(row.adset || ''),
+    stage: String(row.stage || '待观察'),
+    primary_metric: formatAsaMetricLabel(String(row.primary_metric || 'ecpi')),
+    current_value: formatAsaCurrentValue(row),
+    target_value: formatAsaTargetValue(row),
+    cost_reference: Number(row.total_cost_7d || 0),
+    volume_reference: formatAsaVolumeReference(row),
+    action: String(row.action || 'hold'),
+    adjustment_ratio: Math.abs(Number(row.change_ratio || 0) * 100),
+    validation_result: '待验证',
+    reason: String(row.reason_summary || row.reason_code || '暂无补充说明'),
+    updated_at: String(row.updated_at || '')
+  }));
+}
+
+async function queryDeliveryActionRows(reportDate: string): Promise<{ rows: DeliveryActionRow[]; breakdown: { campaign_actions: number; asa_actions: number } }> {
+  const [campaignRows, asaRows] = await Promise.all([
+    queryBudgetActionRows(reportDate),
+    queryAsaActionRows(reportDate)
+  ]);
+  return {
+    rows: [...campaignRows, ...asaRows],
+    breakdown: {
+      campaign_actions: campaignRows.length,
+      asa_actions: asaRows.length
+    }
+  };
+}
+
+function syncKeyForRow(row: DeliveryActionRow): string {
   return [
-    row.dataset_type,
-    row.install_date,
-    row.app_key,
+    row.report_date,
+    row.item_type,
+    row.product_name,
     row.platform,
-    row.keyword,
+    row.media_source,
+    row.item_name,
     row.campaign,
-    row.adset,
-    row.event_uid
+    row.adset
   ]
     .map((item) => String(item || '').trim())
     .join('|');
 }
 
-async function resolvePullTable(appToken: string): Promise<BitableTableRecord> {
-  const tableId = String(env.feishuBitablePullTableId || '').trim();
-  if (!tableId) {
-    throw new Error('Missing FEISHU_BITABLE_PULL_TABLE_ID');
-  }
-  const tables = await listBitableTables(appToken);
-  const matched = tables.find((table) => table.table_id === tableId);
-  if (!matched) {
-    return { table_id: tableId, name: 'Pull 明细表' };
-  }
-  return matched;
-}
-
-async function resolveAsaTable(appToken: string, config: BitableExportConfigRecord): Promise<BitableTableRecord> {
+async function resolveActionTable(appToken: string, config: BitableExportConfigRecord): Promise<BitableTableRecord> {
   const tables = await listBitableTables(appToken);
   const byId = config.target_table_id ? tables.find((table) => table.table_id === config.target_table_id) : null;
   if (byId) {
     return byId;
   }
-  const targetName = String(config.target_table_name || env.feishuBitableAsaTableName || 'ASA Raw 明细').trim();
+  const targetName = String(config.target_table_name || ACTION_TABLE_NAME).trim() || ACTION_TABLE_NAME;
   const byName = tables.find((table) => table.name === targetName);
   if (byName) {
     return byName;
@@ -678,13 +762,12 @@ async function resolveAsaTable(appToken: string, config: BitableExportConfigReco
 async function ensureTableFields(
   appToken: string,
   tableId: string,
-  sourceType: BitableExportSourceType,
   selectedFields: string[],
   logger?: LoggerLike
 ): Promise<void> {
   const existingFields = await listBitableFields(appToken, tableId);
   const existingNames = new Set(existingFields.map((field) => field.field_name));
-  const catalog = fieldCatalog(sourceType);
+  const catalog = fieldCatalog();
   const required = catalog.filter((field) => field.system || selectedFields.includes(field.key));
   for (const field of required) {
     if (existingNames.has(field.label)) {
@@ -705,27 +788,64 @@ async function ensureTableFields(
   }
 }
 
-async function listRecordsForReportDate(
-  appToken: string,
-  tableId: string,
-  reportDate: string
-): Promise<Array<{ record_id: string; snapshot_id: string }>> {
-  const records = await listBitableRecords(appToken, tableId);
-  return records
-    .filter((record) => String(record.fields['同步报告日期'] || '').trim() === reportDate)
-    .map((record) => ({
-      record_id: record.record_id,
-      snapshot_id: String(record.fields['同步快照ID'] || '').trim()
-    }));
+async function loadExistingRecordRefs(reportDate: string, tableId: string): Promise<BitableRecordRef[]> {
+  const refs = await listBitableExportRecordRefs(SOURCE_TYPE, reportDate, tableId);
+  return refs.map((row) => ({
+    record_id: row.record_id,
+    snapshot_id: row.snapshot_id,
+    sync_key: row.sync_key,
+    validation_result: String(row.validation_result || '').trim()
+  }));
 }
 
-async function deleteRecordsByIds(appToken: string, tableId: string, recordIds: string[], logger?: LoggerLike): Promise<number> {
-  let deleted = 0;
+async function buildValidationResultMap(
+  appToken: string,
+  tableId: string,
+  refs: BitableRecordRef[],
+  logger?: LoggerLike
+): Promise<{ validationMap: Map<string, string>; staleRecordIds: string[] }> {
+  const validationMap = new Map<string, string>();
+  const staleRecordIds: string[] = [];
+
+  for (const ref of refs) {
+    try {
+      const record = await getBitableRecord(appToken, tableId, ref.record_id);
+      const syncKey = String(record.fields['同步键'] || ref.sync_key || '').trim();
+      const validationResult = String(record.fields['验证结果'] || ref.validation_result || '').trim();
+      if (syncKey && validationResult && !validationMap.has(syncKey)) {
+        validationMap.set(syncKey, validationResult);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('code=1254040') || message.includes('code=91403') || message.includes('status=404')) {
+        staleRecordIds.push(ref.record_id);
+        continue;
+      }
+      logger?.warn?.('bitable_validation_result_lookup_failed', {
+        record_id: ref.record_id,
+        table_id: tableId,
+        error: message
+      });
+    }
+  }
+
+  return { validationMap, staleRecordIds };
+}
+
+async function deleteRecordsByIds(
+  appToken: string,
+  tableId: string,
+  recordIds: string[],
+  logger?: LoggerLike
+): Promise<{ deletedIds: string[]; failedIds: string[] }> {
+  const deletedIds: string[] = [];
+  const failedIds: string[] = [];
   for (const recordId of recordIds) {
     try {
       await deleteBitableRecord(appToken, tableId, recordId);
-      deleted += 1;
+      deletedIds.push(recordId);
     } catch (error) {
+      failedIds.push(recordId);
       logger?.warn?.('bitable_delete_record_failed', {
         table_id: tableId,
         record_id: recordId,
@@ -733,22 +853,21 @@ async function deleteRecordsByIds(appToken: string, tableId: string, recordIds: 
       });
     }
   }
-  return deleted;
+  return { deletedIds, failedIds };
 }
 
 function buildRecordFields(
-  sourceType: BitableExportSourceType,
-  row: Record<string, unknown>,
+  row: DeliveryActionRow,
   selectedFields: string[],
   reportDate: string,
   snapshotId: string,
   syncedAtMillis: number
 ): Record<string, unknown> {
-  const catalog = fieldCatalog(sourceType);
+  const catalog = fieldCatalog();
   const selected = new Set(selectedFields);
   const result: Record<string, unknown> = {
     同步报告日期: reportDate,
-    同步键: syncKeyForRow(sourceType, row),
+    同步键: syncKeyForRow(row),
     同步快照ID: snapshotId,
     同步时间: syncedAtMillis
   };
@@ -756,7 +875,7 @@ function buildRecordFields(
     if (field.system || !selected.has(field.key)) {
       continue;
     }
-    const value = serializeFieldValue(field, row[field.key]);
+    const value = serializeFieldValue(field, row[field.key as keyof DeliveryActionRow]);
     if (value !== undefined) {
       result[field.label] = value;
     }
@@ -769,17 +888,17 @@ function buildNotifyCard(result: BitableExportRunResult): Record<string, unknown
     result.export_status === 'failed' ? 'red' : result.export_status === 'partial_success' ? 'orange' : 'blue';
   const summaryText =
     result.export_status === 'partial_success'
-      ? '导入成功，但旧快照清理不完整'
+      ? '写入成功，但旧快照清理不完整'
       : result.notify.ok
-        ? '导入并通知成功'
-        : '导入完成，但群通知失败';
+        ? '执行清单已刷新并通知成功'
+        : '执行清单已刷新，但群通知失败';
   const detailText =
     result.export_status === 'partial_success'
       ? result.export_error || '已写入新快照，但旧快照清理不完整，可能存在重复历史记录。'
       : result.export_status === 'failed'
         ? result.export_error || '导出失败'
         : result.notify.ok
-          ? '本次导出与通知均已完成。'
+          ? '表格已更新为最新执行清单，适合投放同学直接查看和处理。'
           : result.notify.error || '群通知失败';
   return {
     config: { wide_screen_mode: true },
@@ -787,7 +906,7 @@ function buildNotifyCard(result: BitableExportRunResult): Record<string, unknown
       template,
       title: {
         tag: 'plain_text',
-        content: `原始数据表格推送｜${result.label}｜${result.report_date}`
+        content: `投放执行表推送｜${result.report_date}`
       }
     },
     elements: [
@@ -795,7 +914,14 @@ function buildNotifyCard(result: BitableExportRunResult): Record<string, unknown
         tag: 'div',
         text: {
           tag: 'lark_md',
-          content: `**结果**：${summaryText}\n**目标表**：${result.table_name}\n**导入记录**：${result.record_count}\n**清理旧记录**：${result.deleted_count}\n**字段数**：${result.selected_fields.length}\n**说明**：${detailText}`
+          content:
+            `**结果**：${summaryText}\n` +
+            `**目标表**：${result.table_name}\n` +
+            `**总条数**：${result.record_count}\n` +
+            `**通用投放**：${result.breakdown.campaign_actions}\n` +
+            `**ASA 关键词**：${result.breakdown.asa_actions}\n` +
+            `**清理旧记录**：${result.deleted_count}\n` +
+            `**说明**：${detailText}`
         }
       },
       {
@@ -803,7 +929,7 @@ function buildNotifyCard(result: BitableExportRunResult): Record<string, unknown
         actions: [
           {
             tag: 'button',
-            text: { tag: 'plain_text', content: '打开多维表格' },
+            text: { tag: 'plain_text', content: '打开投放执行表' },
             type: 'primary',
             url: result.table_url
           }
@@ -815,56 +941,57 @@ function buildNotifyCard(result: BitableExportRunResult): Record<string, unknown
 
 export async function getBitableExportConfigsSnapshot(): Promise<{ sources: BitableSourceSnapshot[] }> {
   await ensureDefaultConfigs();
-  const rows = await listBitableExportConfigs();
-  const bySource = new Map(rows.map((row) => [row.source_type, row]));
-  const sources: BitableSourceSnapshot[] = (['pull_daily', 'asa_raw'] as BitableExportSourceType[]).map((sourceType) => {
-    const config = mergeConfig(sourceType, bySource.get(sourceType));
-    const tableUrl = sourceType === 'pull_daily'
-      ? baseTableUrl(config.target_table_id || '', env.feishuBitablePullViewId || null)
-      : baseTableUrl(config.target_table_id || '');
-    return {
-      source_type: sourceType,
-      label: SOURCE_LABELS[sourceType],
-      fields: SOURCE_FIELDS[sourceType],
-      config,
-      table_url: tableUrl,
-      target_table_hint:
-        sourceType === 'pull_daily'
-          ? '复用现有 Pull 表'
-          : '同一 Base 下自动创建 / 复用 ASA Raw 表'
-    };
-  });
-  return { sources };
+  const row = mergeConfig(await getBitableExportConfig(SOURCE_TYPE));
+  return {
+    sources: [
+      {
+        source_type: SOURCE_TYPE,
+        label: SOURCE_LABEL,
+        fields: ACTION_FIELDS,
+        config: row,
+        table_url: baseTableUrl(row.target_table_id || ''),
+        target_table_hint: TARGET_TABLE_HINT
+      }
+    ]
+  };
 }
 
 export async function saveBitableExportConfig(input: {
   sourceType: BitableExportSourceType;
   enabled: boolean;
   chatId: string;
-  selectedFields: string[];
 }): Promise<BitableSourceSnapshot> {
+  if (input.sourceType !== SOURCE_TYPE) {
+    throw new Error('unsupported_bitable_source_type');
+  }
   await ensureDefaultConfigs();
-  const normalizedFields = normalizeSelectedFields(input.sourceType, input.selectedFields);
   const saved = await upsertBitableExportConfig({
-    source_type: input.sourceType,
+    source_type: SOURCE_TYPE,
     enabled: input.enabled,
     chat_id: input.chatId,
-    selected_fields: normalizedFields,
-    target_table_id: input.sourceType === 'pull_daily' ? env.feishuBitablePullTableId || null : undefined,
-    target_table_name: input.sourceType === 'pull_daily' ? 'Pull 明细表' : env.feishuBitableAsaTableName || 'ASA Raw 明细'
+    selected_fields: DEFAULT_SELECTED_FIELDS,
+    target_table_name: ACTION_TABLE_NAME
   });
-  const merged = mergeConfig(input.sourceType, saved);
+  let merged = mergeConfig(saved);
+  if (String(merged.last_error || '') === LEGACY_CONFIG_CONFLICT_ERROR) {
+    const cleared = await updateBitableExportSyncResult({
+      source_type: SOURCE_TYPE,
+      target_table_id: merged.target_table_id,
+      target_table_name: merged.target_table_name,
+      last_status: 'idle',
+      last_error: null,
+      last_synced_at: merged.last_synced_at,
+      last_record_count: merged.last_record_count
+    });
+    merged = mergeConfig(cleared);
+  }
   return {
-    source_type: input.sourceType,
-    label: SOURCE_LABELS[input.sourceType],
-    fields: SOURCE_FIELDS[input.sourceType],
+    source_type: SOURCE_TYPE,
+    label: SOURCE_LABEL,
+    fields: ACTION_FIELDS,
     config: merged,
-    table_url:
-      input.sourceType === 'pull_daily'
-        ? baseTableUrl(merged.target_table_id || '', env.feishuBitablePullViewId || null)
-        : baseTableUrl(merged.target_table_id || ''),
-    target_table_hint:
-      input.sourceType === 'pull_daily' ? '复用现有 Pull 表' : '同一 Base 下自动创建 / 复用 ASA Raw 表'
+    table_url: baseTableUrl(merged.target_table_id || ''),
+    target_table_hint: TARGET_TABLE_HINT
   };
 }
 
@@ -873,63 +1000,88 @@ export async function runBitableExport(
   reportDate: string,
   logger?: LoggerLike
 ): Promise<BitableExportRunResult> {
+  if (sourceType !== SOURCE_TYPE) {
+    throw new Error('unsupported_bitable_source_type');
+  }
   await ensureDefaultConfigs();
   const appToken = String(env.feishuBitableAppToken || '').trim();
   if (!appToken) {
     throw new Error('Missing FEISHU_BITABLE_APP_TOKEN');
   }
-  const config = mergeConfig(sourceType, await getBitableExportConfig(sourceType));
-  const selectedFields = normalizeSelectedFields(sourceType, config.selected_fields);
+  const config = mergeConfig(await getBitableExportConfig(SOURCE_TYPE));
+  const selectedFields = DEFAULT_SELECTED_FIELDS;
   const chatId = String(config.chat_id || '').trim();
   if (!chatId) {
-    throw new Error(`${SOURCE_LABELS[sourceType]} 未配置 Chat ID`);
+    throw new Error(`${SOURCE_LABEL} 未配置 Chat ID`);
   }
 
-  const table = sourceType === 'pull_daily'
-    ? await resolvePullTable(appToken)
-    : await resolveAsaTable(appToken, config);
-  await ensureTableFields(appToken, table.table_id, sourceType, selectedFields, logger);
+  const table = await resolveActionTable(appToken, config);
+  await ensureTableFields(appToken, table.table_id, selectedFields, logger);
 
-  const rows = sourceType === 'pull_daily' ? await queryPullRows(reportDate) : await queryAsaRows(reportDate);
-  const oldRecords = await listRecordsForReportDate(appToken, table.table_id, reportDate);
-  const snapshotId = `${reportDate}:${Date.now()}:${sourceType}`;
+  const { rows, breakdown } = await queryDeliveryActionRows(reportDate);
+  const oldRecords = await loadExistingRecordRefs(reportDate, table.table_id);
+  const { validationMap, staleRecordIds } = await buildValidationResultMap(appToken, table.table_id, oldRecords, logger);
+  const snapshotId = `${reportDate}:${Date.now()}:${SOURCE_TYPE}`;
   const syncedAtMillis = parseToEpochMillis(formatLocalDateTime()) ?? Date.now();
-  const recordPayloads = rows.map((row) => buildRecordFields(sourceType, row, selectedFields, reportDate, snapshotId, syncedAtMillis));
+  const rowsWithValidation = rows.map((row) => {
+    const existingValidationResult = validationMap.get(syncKeyForRow(row));
+    return {
+      ...row,
+      validation_result: existingValidationResult || row.validation_result || '待验证'
+    };
+  });
+  const recordPayloads = rowsWithValidation.map((row) => buildRecordFields(row, selectedFields, reportDate, snapshotId, syncedAtMillis));
+  const oldRecordIds = oldRecords.map((record) => record.record_id).filter((recordId) => !staleRecordIds.includes(recordId));
 
+  let createdRecordIds: string[] = [];
   try {
-    await batchCreateBitableRecords(appToken, table.table_id, recordPayloads);
+    createdRecordIds = await batchCreateBitableRecords(appToken, table.table_id, recordPayloads);
   } catch (error) {
-    const partialSnapshotRecords = (await listRecordsForReportDate(appToken, table.table_id, reportDate))
-      .filter((record) => record.snapshot_id === snapshotId)
-      .map((record) => record.record_id);
-    if (partialSnapshotRecords.length > 0) {
-      await deleteRecordsByIds(appToken, table.table_id, partialSnapshotRecords, logger);
+    if (createdRecordIds.length > 0) {
+      await deleteRecordsByIds(appToken, table.table_id, createdRecordIds, logger);
     }
     throw error;
   }
 
-  const oldRecordIds = oldRecords.map((record) => record.record_id);
-  const deletedCount = await deleteRecordsByIds(appToken, table.table_id, oldRecordIds, logger);
+  await upsertBitableExportRecordRefs(
+    createdRecordIds.map((recordId, index) => ({
+      source_type: SOURCE_TYPE,
+      report_date: reportDate,
+      table_id: table.table_id,
+      snapshot_id: snapshotId,
+      sync_key: syncKeyForRow(rowsWithValidation[index]),
+      record_id: recordId,
+      validation_result: rowsWithValidation[index]?.validation_result || '待验证'
+    }))
+  );
+
+  if (staleRecordIds.length > 0) {
+    await deleteBitableExportRecordRefsByRecordIds(SOURCE_TYPE, staleRecordIds);
+  }
+
+  const deleteResult = await deleteRecordsByIds(appToken, table.table_id, oldRecordIds, logger);
+  if (deleteResult.deletedIds.length > 0) {
+    await deleteBitableExportRecordRefsByRecordIds(SOURCE_TYPE, deleteResult.deletedIds);
+  }
+  const deletedCount = deleteResult.deletedIds.length;
   const cleanupError =
     oldRecordIds.length > 0 && deletedCount !== oldRecordIds.length
       ? `snapshot_cleanup_incomplete deleted=${deletedCount}/${oldRecordIds.length}`
       : null;
 
   const resultBase = {
-    source_type: sourceType,
-    label: SOURCE_LABELS[sourceType],
+    source_type: SOURCE_TYPE,
+    label: SOURCE_LABEL,
     report_date: reportDate,
     table_id: table.table_id,
     table_name: table.name,
-    table_url:
-      sourceType === 'pull_daily'
-        ? baseTableUrl(table.table_id, env.feishuBitablePullViewId || null)
-        : baseTableUrl(table.table_id),
+    table_url: baseTableUrl(table.table_id),
     selected_fields: selectedFields,
     deleted_count: deletedCount,
     record_count: recordPayloads.length,
     export_status: cleanupError ? ('partial_success' as const) : ('success' as const),
-    export_error: cleanupError
+    export_error: cleanupError,
+    breakdown
   };
 
   const notifyOverride: AlertChannelConfig = {
@@ -937,8 +1089,8 @@ export async function runBitableExport(
   };
   const notify = await sendFeishuInteractiveCardNotification(
     {
-      title: `${SOURCE_LABELS[sourceType]}｜${reportDate}`,
-      text: `${SOURCE_LABELS[sourceType]} 导入 ${recordPayloads.length} 行`,
+      title: `${SOURCE_LABEL}｜${reportDate}`,
+      text: `${SOURCE_LABEL} 已刷新 ${recordPayloads.length} 行`,
       feishuCardPayload: buildNotifyCard({
         ...resultBase,
         notify: { ok: true }
@@ -953,7 +1105,7 @@ export async function runBitableExport(
   };
 
   await updateBitableExportSyncResult({
-    source_type: sourceType,
+    source_type: SOURCE_TYPE,
     target_table_id: table.table_id,
     target_table_name: table.name,
     last_status: cleanupError ? 'partial_success' : notify.ok ? 'success' : 'failed',
@@ -964,7 +1116,7 @@ export async function runBitableExport(
 
   if (cleanupError) {
     logger?.warn?.('bitable_snapshot_cleanup_incomplete', {
-      source_type: sourceType,
+      source_type: SOURCE_TYPE,
       report_date: reportDate,
       table_id: table.table_id,
       deleted_count: deletedCount,
@@ -982,30 +1134,26 @@ export async function runScheduledBitableExports(logger?: LoggerLike): Promise<B
   }
   await ensureDefaultConfigs();
   const reportDate = getPreviousDateString(1);
-  const configs = await listBitableExportConfigs();
-  const enabled = configs
-    .map((row) => mergeConfig(row.source_type, row))
-    .filter((row) => row.enabled && String(row.chat_id || '').trim());
-  const results: BitableExportRunResult[] = [];
-  for (const config of enabled) {
-    try {
-      const result = await runBitableExport(config.source_type, reportDate, logger);
-      results.push(result);
-    } catch (error) {
-      await updateBitableExportSyncResult({
-        source_type: config.source_type,
-        target_table_id: config.target_table_id,
-        target_table_name: config.target_table_name,
-        last_status: 'failed',
-        last_error: error instanceof Error ? error.message : String(error),
-        last_synced_at: new Date().toISOString(),
-        last_record_count: 0
-      });
-      logger?.error?.('scheduled_bitable_export_failed', {
-        source_type: config.source_type,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
+  const config = mergeConfig(await getBitableExportConfig(SOURCE_TYPE));
+  if (!config.enabled || !String(config.chat_id || '').trim()) {
+    return [];
   }
-  return results;
+  try {
+    return [await runBitableExport(SOURCE_TYPE, reportDate, logger)];
+  } catch (error) {
+    await updateBitableExportSyncResult({
+      source_type: SOURCE_TYPE,
+      target_table_id: config.target_table_id,
+      target_table_name: config.target_table_name,
+      last_status: 'failed',
+      last_error: error instanceof Error ? error.message : String(error),
+      last_synced_at: new Date().toISOString(),
+      last_record_count: 0
+    });
+    logger?.error?.('scheduled_bitable_export_failed', {
+      source_type: SOURCE_TYPE,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return [];
+  }
 }

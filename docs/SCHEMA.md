@@ -328,17 +328,17 @@
 - `updated_at`
 
 ### `bitable_export_configs`
-- Feishu 多维表格原始数据导出配置与最近同步状态
+- Feishu 多维表格投放执行表导出配置与最近同步状态
 
 字段:
 - `id`
-- `source_type` (`pull_daily|asa_raw`)
+- `source_type` (`pull_daily|asa_raw|delivery_actions`)
 - `enabled`
 - `target_table_id`
 - `target_table_name`
 - `chat_id`
 - `selected_fields` (jsonb)
-- `last_status` (`idle|success|failed`)
+- `last_status` (`idle|success|failed|partial_success`)
 - `last_error`
 - `last_synced_at`
 - `last_record_count`
@@ -346,8 +346,8 @@
 - `updated_at`
 
 说明：
-- `pull_daily` 固定复用现有 Pull 表 `tblARnjXQhrXquyh`
-- `asa_raw` 在同一 Base 下自动创建 / 复用 `ASA Raw 明细`
+- `delivery_actions` 为当前主导出源，会创建 / 复用固定的 `投放执行表`
+- 该表只保留投放执行所需字段，不再输出原始技术明细
 - 该表只保存导出配置与同步结果，不保存实际导出数据
 
 ### `runtime_schedule_configs`

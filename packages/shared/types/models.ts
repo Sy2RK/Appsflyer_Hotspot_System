@@ -367,7 +367,7 @@ export interface AsaKeywordRouteRecord {
   updated_at: string;
 }
 
-export type BitableExportSourceType = 'pull_daily' | 'asa_raw';
+export type BitableExportSourceType = 'pull_daily' | 'asa_raw' | 'delivery_actions';
 
 export interface BitableExportConfigRecord {
   id: number;
@@ -381,6 +381,19 @@ export interface BitableExportConfigRecord {
   last_error: string | null;
   last_synced_at: string | null;
   last_record_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BitableExportRecordRefRecord {
+  id: number;
+  source_type: BitableExportSourceType;
+  report_date: string;
+  table_id: string;
+  snapshot_id: string;
+  sync_key: string;
+  record_id: string;
+  validation_result: string | null;
   created_at: string;
   updated_at: string;
 }
