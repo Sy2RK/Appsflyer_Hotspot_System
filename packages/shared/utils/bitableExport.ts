@@ -19,7 +19,7 @@ interface LoggerLike {
   error?: (message: string, meta?: Record<string, unknown>) => void;
 }
 
-type BitableFieldValueType = 'text' | 'number' | 'datetime' | 'checkbox';
+type BitableFieldValueType = 'text' | 'number' | 'datetime' | 'checkbox' | 'single_select';
 
 export interface BitableFieldDefinition {
   key: string;
@@ -28,6 +28,7 @@ export interface BitableFieldDefinition {
   default_selected: boolean;
   system?: boolean;
   date_only?: boolean;
+  options?: string[];
 }
 
 interface BitableFieldRecord {
@@ -80,6 +81,7 @@ interface DeliveryActionRow {
   cost_reference: number;
   volume_reference: string;
   action: string;
+  execution_status: string;
   validation_result: string;
   is_adopted: boolean;
   reason: string;
@@ -119,6 +121,26 @@ const ADOPTED_FIELD_LABEL = '是否采纳';
 const PRIMARY_SERIAL_FIELD_LABEL = '多行文本';
 const EXECUTION_STATUS_FIELD_LABEL = '执行状态';
 const FEISHU_CHECKBOX_FIELD_TYPE = 7;
+const FEISHU_SINGLE_SELECT_FIELD_TYPE = 3;
+const EXECUTION_STATUS_OPTIONS = [
+  '待处理',
+  '已接收待排期',
+  '执行中',
+  '已完成待验证',
+  '已完成-效果符合预期',
+  '已完成-效果一般',
+  '已完成-效果不及预期',
+  '观察中',
+  '暂缓执行',
+  '不执行',
+  '无法执行',
+  '重复项已合并',
+  '已回滚',
+  '其他待确认'
+];
+const EXECUTION_STATUS_DEFAULT = EXECUTION_STATUS_OPTIONS[0];
+const EXECUTION_STATUS_FALLBACK = EXECUTION_STATUS_OPTIONS[EXECUTION_STATUS_OPTIONS.length - 1];
+const EXECUTION_STATUS_OPTION_SET = new Set(EXECUTION_STATUS_OPTIONS);
 const OBSOLETE_FIELD_LABELS = [
   '序号',
   '同步报告日期',
@@ -150,17 +172,17 @@ const ACTION_FIELDS: BitableFieldDefinition[] = [
   { key: 'cost_reference', label: '成本参考', value_type: 'number', default_selected: true },
   { key: 'volume_reference', label: '量级参考', value_type: 'text', default_selected: true },
   { key: 'action', label: '建议动作', value_type: 'text', default_selected: true },
+  {
+    key: 'execution_status',
+    label: EXECUTION_STATUS_FIELD_LABEL,
+    value_type: 'single_select',
+    default_selected: true,
+    options: EXECUTION_STATUS_OPTIONS
+  },
   { key: 'is_adopted', label: ADOPTED_FIELD_LABEL, value_type: 'checkbox', default_selected: true },
   { key: 'validation_result', label: MANUAL_REVIEW_FIELD_LABEL, value_type: 'text', default_selected: true },
   { key: 'reason', label: '建议理由', value_type: 'text', default_selected: true }
 ];
-
-const EXECUTION_STATUS_FIELD: BitableFieldDefinition = {
-  key: 'execution_status',
-  label: EXECUTION_STATUS_FIELD_LABEL,
-  value_type: 'checkbox',
-  default_selected: false
-};
 
 const TRAILING_ACTION_FIELD_SEQUENCE = [
   '建议动作',
@@ -280,10 +302,43 @@ function fieldTypeToFeishu(field: BitableFieldDefinition): { type: number; prope
   if (field.value_type === 'datetime') {
     return { type: 5 };
   }
+  if (field.value_type === 'single_select') {
+    return {
+      type: FEISHU_SINGLE_SELECT_FIELD_TYPE,
+      property: {
+        options: (field.options || []).map((name, index) => ({
+          name,
+          color: index
+        }))
+      }
+    };
+  }
   if (field.value_type === 'checkbox') {
     return { type: FEISHU_CHECKBOX_FIELD_TYPE };
   }
   return { type: 1 };
+}
+
+function parseSingleSelectValue(value: unknown): string {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  if (Array.isArray(value)) {
+    return parseSingleSelectValue(value[0]);
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return String(record.name ?? record.text ?? record.label ?? '').trim();
+  }
+  return String(value ?? '').trim();
+}
+
+function normalizeExecutionStatus(value: unknown): string {
+  const normalized = parseSingleSelectValue(value);
+  if (!normalized) {
+    return '';
+  }
+  return EXECUTION_STATUS_OPTION_SET.has(normalized) ? normalized : EXECUTION_STATUS_FALLBACK;
 }
 
 function serializeFieldValue(field: BitableFieldDefinition, value: unknown): unknown {
@@ -300,6 +355,10 @@ function serializeFieldValue(field: BitableFieldDefinition, value: unknown): unk
   }
   if (field.value_type === 'checkbox') {
     return value === true;
+  }
+  if (field.value_type === 'single_select') {
+    const normalized = field.key === 'execution_status' ? normalizeExecutionStatus(value) : parseSingleSelectValue(value);
+    return normalized || undefined;
   }
   return String(value);
 }
@@ -477,9 +536,6 @@ function isFeishuFieldNameDuplicatedError(error: unknown): boolean {
 }
 
 function fieldDefinitionForLabel(label: string): BitableFieldDefinition | null {
-  if (label === EXECUTION_STATUS_FIELD_LABEL) {
-    return EXECUTION_STATUS_FIELD;
-  }
   return fieldCatalog().find((field) => field.label === label) ?? null;
 }
 
@@ -788,6 +844,7 @@ async function queryBudgetActionRows(reportDate: string): Promise<DeliveryAction
     cost_reference: Number(row.current_cost || 0),
     volume_reference: formatBudgetVolumeReference(row),
     action: formatActionSummary(String(row.action || 'hold'), row.change_ratio),
+    execution_status: EXECUTION_STATUS_DEFAULT,
     validation_result: '',
     is_adopted: false,
     reason: String(row.reason_summary || row.reason_code || '暂无补充说明')
@@ -857,6 +914,7 @@ async function queryAsaActionRows(reportDate: string): Promise<DeliveryActionRow
     cost_reference: Number(row.total_cost_7d || 0),
     volume_reference: formatAsaVolumeReference(row),
     action: formatActionSummary(String(row.action || 'hold'), row.change_ratio),
+    execution_status: EXECUTION_STATUS_DEFAULT,
     validation_result: '',
     is_adopted: false,
     reason: String(row.reason_summary || row.reason_code || '暂无补充说明')
@@ -928,14 +986,32 @@ async function ensureTableFields(
     });
   }
 
+  const executionStatusField = catalog.find((field) => field.label === EXECUTION_STATUS_FIELD_LABEL);
+  const existingExecutionStatusField = fieldsByName.get(EXECUTION_STATUS_FIELD_LABEL);
+  if (
+    executionStatusField &&
+    existingExecutionStatusField?.field_id &&
+    existingExecutionStatusField.type !== FEISHU_SINGLE_SELECT_FIELD_TYPE
+  ) {
+    await deleteBitableField(appToken, tableId, existingExecutionStatusField.field_id);
+    await createBitableField(appToken, tableId, executionStatusField);
+    fieldsByName.delete(EXECUTION_STATUS_FIELD_LABEL);
+    logger?.info?.('bitable_execution_status_field_recreated', {
+      table_id: tableId,
+      previous_type: existingExecutionStatusField.type,
+      next_type: FEISHU_SINGLE_SELECT_FIELD_TYPE
+    });
+  }
+
   for (const field of required) {
     const existingField = fieldsByName.get(field.label);
     if (existingField) {
-      if (field.value_type === 'checkbox' && existingField.type !== FEISHU_CHECKBOX_FIELD_TYPE) {
+      const fieldSpec = fieldTypeToFeishu(field);
+      if (existingField.type !== fieldSpec.type) {
         await updateBitableField(appToken, tableId, existingField.field_id, field);
         fieldsByName.set(field.label, {
           ...existingField,
-          type: FEISHU_CHECKBOX_FIELD_TYPE
+          type: fieldSpec.type
         });
       }
       continue;
@@ -954,7 +1030,12 @@ async function ensureTableFields(
     fieldsByName.set(field.label, {
       field_id: '',
       field_name: field.label,
-      type: field.value_type === 'checkbox' ? FEISHU_CHECKBOX_FIELD_TYPE : 0
+      type:
+        field.value_type === 'checkbox'
+          ? FEISHU_CHECKBOX_FIELD_TYPE
+          : field.value_type === 'single_select'
+            ? FEISHU_SINGLE_SELECT_FIELD_TYPE
+            : 0
     });
   }
 
@@ -1088,9 +1169,15 @@ async function buildManualFeedbackMap(
   tableId: string,
   refs: BitableRecordRef[],
   logger?: LoggerLike
-): Promise<{ manualReviewMap: Map<string, string>; adoptedMap: Map<string, boolean>; staleRecordIds: string[] }> {
+): Promise<{
+  manualReviewMap: Map<string, string>;
+  adoptedMap: Map<string, boolean>;
+  executionStatusMap: Map<string, string>;
+  staleRecordIds: string[];
+}> {
   const manualReviewMap = new Map<string, string>();
   const adoptedMap = new Map<string, boolean>();
+  const executionStatusMap = new Map<string, string>();
   const staleRecordIds: string[] = [];
 
   for (const ref of refs) {
@@ -1104,11 +1191,15 @@ async function buildManualFeedbackMap(
           ''
       ).trim();
       const isAdopted = parseCheckboxValue(record.fields[ADOPTED_FIELD_LABEL] ?? ref.is_adopted);
+      const executionStatus = normalizeExecutionStatus(record.fields[EXECUTION_STATUS_FIELD_LABEL]);
       if (syncKey && manualReview && !manualReviewMap.has(syncKey)) {
         manualReviewMap.set(syncKey, manualReview);
       }
       if (syncKey && !adoptedMap.has(syncKey)) {
         adoptedMap.set(syncKey, isAdopted);
+      }
+      if (syncKey && executionStatus && !executionStatusMap.has(syncKey)) {
+        executionStatusMap.set(syncKey, executionStatus);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1124,7 +1215,7 @@ async function buildManualFeedbackMap(
     }
   }
 
-  return { manualReviewMap, adoptedMap, staleRecordIds };
+  return { manualReviewMap, adoptedMap, executionStatusMap, staleRecordIds };
 }
 
 async function deleteRecordsByIds(
@@ -1315,7 +1406,7 @@ export async function runBitableExport(
 
   const { rows, breakdown } = await queryDeliveryActionRows(reportDate);
   const oldRecords = await loadExistingRecordRefs(reportDate, table.table_id);
-  const { manualReviewMap, adoptedMap, staleRecordIds } = await buildManualFeedbackMap(
+  const { manualReviewMap, adoptedMap, executionStatusMap, staleRecordIds } = await buildManualFeedbackMap(
     appToken,
     table.table_id,
     oldRecords,
@@ -1328,6 +1419,7 @@ export async function runBitableExport(
     return {
       ...row,
       serial_no: 0,
+      execution_status: executionStatusMap.get(syncKey) || row.execution_status || EXECUTION_STATUS_DEFAULT,
       validation_result: manualReviewMap.get(syncKey) || row.validation_result || '',
       is_adopted: adoptedMap.has(syncKey) ? adoptedMap.get(syncKey) === true : row.is_adopted === true
     };

@@ -529,7 +529,7 @@ Request:
   - 仅导出当前仍待处理的建议项（`pending`）
   - 通用投放部分来自 `budget_recommendations + keyword_lifecycle_states`
   - ASA 部分来自 `asa_keyword_recommendations + asa_keyword_states`
-  - 表内使用 `是否采纳`（复选框）+ `人工批复` 字段；同一天重导时会尽量保留已有填写结果
+  - 表内使用 `执行状态`（单选）+ `是否采纳`（复选框）+ `人工批复` 字段；同一天重导时会尽量保留已有填写结果
   - 目标表会在同一 Base 下自动创建 / 复用 `投放执行表`
 
 ### `GET /api/operation-logs?source=&status=&limit=`

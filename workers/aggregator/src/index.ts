@@ -1,8 +1,10 @@
+import crypto from 'crypto';
 import { env } from '@shared/config/env.js';
 import { chExec } from '@shared/utils/clickhouse.js';
 import { logger } from '@api/common/logger/logger.js';
 import { addHours, floorToHour, toCHDateTime } from '@shared/utils/time.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 
 function buildAggregationSQL(start: Date, end: Date, version: number): string {
   const startStr = toCHDateTime(start);
@@ -183,6 +185,7 @@ async function runOnce(): Promise<void> {
 }
 
 let running = false;
+const AGGREGATOR_JOB_LOCK = 'worker:aggregator:cycle';
 
 async function tick(): Promise<void> {
   if (running) {
@@ -191,7 +194,14 @@ async function tick(): Promise<void> {
   }
 
   running = true;
+  let lockOwnerId = '';
   try {
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(AGGREGATOR_JOB_LOCK, lockOwnerId, env.aggregatorLockTtlMs);
+    if (!lockAcquired) {
+      logger.warn('aggregator_skip_distributed_overlap');
+      return;
+    }
     await runOnce();
   } catch (error) {
     logger.error('aggregator_failed', {
@@ -212,6 +222,9 @@ async function tick(): Promise<void> {
       logger
     );
   } finally {
+    if (lockOwnerId) {
+      await releaseJobLock(AGGREGATOR_JOB_LOCK, lockOwnerId);
+    }
     running = false;
   }
 }

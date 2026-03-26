@@ -181,7 +181,7 @@ router.post('/api/daily-brief/send', async (req, res, next) => {
           platform: platform || null,
           media_sources: mediaSources,
           notify_status: result.notify.status,
-          dispatch_id: result.dispatch.id,
+          dispatch_id: result.dispatch?.id ?? null,
           render_mode: result.notify.render_mode || result.report.render_mode,
           error: result.notify.ok ? null : result.notify.error || null
         }

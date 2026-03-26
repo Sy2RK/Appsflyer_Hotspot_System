@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { env } from '../config/env.js';
 import { md5Hex } from './hash.js';
 import { chQuery } from './clickhouse.js';
@@ -8,6 +9,8 @@ import {
   listAlerts,
   listApps,
   listEnabledDailyBriefRoutes,
+  releaseJobLock,
+  tryAcquireJobLock,
   upsertDailyBriefDispatch
 } from './repositories.js';
 import { sendAlertNotification, sendFeishuInteractiveCardNotification, type NotificationResult } from './notifier.js';
@@ -133,10 +136,12 @@ export interface DailyBriefSendResult {
   skipped: boolean;
   report: DailyBriefPreview;
   notify: NotificationResult;
-  dispatch: Awaited<ReturnType<typeof upsertDailyBriefDispatch>>;
+  dispatch?: Awaited<ReturnType<typeof upsertDailyBriefDispatch>>;
 }
 
 const DAILY_BRIEF_BUDGET_MAX_ITEMS = 30;
+const DAILY_BRIEF_SEND_LOCK_PREFIX = 'daily_brief:send';
+const DAILY_BRIEF_SEND_LOCK_TTL_MS = 30 * 60 * 1000;
 const DAILY_BRIEF_BUDGET_MIN_CONFIDENCE = 0.8;
 const DAILY_BRIEF_BUDGET_MIN_DELTA_RATIO = 0.25;
 
@@ -175,6 +180,24 @@ function filtersToRouteKey(filters: DailyBriefFilters, prefix = 'manual'): strin
     media_sources: normalizeMediaSources(filters.mediaSources)
   });
   return `${prefix}:${md5Hex(payload)}`;
+}
+
+function buildDailyBriefSendLockName(
+  reportDate: string,
+  routeKey: string,
+  filters: DailyBriefFilters
+): string {
+  const mediaKey = Array.isArray(filters.mediaSources) && filters.mediaSources.length > 0
+    ? filters.mediaSources.map((item) => String(item || '').trim()).filter(Boolean).sort().join(',')
+    : 'all';
+  return [
+    DAILY_BRIEF_SEND_LOCK_PREFIX,
+    reportDate,
+    routeKey,
+    filters.appKey || 'all',
+    filters.platform || 'all',
+    mediaKey || 'all'
+  ].join(':');
 }
 
 function toDateString(year: number, month: number, day: number): string {
@@ -908,67 +931,82 @@ async function sendSingleDailyBrief(
   options?: { force?: boolean; manualTriggered?: boolean }
 ): Promise<DailyBriefSendResult> {
   const preview = await buildDailyBriefPreview(reportDate, filters, { routeKey });
-  const existing = await getDailyBriefDispatch(reportDate, 'ops_daily', 'feishu', routeKey);
-  if (existing?.status === 'sent' && !options?.force) {
+  const lockOwnerId = crypto.randomUUID();
+  const lockName = buildDailyBriefSendLockName(reportDate, routeKey, filters);
+  const lockAcquired = await tryAcquireJobLock(lockName, lockOwnerId, DAILY_BRIEF_SEND_LOCK_TTL_MS);
+  if (!lockAcquired) {
     return {
       ok: true,
       skipped: true,
       report: preview,
-      notify: { ok: true, status: 200, render_mode: 'interactive' },
-      dispatch: existing
+      notify: { ok: true, status: 200, render_mode: 'interactive' }
     };
   }
+  try {
+    const existing = await getDailyBriefDispatch(reportDate, 'ops_daily', 'feishu', routeKey);
+    if (existing?.status === 'sent' && !options?.force) {
+      return {
+        ok: true,
+        skipped: true,
+        report: preview,
+        notify: { ok: true, status: 200, render_mode: 'interactive' },
+        dispatch: existing
+      };
+    }
 
-  const cardNotify = await sendFeishuInteractiveCardNotification(
-    {
+    const cardNotify = await sendFeishuInteractiveCardNotification(
+      {
+        title: preview.title,
+        text: preview.text,
+        feishuCardPayload: preview.feishu_card_payload,
+        extra: {
+          report_date: preview.report_date,
+          report_type: 'daily_brief',
+          route_key: routeKey
+        }
+      },
+      channelOverride
+    );
+    const notify = cardNotify.ok
+      ? cardNotify
+      : await sendAlertNotification(
+          {
+            title: preview.title,
+            text: preview.text,
+            extra: {
+              report_date: preview.report_date,
+              report_type: 'daily_brief',
+              route_key: routeKey
+            }
+          },
+          channelOverride
+        );
+    if (!cardNotify.ok && notify.ok) {
+      notify.render_mode = 'text_fallback';
+    }
+
+    const dispatch = await upsertDailyBriefDispatch({
+      report_date: reportDate,
+      route_key: routeKey,
       title: preview.title,
-      text: preview.text,
-      feishuCardPayload: preview.feishu_card_payload,
-      extra: {
-        report_date: preview.report_date,
-        report_type: 'daily_brief',
-        route_key: routeKey
-      }
-    },
-    channelOverride
-  );
-  const notify = cardNotify.ok
-    ? cardNotify
-    : await sendAlertNotification(
-        {
-          title: preview.title,
-          text: preview.text,
-          extra: {
-            report_date: preview.report_date,
-            report_type: 'daily_brief',
-            route_key: routeKey
-          }
-        },
-        channelOverride
-      );
-  if (!cardNotify.ok && notify.ok) {
-    notify.render_mode = 'text_fallback';
+      content: preview.text,
+      payload_json: preview,
+      status: notify.ok ? 'sent' : 'failed',
+      manual_triggered: options?.manualTriggered ?? false,
+      last_error: notify.ok ? null : notify.error ?? `status_${String(notify.status ?? 'unknown')}`,
+      sent_at: notify.ok ? new Date().toISOString() : null
+    });
+
+    return {
+      ok: notify.ok,
+      skipped: false,
+      report: preview,
+      notify,
+      dispatch
+    };
+  } finally {
+    await releaseJobLock(lockName, lockOwnerId);
   }
-
-  const dispatch = await upsertDailyBriefDispatch({
-    report_date: reportDate,
-    route_key: routeKey,
-    title: preview.title,
-    content: preview.text,
-    payload_json: preview,
-    status: notify.ok ? 'sent' : 'failed',
-    manual_triggered: options?.manualTriggered ?? false,
-    last_error: notify.ok ? null : notify.error ?? `status_${String(notify.status ?? 'unknown')}`,
-    sent_at: notify.ok ? new Date().toISOString() : null
-  });
-
-  return {
-    ok: notify.ok,
-    skipped: false,
-    report: preview,
-    notify,
-    dispatch
-  };
 }
 
 export async function sendDailyBrief(

@@ -94,6 +94,7 @@ export const env = {
 
   aggregatorLookbackHours: optionalNumber('AGGREGATOR_LOOKBACK_HOURS', 6),
   aggregatorIntervalMs: optionalNumber('AGGREGATOR_INTERVAL_MS', 5 * 60 * 1000),
+  aggregatorLockTtlMs: optionalNumber('AGGREGATOR_LOCK_TTL_MS', 30 * 60 * 1000),
   detectorIntervalMs: optionalNumber('DETECTOR_INTERVAL_MS', 5 * 60 * 1000),
   pullerIntervalMs: optionalNumber('PULLER_INTERVAL_MS', 24 * 60 * 60 * 1000),
   pullerReportHour: optionalNumber('PULLER_REPORT_HOUR', 9),
@@ -153,6 +154,10 @@ function pushMissing(missing: string[], name: string, value: string): void {
   }
 }
 
+function hasValue(value: string): boolean {
+  return String(value || '').trim().length > 0;
+}
+
 function validateEnv(): void {
   const missing: string[] = [];
   pushMissing(missing, 'CLICKHOUSE_HOST', env.clickhouse.host);
@@ -160,10 +165,14 @@ function validateEnv(): void {
   pushMissing(missing, 'CLICKHOUSE_PASSWORD', env.clickhouse.password);
   pushMissing(missing, 'CLICKHOUSE_DB', env.clickhouse.database);
 
-  const feishuFeaturesEnabled = env.dailyBriefEnabled || env.asaDailyBriefEnabled || env.feishuBitableEnabled;
-  if (feishuFeaturesEnabled) {
+  const hasGlobalFeishuAppId = hasValue(env.feishuAppId);
+  const hasGlobalFeishuAppSecret = hasValue(env.feishuAppSecret);
+  const hasGlobalFeishuChatId = hasValue(env.feishuChatId);
+  const hasAnyGlobalFeishuConfig = hasGlobalFeishuAppId || hasGlobalFeishuAppSecret || hasGlobalFeishuChatId;
+  if (hasAnyGlobalFeishuConfig) {
     pushMissing(missing, 'FEISHU_APP_ID', env.feishuAppId);
     pushMissing(missing, 'FEISHU_APP_SECRET', env.feishuAppSecret);
+    pushMissing(missing, 'FEISHU_CHAT_ID', env.feishuChatId);
   }
   if (env.feishuBitableEnabled) {
     pushMissing(missing, 'FEISHU_BITABLE_APP_TOKEN', env.feishuBitableAppToken);
