@@ -1,12 +1,14 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import { chQuery } from '../../common/clickhouse/client.js';
 import { logger } from '../../common/logger/logger.js';
-import { queryKeywordLifecycleStates } from '@shared/utils/repositories.js';
+import { queryKeywordLifecycleStates, releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { runKeywordEngineCycle } from '@shared/utils/keywordEngine.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 
 const router = Router();
-let recomputeRunning = false;
+const MANUAL_KEYWORD_RECOMPUTE_LOCK = 'api:keywords:recompute';
+const MANUAL_KEYWORD_RECOMPUTE_LOCK_TTL_MS = 60 * 60 * 1000;
 
 function isDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -149,14 +151,20 @@ router.get('/api/keywords/:keyword/trend', async (req, res, next) => {
 });
 
 router.post('/api/keywords/recompute', async (req, res, next) => {
+  let lockOwnerId = '';
   try {
-    if (recomputeRunning) {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const backfillDays = toInt(body.backfillDays, 30, 1, 180);
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(
+      MANUAL_KEYWORD_RECOMPUTE_LOCK,
+      lockOwnerId,
+      MANUAL_KEYWORD_RECOMPUTE_LOCK_TTL_MS
+    );
+    if (!lockAcquired) {
       return res.status(409).json({ ok: false, error: 'keyword_recompute_running' });
     }
 
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const backfillDays = toInt(body.backfillDays, 30, 1, 180);
-    recomputeRunning = true;
     try {
       const result = await runKeywordEngineCycle(backfillDays, logger);
       await writeOperationLog(
@@ -194,7 +202,7 @@ router.post('/api/keywords/recompute', async (req, res, next) => {
       );
       return next(error);
     } finally {
-      recomputeRunning = false;
+      await releaseJobLock(MANUAL_KEYWORD_RECOMPUTE_LOCK, lockOwnerId);
     }
   } catch (error) {
     return next(error);

@@ -73,6 +73,8 @@ export interface PullCycleDetail {
   rows: number;
   metrics_rows: number;
   error?: string;
+  attempts?: number;
+  recovered_by_retry?: boolean;
 }
 
 export interface PullCycleResult {
@@ -97,6 +99,24 @@ export interface PullLogger {
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const PULL_SOURCE_REPORT = 'daily_report_v5';
 const PULL_CYCLE_LOCK_NAME = 'pull_daily_report_v5_cycle';
+const PULL_REVIEW_RETRY_DELAY_MS = 30 * 1000;
+
+interface PullAttemptResult {
+  ok: boolean;
+  status: 'ok' | 'skipped_same_content_cooldown';
+  rows: number;
+  metricsRows: number;
+  error?: string;
+  rateLimited: boolean;
+}
+
+interface PullReviewCandidate {
+  detailIndex: number;
+  appKey: string;
+  pullAppId: string;
+  date: string;
+  platform: string;
+}
 
 const HEADER_ALIASES: Record<string, string> = {
   date: 'date',
@@ -473,12 +493,114 @@ async function pullAppDaily(
   };
 }
 
+async function executePullAttempt(params: {
+  appKey: string;
+  pullAppId: string;
+  date: string;
+  platform: string;
+}): Promise<PullAttemptResult> {
+  const guard = await getPullContentGuard(params.appKey, params.platform, params.date, PULL_SOURCE_REPORT);
+  const url = buildPullUrl(params.appKey, params.pullAppId, params.date);
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${env.pullToken}`
+      }
+    });
+
+    if (!response.ok) {
+      const errorBody = (await response.text().catch(() => ''))
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 120);
+      throw new Error(
+        errorBody ? `pull_api_failed status=${response.status} body=${errorBody}` : `pull_api_failed status=${response.status}`
+      );
+    }
+
+    const csv = await response.text();
+    const parsedRows = parseCsv(csv);
+    const pullRows = toPullRows({
+      appKey: params.appKey,
+      date: params.date,
+      rows: parsedRows,
+      platformHint: params.platform
+    });
+    const signature = buildPullContentSignature(pullRows);
+    const metricRows = toDailyMetricRows(pullRows, Date.now());
+
+    if (guard?.content_signature && guard.content_signature === signature) {
+      const nextAllowedAt = nextAllowedAtForReportDate(params.date);
+      await upsertPullContentGuard({
+        app_key: params.appKey,
+        platform: params.platform,
+        report_date: params.date,
+        source_report: PULL_SOURCE_REPORT,
+        content_signature: signature,
+        last_status: 'skipped_same_content_cooldown',
+        last_error: null,
+        next_allowed_at: nextAllowedAt
+      });
+      return {
+        ok: true,
+        status: 'skipped_same_content_cooldown',
+        rows: 0,
+        metricsRows: 0,
+        rateLimited: false
+      };
+    }
+
+    await chInsertJSON('pull_aggregate_daily', pullRows);
+    await chInsertJSON('metrics_daily', metricRows);
+    await upsertPullContentGuard({
+      app_key: params.appKey,
+      platform: params.platform,
+      report_date: params.date,
+      source_report: PULL_SOURCE_REPORT,
+      content_signature: signature,
+      last_status: 'ok',
+      last_error: null,
+      next_allowed_at: nextAllowedAtForReportDate(params.date)
+    });
+
+    return {
+      ok: true,
+      status: 'ok',
+      rows: pullRows.length,
+      metricsRows: metricRows.length,
+      rateLimited: false
+    };
+  } catch (error) {
+    const errorText = error instanceof Error ? error.message : String(error);
+    await upsertPullContentGuard({
+      app_key: params.appKey,
+      platform: params.platform,
+      report_date: params.date,
+      source_report: PULL_SOURCE_REPORT,
+      content_signature: guard?.content_signature ?? '',
+      last_status: 'failed',
+      last_error: errorText,
+      next_allowed_at: null
+    });
+    return {
+      ok: false,
+      status: 'ok',
+      rows: 0,
+      metricsRows: 0,
+      error: errorText,
+      rateLimited: isRateLimitError(errorText)
+    };
+  }
+}
+
 export async function runPullCycle(backfillDays: number, logger?: PullLogger): Promise<PullCycleResult> {
   const startedAt = new Date();
   const safeBackfillDays = Math.max(1, Math.floor(backfillDays));
   const apps = await listApps();
   const dates = buildDateList(safeBackfillDays);
   const details: PullCycleDetail[] = [];
+  const reviewQueue: PullReviewCandidate[] = [];
   const lockOwnerId = crypto.randomUUID();
 
   const lockAcquired = await tryAcquirePullCycleLock(PULL_CYCLE_LOCK_NAME, lockOwnerId, env.pullerLockTtlMs);
@@ -566,7 +688,9 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
               status: 'skipped_no_token',
               rows: 0,
               metrics_rows: 0,
-              error: 'missing_pull_token'
+              error: 'missing_pull_token',
+              attempts: 0,
+              recovered_by_retry: false
             });
             logWarn(logger, 'puller_skipped_no_token', { app_key: app.app_key, platform });
             continue;
@@ -588,47 +712,23 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
               error:
                 status === 'skipped_same_content_cooldown'
                   ? `same_content_cooldown_until=${guard.next_allowed_at}`
-                  : `recently_pulled_until=${guard.next_allowed_at}`
+                  : `recently_pulled_until=${guard.next_allowed_at}`,
+              attempts: 0,
+              recovered_by_retry: false
             });
             continue;
           }
 
-          try {
-            const url = buildPullUrl(app.app_key, target.pullAppId, date);
-            const response = await fetch(url, {
-              headers: {
-                Authorization: `Bearer ${env.pullToken}`
-              }
-            });
+          const attempt = await executePullAttempt({
+            appKey: app.app_key,
+            pullAppId: target.pullAppId,
+            date,
+            platform
+          });
 
-            if (!response.ok) {
-              const errorBody = (await response.text().catch(() => ''))
-                .replace(/\s+/g, ' ')
-                .trim()
-                .slice(0, 120);
-              throw new Error(
-                errorBody ? `pull_api_failed status=${response.status} body=${errorBody}` : `pull_api_failed status=${response.status}`
-              );
-            }
-
-            const csv = await response.text();
-            const parsedRows = parseCsv(csv);
-            const pullRows = toPullRows({ appKey: app.app_key, date, rows: parsedRows, platformHint: platform });
-            const signature = buildPullContentSignature(pullRows);
-            const metricRows = toDailyMetricRows(pullRows, Date.now());
-
-            if (guard?.content_signature && guard.content_signature === signature) {
+          if (attempt.ok) {
+            if (attempt.status === 'skipped_same_content_cooldown') {
               const nextAllowedAt = nextAllowedAtForReportDate(date);
-              await upsertPullContentGuard({
-                app_key: app.app_key,
-                platform,
-                report_date: date,
-                source_report: PULL_SOURCE_REPORT,
-                content_signature: signature,
-                last_status: 'skipped_same_content_cooldown',
-                last_error: null,
-                next_allowed_at: nextAllowedAt
-              });
               details.push({
                 app_key: app.app_key,
                 date,
@@ -636,7 +736,9 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
                 status: 'skipped_same_content_cooldown',
                 rows: 0,
                 metrics_rows: 0,
-                error: `same_content_cooldown_until=${nextAllowedAt}`
+                error: `same_content_cooldown_until=${nextAllowedAt}`,
+                attempts: 1,
+                recovered_by_retry: false
               });
               logInfo(logger, 'puller_skip_same_content_cooldown', {
                 app_key: app.app_key,
@@ -645,50 +747,30 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
                 next_allowed_at: nextAllowedAt
               });
             } else {
-              await chInsertJSON('pull_aggregate_daily', pullRows);
-              await chInsertJSON('metrics_daily', metricRows);
-              await upsertPullContentGuard({
-                app_key: app.app_key,
-                platform,
-                report_date: date,
-                source_report: PULL_SOURCE_REPORT,
-                content_signature: signature,
-                last_status: 'ok',
-                last_error: null,
-                next_allowed_at: nextAllowedAtForReportDate(date)
-              });
               details.push({
                 app_key: app.app_key,
                 date,
                 platform,
                 status: 'ok',
-                rows: pullRows.length,
-                metrics_rows: metricRows.length
+                rows: attempt.rows,
+                metrics_rows: attempt.metricsRows,
+                attempts: 1,
+                recovered_by_retry: false
               });
               logInfo(logger, 'puller_ingested', {
                 app_key: app.app_key,
                 date,
                 platform,
-                rows: pullRows.length,
-                metrics_rows: metricRows.length,
-                source: PULL_SOURCE_REPORT
+                rows: attempt.rows,
+                metrics_rows: attempt.metricsRows,
+                source: PULL_SOURCE_REPORT,
+                attempts: 1
               });
             }
-          } catch (error) {
-            const errorText = error instanceof Error ? error.message : String(error);
-            if (isRateLimitError(errorText)) {
+          } else {
+            if (attempt.rateLimited) {
               rateLimited = true;
             }
-            await upsertPullContentGuard({
-              app_key: app.app_key,
-              platform,
-              report_date: date,
-              source_report: PULL_SOURCE_REPORT,
-              content_signature: guard?.content_signature ?? '',
-              last_status: 'failed',
-              last_error: errorText,
-              next_allowed_at: null
-            });
             details.push({
               app_key: app.app_key,
               date,
@@ -696,18 +778,76 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
               status: 'failed',
               rows: 0,
               metrics_rows: 0,
-              error: errorText
+              error: attempt.error,
+              attempts: 1,
+              recovered_by_retry: false
+            });
+            reviewQueue.push({
+              detailIndex: details.length - 1,
+              appKey: app.app_key,
+              pullAppId: target.pullAppId,
+              date,
+              platform
             });
             logError(logger, 'puller_app_day_failed', {
               app_key: app.app_key,
               date,
               platform,
-              error: errorText
+              error: attempt.error
             });
           }
 
           await sleepMs(env.pullerRequestIntervalMs);
         }
+      }
+    }
+
+    if (reviewQueue.length > 0) {
+      logInfo(logger, 'puller_review_retry_scheduled', {
+        retry_count: reviewQueue.length,
+        wait_ms: PULL_REVIEW_RETRY_DELAY_MS
+      });
+      await sleepMs(PULL_REVIEW_RETRY_DELAY_MS);
+
+      for (const candidate of reviewQueue) {
+        const retry = await executePullAttempt({
+          appKey: candidate.appKey,
+          pullAppId: candidate.pullAppId,
+          date: candidate.date,
+          platform: candidate.platform
+        });
+        const detail = details[candidate.detailIndex];
+        if (!detail) {
+          continue;
+        }
+
+        if (retry.ok) {
+          detail.status = 'ok';
+          detail.rows = retry.rows;
+          detail.metrics_rows = retry.metricsRows;
+          detail.error = undefined;
+          detail.attempts = 2;
+          detail.recovered_by_retry = true;
+          logInfo(logger, 'puller_review_retry_recovered', {
+            app_key: candidate.appKey,
+            date: candidate.date,
+            platform: candidate.platform,
+            rows: retry.rows,
+            metrics_rows: retry.metricsRows
+          });
+        } else {
+          detail.error = retry.error;
+          detail.attempts = 2;
+          detail.recovered_by_retry = false;
+          logError(logger, 'puller_review_retry_failed', {
+            app_key: candidate.appKey,
+            date: candidate.date,
+            platform: candidate.platform,
+            error: retry.error
+          });
+        }
+
+        await sleepMs(env.pullerRequestIntervalMs);
       }
     }
 

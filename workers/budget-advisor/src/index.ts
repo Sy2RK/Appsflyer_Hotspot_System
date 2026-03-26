@@ -1,9 +1,13 @@
+import crypto from 'crypto';
 import { env } from '@shared/config/env.js';
 import { logger } from '@api/common/logger/logger.js';
 import { runBudgetAdvisorCycle } from '@shared/utils/budgetAdvisor.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 
 let running = false;
+const BUDGET_ADVISOR_JOB_LOCK = 'worker:budget_advisor:cycle';
+const BUDGET_ADVISOR_JOB_LOCK_TTL_MS = 2 * 60 * 60 * 1000;
 
 async function tick(): Promise<void> {
   if (running) {
@@ -11,7 +15,14 @@ async function tick(): Promise<void> {
     return;
   }
   running = true;
+  let lockOwnerId = '';
   try {
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(BUDGET_ADVISOR_JOB_LOCK, lockOwnerId, BUDGET_ADVISOR_JOB_LOCK_TTL_MS);
+    if (!lockAcquired) {
+      logger.warn('budget_advisor_skip_distributed_overlap');
+      return;
+    }
     const result = await runBudgetAdvisorCycle(env.budgetAdvisorLookbackDays, logger);
     logger.info('budget_advisor_cycle_result', {
       generated_total: result.generated_total,
@@ -51,6 +62,9 @@ async function tick(): Promise<void> {
       logger
     );
   } finally {
+    if (lockOwnerId) {
+      await releaseJobLock(BUDGET_ADVISOR_JOB_LOCK, lockOwnerId);
+    }
     running = false;
   }
 }

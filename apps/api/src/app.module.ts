@@ -55,6 +55,18 @@ export function createApp(): express.Express {
   app.use(rulesRoutes);
 
   app.use((error: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const bodyParseFailed =
+      error instanceof SyntaxError && (error as Error & { type?: string }).type === 'entity.parse.failed';
+
+    if (bodyParseFailed) {
+      logger.warn('invalid_json_payload', {
+        request_id: req.requestId,
+        method: req.method,
+        path: req.path
+      });
+      return res.status(400).json({ ok: false, error: 'invalid_json_payload' });
+    }
+
     logger.error('unhandled_error', {
       request_id: req.requestId,
       error: error.message

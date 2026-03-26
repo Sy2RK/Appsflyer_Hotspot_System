@@ -143,10 +143,13 @@ function shouldCreateRecommendation(action: 'increase' | 'decrease' | 'hold' | '
 }
 
 function resolvePrimaryMetric(appKey: string, platform: string): { primaryMetric: PrimaryMetric; metricMode: MetricMode } {
-  if (appKey === 'ai-seek' && platform === 'android') {
+  const normalizedPlatform = String(platform || '').trim().toLowerCase();
+  const overrideKey = `${appKey}/${normalizedPlatform}`;
+  const override = env.budgetPrimaryMetricOverrides[overrideKey];
+  if (override) {
     return {
-      primaryMetric: 'roas',
-      metricMode: 'roas_pending_revenue'
+      primaryMetric: override.primaryMetric,
+      metricMode: override.metricMode
     };
   }
   return {

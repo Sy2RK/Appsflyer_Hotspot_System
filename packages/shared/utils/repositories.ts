@@ -150,6 +150,31 @@ export async function releasePullCycleLock(name: string, ownerId: string): Promi
   await pgQuery(`DELETE FROM pull_cycle_locks WHERE name = $1 AND owner_id = $2`, [name, ownerId]);
 }
 
+export async function tryAcquireJobLock(name: string, ownerId: string, ttlMs: number): Promise<boolean> {
+  return tryAcquirePullCycleLock(name, ownerId, ttlMs);
+}
+
+export async function releaseJobLock(name: string, ownerId: string): Promise<void> {
+  await releasePullCycleLock(name, ownerId);
+}
+
+let ensureBitableExportRecordRefsSchemaPromise: Promise<void> | null = null;
+
+async function ensureBitableExportRecordRefsSchema(): Promise<void> {
+  if (!ensureBitableExportRecordRefsSchemaPromise) {
+    ensureBitableExportRecordRefsSchemaPromise = pgQuery(
+      `ALTER TABLE bitable_export_record_refs
+         ADD COLUMN IF NOT EXISTS is_adopted BOOLEAN NOT NULL DEFAULT FALSE`
+    )
+      .then(() => undefined)
+      .catch((error) => {
+        ensureBitableExportRecordRefsSchemaPromise = null;
+        throw error;
+      });
+  }
+  await ensureBitableExportRecordRefsSchemaPromise;
+}
+
 export async function getPullContentGuard(
   appKey: string,
   platform: string,
@@ -1203,8 +1228,10 @@ export async function listBitableExportRecordRefs(
   reportDate: string,
   tableId?: string
 ): Promise<BitableExportRecordRefRecord[]> {
+  await ensureBitableExportRecordRefsSchema();
   const result = await pgQuery<BitableExportRecordRefRecord>(
-    `SELECT id, source_type, report_date::text AS report_date, table_id, snapshot_id, sync_key, record_id, validation_result, created_at, updated_at
+    `SELECT id, source_type, report_date::text AS report_date, table_id, snapshot_id, sync_key, record_id, validation_result,
+            is_adopted, created_at, updated_at
        FROM bitable_export_record_refs
       WHERE source_type = $1
         AND report_date = $2::date
@@ -1224,14 +1251,16 @@ export async function upsertBitableExportRecordRefs(
     sync_key: string;
     record_id: string;
     validation_result?: string | null;
+    is_adopted?: boolean;
   }>
 ): Promise<void> {
   if (rows.length === 0) {
     return;
   }
+  await ensureBitableExportRecordRefsSchema();
   await pgQuery(
     `INSERT INTO bitable_export_record_refs (
-      source_type, report_date, table_id, snapshot_id, sync_key, record_id, validation_result
+      source_type, report_date, table_id, snapshot_id, sync_key, record_id, validation_result, is_adopted
     )
     SELECT
       x.source_type,
@@ -1240,7 +1269,8 @@ export async function upsertBitableExportRecordRefs(
       x.snapshot_id,
       x.sync_key,
       x.record_id,
-      NULLIF(x.validation_result, '')
+      NULLIF(x.validation_result, ''),
+      COALESCE(x.is_adopted, FALSE)
     FROM jsonb_to_recordset($1::jsonb) AS x(
       source_type text,
       report_date text,
@@ -1248,7 +1278,8 @@ export async function upsertBitableExportRecordRefs(
       snapshot_id text,
       sync_key text,
       record_id text,
-      validation_result text
+      validation_result text,
+      is_adopted boolean
     )
     ON CONFLICT (source_type, record_id) DO UPDATE SET
       report_date = EXCLUDED.report_date,
@@ -1256,6 +1287,7 @@ export async function upsertBitableExportRecordRefs(
       snapshot_id = EXCLUDED.snapshot_id,
       sync_key = EXCLUDED.sync_key,
       validation_result = EXCLUDED.validation_result,
+      is_adopted = EXCLUDED.is_adopted,
       updated_at = NOW()`,
     [JSON.stringify(rows)]
   );

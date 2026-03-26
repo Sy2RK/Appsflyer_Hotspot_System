@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import {
   buildDailyBriefPreview,
@@ -5,11 +6,13 @@ import {
   listDailyBriefMediaSources,
   sendDailyBrief
 } from '@shared/utils/dailyBrief.js';
+import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { logger } from '../../common/logger/logger.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 
 const router = Router();
-let manualDailyBriefRunning = false;
+const MANUAL_DAILY_BRIEF_SEND_LOCK = 'api:daily_brief:send';
+const MANUAL_DAILY_BRIEF_SEND_LOCK_TTL_MS = 30 * 60 * 1000;
 
 function isDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -97,12 +100,8 @@ router.get('/api/daily-brief/preview', async (req, res, next) => {
 });
 
 router.post('/api/daily-brief/send', async (req, res, next) => {
+  let lockOwnerId = '';
   try {
-    if (manualDailyBriefRunning) {
-      return res.status(409).json({ ok: false, error: 'daily_brief_send_running' });
-    }
-    manualDailyBriefRunning = true;
-
     const body = (req.body ?? {}) as Record<string, unknown>;
     const reportDateRaw =
       typeof body.reportDate === 'string' && body.reportDate.trim()
@@ -115,6 +114,16 @@ router.post('/api/daily-brief/send', async (req, res, next) => {
 
     if (!isDate(reportDateRaw)) {
       return res.status(400).json({ ok: false, error: 'invalid_report_date' });
+    }
+
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(
+      MANUAL_DAILY_BRIEF_SEND_LOCK,
+      lockOwnerId,
+      MANUAL_DAILY_BRIEF_SEND_LOCK_TTL_MS
+    );
+    if (!lockAcquired) {
+      return res.status(409).json({ ok: false, error: 'daily_brief_send_running' });
     }
 
     const result = await sendDailyBrief(reportDateRaw, {
@@ -184,7 +193,9 @@ router.post('/api/daily-brief/send', async (req, res, next) => {
   } catch (error) {
     return next(error);
   } finally {
-    manualDailyBriefRunning = false;
+    if (lockOwnerId) {
+      await releaseJobLock(MANUAL_DAILY_BRIEF_SEND_LOCK, lockOwnerId);
+    }
   }
 });
 

@@ -1,7 +1,9 @@
+import crypto from 'crypto';
 import { logger } from '@api/common/logger/logger.js';
 import { env } from '@shared/config/env.js';
 import { runScheduledBitableExports } from '@shared/utils/bitableExport.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import {
   getTzParts,
   hasReachedDailyTime,
@@ -13,6 +15,8 @@ let running = false;
 let lastRunMarker = '';
 let lastScheduleMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
+const BITABLE_EXPORT_JOB_LOCK = 'worker:bitable_export:tick';
+const BITABLE_EXPORT_JOB_LOCK_TTL_MS = 60 * 60 * 1000;
 
 async function tick(): Promise<void> {
   if (running) {
@@ -21,7 +25,18 @@ async function tick(): Promise<void> {
   }
 
   running = true;
+  let lockOwnerId = '';
   try {
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(
+      BITABLE_EXPORT_JOB_LOCK,
+      lockOwnerId,
+      BITABLE_EXPORT_JOB_LOCK_TTL_MS
+    );
+    if (!lockAcquired) {
+      logger.warn('bitable_export_skip_distributed_overlap');
+      return;
+    }
     const results = await runScheduledBitableExports(logger);
     await writeOperationLog(
       {
@@ -56,6 +71,9 @@ async function tick(): Promise<void> {
       logger
     );
   } finally {
+    if (lockOwnerId) {
+      await releaseJobLock(BITABLE_EXPORT_JOB_LOCK, lockOwnerId);
+    }
     running = false;
   }
 }

@@ -1,16 +1,19 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import {
   getBitableExportConfigsSnapshot,
   runBitableExport,
   saveBitableExportConfig
 } from '@shared/utils/bitableExport.js';
+import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 import { logger } from '../../common/logger/logger.js';
 import type { BitableExportSourceType } from '@shared/types/models.js';
 
 const router = Router();
 const SOURCE_TYPES = new Set<BitableExportSourceType>(['delivery_actions']);
-let manualRunLock = false;
+const MANUAL_BITABLE_EXPORT_RUN_LOCK = 'api:bitable_export:run';
+const MANUAL_BITABLE_EXPORT_RUN_LOCK_TTL_MS = 30 * 60 * 1000;
 
 function isSourceType(value: unknown): value is BitableExportSourceType {
   return typeof value === 'string' && SOURCE_TYPES.has(value as BitableExportSourceType);
@@ -71,12 +74,8 @@ router.post('/api/bitable-exports/configs/:sourceType', async (req, res, next) =
 });
 
 router.post('/api/bitable-exports/run', async (req, res, next) => {
+  let lockOwnerId = '';
   try {
-    if (manualRunLock) {
-      return res.status(409).json({ ok: false, error: 'bitable_export_running' });
-    }
-    manualRunLock = true;
-
     const body = (req.body ?? {}) as Record<string, unknown>;
     const sourceType = String(body.sourceType || '').trim() as BitableExportSourceType;
     const reportDate = String(body.reportDate || '').trim();
@@ -86,6 +85,16 @@ router.post('/api/bitable-exports/run', async (req, res, next) => {
     }
     if (!reportDate || !isDate(reportDate)) {
       return res.status(400).json({ ok: false, error: 'invalid_report_date' });
+    }
+
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(
+      MANUAL_BITABLE_EXPORT_RUN_LOCK,
+      lockOwnerId,
+      MANUAL_BITABLE_EXPORT_RUN_LOCK_TTL_MS
+    );
+    if (!lockAcquired) {
+      return res.status(409).json({ ok: false, error: 'bitable_export_running' });
     }
 
     const result = await runBitableExport(sourceType, reportDate, logger);
@@ -128,7 +137,9 @@ router.post('/api/bitable-exports/run', async (req, res, next) => {
     );
     return next(error);
   } finally {
-    manualRunLock = false;
+    if (lockOwnerId) {
+      await releaseJobLock(MANUAL_BITABLE_EXPORT_RUN_LOCK, lockOwnerId);
+    }
   }
 });
 

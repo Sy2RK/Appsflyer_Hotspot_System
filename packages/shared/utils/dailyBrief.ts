@@ -12,6 +12,7 @@ import {
 } from './repositories.js';
 import { sendAlertNotification, sendFeishuInteractiveCardNotification, type NotificationResult } from './notifier.js';
 import { resolveDisplayName, resolveProductViewName } from './displayName.js';
+import { getTzParts } from './schedule.js';
 import type { AppConfigRecord, DailyBriefRouteRecord } from '../types/models.js';
 
 interface LoggerLike {
@@ -174,30 +175,6 @@ function filtersToRouteKey(filters: DailyBriefFilters, prefix = 'manual'): strin
     media_sources: normalizeMediaSources(filters.mediaSources)
   });
   return `${prefix}:${md5Hex(payload)}`;
-}
-
-function getTzParts(
-  date: Date,
-  timeZone: string
-): { year: number; month: number; day: number; hour: number; minute: number } {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23'
-  });
-  const parts = formatter.formatToParts(date);
-  const pick = (type: string): number => Number(parts.find((item) => item.type === type)?.value ?? 0);
-  return {
-    year: pick('year'),
-    month: pick('month'),
-    day: pick('day'),
-    hour: pick('hour'),
-    minute: pick('minute')
-  };
 }
 
 function toDateString(year: number, month: number, day: number): string {
@@ -489,9 +466,6 @@ async function queryOpenAlertCounts(filters: DailyBriefFilters): Promise<Map<str
   if (platform) {
     values.push(platform);
     clauses.push(`platform = $${values.length}`);
-  } else {
-    values.push('__all__');
-    clauses.push(`platform = $${values.length}`);
   }
   const result = await pgQuery<{ app_key: string; platform: string; total: string }>(
     `SELECT app_key, platform, to_char(count(*), 'FM999999999999999') AS total
@@ -508,6 +482,22 @@ async function queryOpenAlertCounts(filters: DailyBriefFilters): Promise<Map<str
   );
 }
 
+function resolveRowOpenAlertCount(params: {
+  row: Pick<DailyBriefAppMetrics, 'app_key' | 'platform'>;
+  openAlertCounts: Map<string, number>;
+  platformFiltered: boolean;
+}): number {
+  const rowPlatform = normalizePlatformValue(params.row.platform) || 'unknown';
+  const platformCount = params.openAlertCounts.get(`${params.row.app_key}|${rowPlatform}`) ?? 0;
+
+  if (params.platformFiltered) {
+    return platformCount;
+  }
+
+  const appWideCount = params.openAlertCounts.get(`${params.row.app_key}|__all__`) ?? 0;
+  return rowPlatform === 'unknown' ? platformCount + appWideCount : platformCount;
+}
+
 function buildDisplayMaps(apps: AppConfigRecord[]): {
   appByKey: Map<string, AppConfigRecord>;
 } {
@@ -522,11 +512,14 @@ function resolveVisibleProductCount(apps: AppConfigRecord[], filters: DailyBrief
   const scopedApps = appKey ? apps.filter((app) => app.app_key === appKey) : apps;
   let total = 0;
   for (const app of scopedApps) {
-    if (app.app_key === 'ai-seek' && !platform) {
-      total += 2;
+    if (platform) {
+      total += 1;
       continue;
     }
-    total += 1;
+
+    const hasIos = cleanText(app.ios_pull_app_id).length > 0;
+    const hasAndroid = cleanText(app.android_pull_app_id).length > 0;
+    total += hasIos && hasAndroid ? 2 : 1;
   }
   return total;
 }
@@ -739,7 +732,7 @@ export async function buildDailyBriefPreview(
           status: 'open',
           limit: 5,
           appKey: cleanText(filters.appKey) || undefined,
-          platform: normalizedPlatform || '__all__'
+          platform: normalizedPlatform || undefined
         }).then((rows) =>
           rows.map((row) => ({
             app_key: row.app_key,
@@ -759,9 +752,11 @@ export async function buildDailyBriefPreview(
     open_alerts:
       mediaSourcesApplied.length > 0
         ? 0
-        : normalizedPlatform
-          ? openAlertCounts.get(`${row.app_key}|${row.platform}`) ?? 0
-          : openAlertCounts.get(`${row.app_key}|__all__`) ?? 0,
+        : resolveRowOpenAlertCount({
+            row,
+            openAlertCounts,
+            platformFiltered: Boolean(normalizedPlatform)
+          }),
     pending_budget_actions: pendingBudgetCounts.get(`${row.app_key}|${row.platform}`) ?? 0
   }));
 

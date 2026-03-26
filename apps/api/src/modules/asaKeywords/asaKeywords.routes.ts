@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import {
   buildAsaKeywordBriefPreview,
@@ -6,13 +7,16 @@ import {
   runAsaKeywordCycle,
   sendAsaKeywordBrief
 } from '@shared/utils/asaKeywords.js';
-import { listProductStageConfigs, upsertProductStageConfig } from '@shared/utils/repositories.js';
+import { listProductStageConfigs, releaseJobLock, tryAcquireJobLock, upsertProductStageConfig } from '@shared/utils/repositories.js';
 import { logger } from '../../common/logger/logger.js';
 import { env } from '@shared/config/env.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 
 const router = Router();
-let recomputeRunning = false;
+const MANUAL_ASA_KEYWORD_RECOMPUTE_LOCK = 'api:asa_keywords:recompute';
+const MANUAL_ASA_KEYWORD_RECOMPUTE_LOCK_TTL_MS = 2 * 60 * 60 * 1000;
+const MANUAL_ASA_KEYWORD_BRIEF_SEND_LOCK_PREFIX = 'api:asa_keywords:brief:send';
+const MANUAL_ASA_KEYWORD_BRIEF_SEND_LOCK_TTL_MS = 30 * 60 * 1000;
 
 function isDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -134,13 +138,19 @@ router.post('/api/asa-keywords/stages', async (req, res, next) => {
 });
 
 router.post('/api/asa-keywords/recompute', async (req, res, next) => {
+  let lockOwnerId = '';
   try {
-    if (recomputeRunning) {
-      return res.status(409).json({ ok: false, error: 'asa_keyword_recompute_running' });
-    }
-    recomputeRunning = true;
     const body = (req.body ?? {}) as Record<string, unknown>;
     const backfillDays = toInt(body.backfillDays, env.asaKeywordBackfillDays, 1, 60);
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(
+      MANUAL_ASA_KEYWORD_RECOMPUTE_LOCK,
+      lockOwnerId,
+      MANUAL_ASA_KEYWORD_RECOMPUTE_LOCK_TTL_MS
+    );
+    if (!lockAcquired) {
+      return res.status(409).json({ ok: false, error: 'asa_keyword_recompute_running' });
+    }
     const result = await runAsaKeywordCycle(backfillDays, logger);
     await writeOperationLog(
       {
@@ -172,7 +182,9 @@ router.post('/api/asa-keywords/recompute', async (req, res, next) => {
     );
     return next(error);
   } finally {
-    recomputeRunning = false;
+    if (lockOwnerId) {
+      await releaseJobLock(MANUAL_ASA_KEYWORD_RECOMPUTE_LOCK, lockOwnerId);
+    }
   }
 });
 
@@ -196,6 +208,7 @@ router.get('/api/asa-keywords/brief/preview', async (req, res, next) => {
 });
 
 router.post('/api/asa-keywords/brief/send', async (req, res, next) => {
+  let lockOwnerId = '';
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const reportDate = typeof body.reportDate === 'string' ? body.reportDate.trim() : '';
@@ -204,6 +217,19 @@ router.post('/api/asa-keywords/brief/send', async (req, res, next) => {
     if (!reportDate || !isDate(reportDate)) {
       return res.status(400).json({ ok: false, error: 'invalid_report_date' });
     }
+
+    const lockName = [
+      MANUAL_ASA_KEYWORD_BRIEF_SEND_LOCK_PREFIX,
+      reportDate,
+      appKey || 'all',
+      platform || 'all'
+    ].join(':');
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(lockName, lockOwnerId, MANUAL_ASA_KEYWORD_BRIEF_SEND_LOCK_TTL_MS);
+    if (!lockAcquired) {
+      return res.status(409).json({ ok: false, error: 'asa_keyword_brief_send_running' });
+    }
+
     const result = await sendAsaKeywordBrief(reportDate, {
       appKey: appKey || undefined,
       platform: platform || undefined,
@@ -213,6 +239,20 @@ router.post('/api/asa-keywords/brief/send', async (req, res, next) => {
     return res.json({ ok: true, data: result });
   } catch (error) {
     return next(error);
+  } finally {
+    if (lockOwnerId) {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const reportDate = typeof body.reportDate === 'string' ? body.reportDate.trim() : '';
+      const appKey = typeof body.appKey === 'string' ? body.appKey.trim() : '';
+      const platform = typeof body.platform === 'string' ? body.platform.trim().toLowerCase() : '';
+      const lockName = [
+        MANUAL_ASA_KEYWORD_BRIEF_SEND_LOCK_PREFIX,
+        reportDate,
+        appKey || 'all',
+        platform || 'all'
+      ].join(':');
+      await releaseJobLock(lockName, lockOwnerId);
+    }
   }
 });
 

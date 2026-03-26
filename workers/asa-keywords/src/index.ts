@@ -1,7 +1,9 @@
+import crypto from 'crypto';
 import { env } from '@shared/config/env.js';
 import { logger } from '@api/common/logger/logger.js';
 import { runAsaKeywordCycle } from '@shared/utils/asaKeywords.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { getTzParts, hasReachedDailyTime, nextDailyTimeLocalString } from '@shared/utils/schedule.js';
 import { getPullScheduleTarget } from '@shared/utils/runtimeSchedule.js';
 
@@ -9,6 +11,8 @@ let running = false;
 let lastRunMarker = '';
 let lastScheduleMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
+const ASA_KEYWORD_JOB_LOCK = 'worker:asa_keywords:cycle';
+const ASA_KEYWORD_JOB_LOCK_TTL_MS = 3 * 60 * 60 * 1000;
 
 async function tick(): Promise<void> {
   if (running) {
@@ -16,7 +20,14 @@ async function tick(): Promise<void> {
     return;
   }
   running = true;
+  let lockOwnerId = '';
   try {
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(ASA_KEYWORD_JOB_LOCK, lockOwnerId, ASA_KEYWORD_JOB_LOCK_TTL_MS);
+    if (!lockAcquired) {
+      logger.warn('asa_keyword_cycle_skip_distributed_overlap');
+      return;
+    }
     const result = await runAsaKeywordCycle(env.asaKeywordBackfillDays, logger);
     logger.info('asa_keyword_cycle_result', { ...result });
     await writeOperationLog(
@@ -52,6 +63,9 @@ async function tick(): Promise<void> {
       logger
     );
   } finally {
+    if (lockOwnerId) {
+      await releaseJobLock(ASA_KEYWORD_JOB_LOCK, lockOwnerId);
+    }
     running = false;
   }
 }

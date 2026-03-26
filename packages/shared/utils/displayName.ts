@@ -46,15 +46,6 @@ export function resolveProductViewName(
   const appKey = cleanValue(app?.app_key);
   const normalizedPlatform = normalizePlatform(platform);
 
-  if (appKey === 'ai-seek') {
-    if (normalizedPlatform === 'ios') {
-      return 'Novix';
-    }
-    if (normalizedPlatform === 'android') {
-      return 'AI Seek';
-    }
-  }
-
   const base = resolveDisplayName(appKey, app?.display_name);
   if (normalizedPlatform === 'ios') {
     return resolvePlatformDisplayName(appKey, base, app?.ios_display_name, 'iOS');

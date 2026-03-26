@@ -6,15 +6,19 @@ export interface TzParts {
   minute: number;
 }
 
+function normalizeHour(value: number): number {
+  return value === 24 ? 0 : value;
+}
+
 export function getTzParts(date: Date, timeZone: string): TzParts {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
+  const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false
+    hourCycle: 'h23'
   });
 
   const parts = formatter.formatToParts(date);
@@ -24,7 +28,7 @@ export function getTzParts(date: Date, timeZone: string): TzParts {
     year: pick('year'),
     month: pick('month'),
     day: pick('day'),
-    hour: pick('hour'),
+    hour: normalizeHour(pick('hour')),
     minute: pick('minute')
   };
 }

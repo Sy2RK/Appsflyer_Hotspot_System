@@ -1,7 +1,9 @@
+import crypto from 'crypto';
 import { env } from '@shared/config/env.js';
 import { runScheduledDailyBrief } from '@shared/utils/dailyBrief.js';
 import { logger } from '@api/common/logger/logger.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { getTzParts, hasReachedDailyTime, nextDailyTimeLocalString } from '@shared/utils/schedule.js';
 import { getPushScheduleTarget } from '@shared/utils/runtimeSchedule.js';
 
@@ -9,6 +11,8 @@ let running = false;
 let lastRunMarker = '';
 let lastScheduleMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
+const DAILY_BRIEF_JOB_LOCK = 'worker:daily_brief:tick';
+const DAILY_BRIEF_JOB_LOCK_TTL_MS = 60 * 60 * 1000;
 
 async function tick(): Promise<void> {
   if (running) {
@@ -17,7 +21,14 @@ async function tick(): Promise<void> {
   }
 
   running = true;
+  let lockOwnerId = '';
   try {
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(DAILY_BRIEF_JOB_LOCK, lockOwnerId, DAILY_BRIEF_JOB_LOCK_TTL_MS);
+    if (!lockAcquired) {
+      logger.warn('daily_brief_skip_distributed_overlap');
+      return;
+    }
     await runScheduledDailyBrief(logger);
     await writeOperationLog(
       {
@@ -50,6 +61,9 @@ async function tick(): Promise<void> {
       logger
     );
   } finally {
+    if (lockOwnerId) {
+      await releaseJobLock(DAILY_BRIEF_JOB_LOCK, lockOwnerId);
+    }
     running = false;
   }
 }

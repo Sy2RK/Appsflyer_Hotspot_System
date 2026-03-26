@@ -394,6 +394,7 @@ export interface BitableExportRecordRefRecord {
   sync_key: string;
   record_id: string;
   validation_result: string | null;
+  is_adopted: boolean;
   created_at: string;
   updated_at: string;
 }

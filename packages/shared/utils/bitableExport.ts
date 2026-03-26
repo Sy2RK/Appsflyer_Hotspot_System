@@ -19,7 +19,7 @@ interface LoggerLike {
   error?: (message: string, meta?: Record<string, unknown>) => void;
 }
 
-type BitableFieldValueType = 'text' | 'number' | 'datetime';
+type BitableFieldValueType = 'text' | 'number' | 'datetime' | 'checkbox';
 
 export interface BitableFieldDefinition {
   key: string;
@@ -51,6 +51,7 @@ interface BitableRecordRef {
   snapshot_id: string;
   sync_key: string;
   validation_result: string;
+  is_adopted: boolean;
 }
 
 interface BitableSourceSnapshot {
@@ -63,6 +64,7 @@ interface BitableSourceSnapshot {
 }
 
 interface DeliveryActionRow {
+  serial_no: number;
   report_date: string;
   product_name: string;
   platform: string;
@@ -78,10 +80,9 @@ interface DeliveryActionRow {
   cost_reference: number;
   volume_reference: string;
   action: string;
-  adjustment_ratio: number;
   validation_result: string;
+  is_adopted: boolean;
   reason: string;
-  updated_at: string;
 }
 
 export interface BitableExportRunResult {
@@ -112,13 +113,24 @@ const SOURCE_TYPE: BitableExportSourceType = 'delivery_actions';
 const SOURCE_LABEL = '投放执行表';
 const TARGET_TABLE_HINT = '固定为单张执行清单，只保留对投放同学有用的建议信息。';
 const ACTION_TABLE_NAME = String(env.feishuBitableActionTableName || '投放执行表').trim() || '投放执行表';
+const MANUAL_REVIEW_FIELD_LABEL = '人工批复';
+const LEGACY_MANUAL_REVIEW_FIELD_LABEL = '验证结果';
+const ADOPTED_FIELD_LABEL = '是否采纳';
+const PRIMARY_SERIAL_FIELD_LABEL = '多行文本';
+const EXECUTION_STATUS_FIELD_LABEL = '执行状态';
+const FEISHU_CHECKBOX_FIELD_TYPE = 7;
+const OBSOLETE_FIELD_LABELS = [
+  '序号',
+  '同步报告日期',
+  '同步键',
+  '同步快照ID',
+  '调整幅度(%)',
+  '最近更新时间'
+];
 const LEGACY_CONFIG_CONFLICT_ERROR =
   'legacy_config_conflict: 原 Pull 明细表 与 ASA Raw 表配置不一致，已停止自动迁移，请在页面重新确认 Chat ID 与启用状态。';
 
 const SYSTEM_FIELDS: BitableFieldDefinition[] = [
-  { key: '_report_date', label: '同步报告日期', value_type: 'text', default_selected: true, system: true },
-  { key: '_sync_key', label: '同步键', value_type: 'text', default_selected: true, system: true },
-  { key: '_snapshot_id', label: '同步快照ID', value_type: 'text', default_selected: true, system: true },
   { key: '_synced_at', label: '同步时间', value_type: 'datetime', default_selected: true, system: true }
 ];
 
@@ -138,10 +150,24 @@ const ACTION_FIELDS: BitableFieldDefinition[] = [
   { key: 'cost_reference', label: '成本参考', value_type: 'number', default_selected: true },
   { key: 'volume_reference', label: '量级参考', value_type: 'text', default_selected: true },
   { key: 'action', label: '建议动作', value_type: 'text', default_selected: true },
-  { key: 'adjustment_ratio', label: '调整幅度(%)', value_type: 'number', default_selected: true },
-  { key: 'validation_result', label: '验证结果', value_type: 'text', default_selected: true },
-  { key: 'reason', label: '建议理由', value_type: 'text', default_selected: true },
-  { key: 'updated_at', label: '最近更新时间', value_type: 'datetime', default_selected: true }
+  { key: 'is_adopted', label: ADOPTED_FIELD_LABEL, value_type: 'checkbox', default_selected: true },
+  { key: 'validation_result', label: MANUAL_REVIEW_FIELD_LABEL, value_type: 'text', default_selected: true },
+  { key: 'reason', label: '建议理由', value_type: 'text', default_selected: true }
+];
+
+const EXECUTION_STATUS_FIELD: BitableFieldDefinition = {
+  key: 'execution_status',
+  label: EXECUTION_STATUS_FIELD_LABEL,
+  value_type: 'checkbox',
+  default_selected: false
+};
+
+const TRAILING_ACTION_FIELD_SEQUENCE = [
+  '建议动作',
+  '建议理由',
+  EXECUTION_STATUS_FIELD_LABEL,
+  ADOPTED_FIELD_LABEL,
+  MANUAL_REVIEW_FIELD_LABEL
 ];
 
 const DEFAULT_SELECTED_FIELDS: string[] = ACTION_FIELDS.filter((field) => field.default_selected).map((field) => field.key);
@@ -154,7 +180,7 @@ function defaultConfig(): BitableExportConfigRecord {
   return {
     id: 0,
     source_type: SOURCE_TYPE,
-    enabled: false,
+    enabled: true,
     target_table_id: null,
     target_table_name: ACTION_TABLE_NAME,
     chat_id: null,
@@ -207,7 +233,7 @@ function baseTableUrl(tableId: string): string {
 }
 
 function formatLocalDateTime(date = new Date()): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: env.timezone,
     year: 'numeric',
     month: '2-digit',
@@ -215,10 +241,11 @@ function formatLocalDateTime(date = new Date()): string {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-    hour12: false
+    hourCycle: 'h23'
   }).formatToParts(date);
   const pick = (type: string): string => parts.find((item) => item.type === type)?.value ?? '00';
-  return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')}`;
+  const hour = pick('hour') === '24' ? '00' : pick('hour');
+  return `${pick('year')}-${pick('month')}-${pick('day')} ${hour}:${pick('minute')}:${pick('second')}`;
 }
 
 function parseToEpochMillis(value: string, dateOnly = false): number | null {
@@ -239,12 +266,22 @@ function compactFields(record: Record<string, unknown>): Record<string, unknown>
   return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined));
 }
 
+function displayValueForField(field: BitableFieldDefinition, value: unknown): unknown {
+  if ((field.key === 'campaign' || field.key === 'adset') && String(value ?? '').trim() === '') {
+    return '不适用';
+  }
+  return value;
+}
+
 function fieldTypeToFeishu(field: BitableFieldDefinition): { type: number; property?: Record<string, unknown> } {
   if (field.value_type === 'number') {
     return { type: 2 };
   }
   if (field.value_type === 'datetime') {
     return { type: 5 };
+  }
+  if (field.value_type === 'checkbox') {
+    return { type: FEISHU_CHECKBOX_FIELD_TYPE };
   }
   return { type: 1 };
 }
@@ -261,11 +298,30 @@ function serializeFieldValue(field: BitableFieldDefinition, value: unknown): unk
     const millis = parseToEpochMillis(String(value), field.date_only === true);
     return millis === null ? undefined : millis;
   }
+  if (field.value_type === 'checkbox') {
+    return value === true;
+  }
   return String(value);
 }
 
+function parseCheckboxValue(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+}
+
 async function feishuJsonRequest<T>(
-  method: 'GET' | 'POST' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   body?: Record<string, unknown>,
   query?: Record<string, string | number | undefined>
@@ -372,16 +428,59 @@ async function listBitableFields(appToken: string, tableId: string): Promise<Bit
 
 async function createBitableField(appToken: string, tableId: string, field: BitableFieldDefinition): Promise<void> {
   const fieldSpec = fieldTypeToFeishu(field);
-  await feishuJsonRequest('POST', `/bitable/v1/apps/${appToken}/tables/${tableId}/fields`, {
-    field_name: field.label,
-    type: fieldSpec.type,
-    property: fieldSpec.property ?? {}
-  });
+  await feishuJsonRequest(
+    'POST',
+    `/bitable/v1/apps/${appToken}/tables/${tableId}/fields`,
+    compactFields({
+      field_name: field.label,
+      type: fieldSpec.type,
+      property: fieldSpec.property
+    })
+  );
+}
+
+async function updateBitableField(
+  appToken: string,
+  tableId: string,
+  fieldId: string,
+  field: BitableFieldDefinition
+): Promise<void> {
+  const fieldSpec = fieldTypeToFeishu(field);
+  await feishuJsonRequest(
+    'PUT',
+    `/bitable/v1/apps/${appToken}/tables/${tableId}/fields/${fieldId}`,
+    compactFields({
+      field_name: field.label,
+      type: fieldSpec.type,
+      property: fieldSpec.property
+    })
+  );
+}
+
+async function deleteBitableField(appToken: string, tableId: string, fieldId: string): Promise<void> {
+  await feishuJsonRequest('DELETE', `/bitable/v1/apps/${appToken}/tables/${tableId}/fields/${fieldId}`);
+}
+
+async function updateBitableRecord(appToken: string, tableId: string, recordId: string, fields: Record<string, unknown>): Promise<void> {
+  await feishuJsonRequest(
+    'PUT',
+    `/bitable/v1/apps/${appToken}/tables/${tableId}/records/${recordId}`,
+    {
+      fields
+    }
+  );
 }
 
 function isFeishuFieldNameDuplicatedError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes('FieldNameDuplicated') || message.includes('code=1254014');
+}
+
+function fieldDefinitionForLabel(label: string): BitableFieldDefinition | null {
+  if (label === EXECUTION_STATUS_FIELD_LABEL) {
+    return EXECUTION_STATUS_FIELD;
+  }
+  return fieldCatalog().find((field) => field.label === label) ?? null;
 }
 
 async function listBitableRecords(appToken: string, tableId: string): Promise<BitableRecordItem[]> {
@@ -472,7 +571,7 @@ async function ensureDefaultConfigs(): Promise<void> {
   if (legacyConflict) {
     await upsertBitableExportConfig({
       source_type: SOURCE_TYPE,
-      enabled: false,
+      enabled: true,
       chat_id: null,
       target_table_name: ACTION_TABLE_NAME,
       selected_fields: DEFAULT_SELECTED_FIELDS
@@ -517,6 +616,54 @@ function budgetMetricLabel(primaryMetric: string, metricMode: string): string {
     return metricMode === 'roas_pending_revenue' ? 'ROAS（收入回流中）' : 'ROAS';
   }
   return 'eCPI';
+}
+
+function formatLifecycleStage(stage: string): string {
+  const normalized = String(stage || '')
+    .trim()
+    .toLowerCase();
+
+  if (!normalized) {
+    return '待观察';
+  }
+
+  if (normalized === 'new') return '新建期';
+  if (normalized === 'learning') return '学习期';
+  if (normalized === 'scaling') return '放量期';
+  if (normalized === 'stable') return '稳定期';
+  if (normalized === 'declining') return '衰退期';
+  if (normalized === 'pause_candidate') return '暂停候选';
+  if (normalized === 'rising') return '上升期';
+
+  return stage;
+}
+
+function formatActionSummary(action: string, changeRatio: unknown): string {
+  const normalized = String(action || '')
+    .trim()
+    .toLowerCase();
+  const ratio = Math.abs(Number(changeRatio || 0) * 100);
+  const percentText = Number.isFinite(ratio) && ratio > 0 ? ` ${ratio.toFixed(ratio % 1 === 0 ? 0 : 1)}%` : '';
+
+  if (!normalized) {
+    return '保持';
+  }
+  if (normalized === 'increase') {
+    return `提升${percentText}`;
+  }
+  if (normalized === 'decrease') {
+    return `下降${percentText}`;
+  }
+  if (normalized === 'pause') {
+    return '暂停';
+  }
+  if (normalized === 'hold') {
+    return '保持';
+  }
+  if (/[\u4e00-\u9fa5]/.test(action)) {
+    return action;
+  }
+  return '保持';
 }
 
 function formatBudgetCurrentValue(row: Record<string, unknown>): string {
@@ -625,6 +772,7 @@ async function queryBudgetActionRows(reportDate: string): Promise<DeliveryAction
   );
 
   return result.rows.map((row) => ({
+    serial_no: 0,
     report_date: String(row.report_date || reportDate),
     product_name: String(row.product_name || row.app_key || ''),
     platform: platformLabel(String(row.platform || 'unknown')),
@@ -633,17 +781,16 @@ async function queryBudgetActionRows(reportDate: string): Promise<DeliveryAction
     item_name: String(row.item_name || ''),
     campaign: String(row.campaign || ''),
     adset: '',
-    stage: String(row.stage || '待观察'),
+    stage: formatLifecycleStage(String(row.stage || '待观察')),
     primary_metric: budgetMetricLabel(String(row.primary_metric || ''), String(row.metric_mode || '')),
     current_value: formatBudgetCurrentValue(row),
     target_value: formatBudgetTargetValue(row),
     cost_reference: Number(row.current_cost || 0),
     volume_reference: formatBudgetVolumeReference(row),
-    action: String(row.action || 'hold'),
-    adjustment_ratio: Math.abs(Number(row.change_ratio || 0) * 100),
-    validation_result: '待验证',
-    reason: String(row.reason_summary || row.reason_code || '暂无补充说明'),
-    updated_at: String(row.updated_at || '')
+    action: formatActionSummary(String(row.action || 'hold'), row.change_ratio),
+    validation_result: '',
+    is_adopted: false,
+    reason: String(row.reason_summary || row.reason_code || '暂无补充说明')
   }));
 }
 
@@ -694,6 +841,7 @@ async function queryAsaActionRows(reportDate: string): Promise<DeliveryActionRow
   );
 
   return result.rows.map((row) => ({
+    serial_no: 0,
     report_date: String(row.report_date || reportDate),
     product_name: String(row.product_name || row.app_key || ''),
     platform: platformLabel(String(row.platform || 'unknown')),
@@ -702,17 +850,16 @@ async function queryAsaActionRows(reportDate: string): Promise<DeliveryActionRow
     item_name: String(row.item_name || ''),
     campaign: String(row.campaign || ''),
     adset: String(row.adset || ''),
-    stage: String(row.stage || '待观察'),
+    stage: formatLifecycleStage(String(row.stage || '待观察')),
     primary_metric: formatAsaMetricLabel(String(row.primary_metric || 'ecpi')),
     current_value: formatAsaCurrentValue(row),
     target_value: formatAsaTargetValue(row),
     cost_reference: Number(row.total_cost_7d || 0),
     volume_reference: formatAsaVolumeReference(row),
-    action: String(row.action || 'hold'),
-    adjustment_ratio: Math.abs(Number(row.change_ratio || 0) * 100),
-    validation_result: '待验证',
-    reason: String(row.reason_summary || row.reason_code || '暂无补充说明'),
-    updated_at: String(row.updated_at || '')
+    action: formatActionSummary(String(row.action || 'hold'), row.change_ratio),
+    validation_result: '',
+    is_adopted: false,
+    reason: String(row.reason_summary || row.reason_code || '暂无补充说明')
   }));
 }
 
@@ -766,11 +913,31 @@ async function ensureTableFields(
   logger?: LoggerLike
 ): Promise<void> {
   const existingFields = await listBitableFields(appToken, tableId);
-  const existingNames = new Set(existingFields.map((field) => field.field_name));
+  const fieldsByName = new Map(existingFields.map((field) => [field.field_name, field]));
   const catalog = fieldCatalog();
   const required = catalog.filter((field) => field.system || selectedFields.includes(field.key));
+
+  const manualReviewField = catalog.find((field) => field.label === MANUAL_REVIEW_FIELD_LABEL);
+  const legacyManualReviewField = fieldsByName.get(LEGACY_MANUAL_REVIEW_FIELD_LABEL);
+  if (manualReviewField && legacyManualReviewField && !fieldsByName.has(MANUAL_REVIEW_FIELD_LABEL)) {
+    await updateBitableField(appToken, tableId, legacyManualReviewField.field_id, manualReviewField);
+    fieldsByName.delete(LEGACY_MANUAL_REVIEW_FIELD_LABEL);
+    fieldsByName.set(MANUAL_REVIEW_FIELD_LABEL, {
+      ...legacyManualReviewField,
+      field_name: MANUAL_REVIEW_FIELD_LABEL
+    });
+  }
+
   for (const field of required) {
-    if (existingNames.has(field.label)) {
+    const existingField = fieldsByName.get(field.label);
+    if (existingField) {
+      if (field.value_type === 'checkbox' && existingField.type !== FEISHU_CHECKBOX_FIELD_TYPE) {
+        await updateBitableField(appToken, tableId, existingField.field_id, field);
+        fieldsByName.set(field.label, {
+          ...existingField,
+          type: FEISHU_CHECKBOX_FIELD_TYPE
+        });
+      }
       continue;
     }
     try {
@@ -784,36 +951,164 @@ async function ensureTableFields(
         field_name: field.label
       });
     }
-    existingNames.add(field.label);
+    fieldsByName.set(field.label, {
+      field_id: '',
+      field_name: field.label,
+      type: field.value_type === 'checkbox' ? FEISHU_CHECKBOX_FIELD_TYPE : 0
+    });
   }
+
+  const removableLabels = new Set(OBSOLETE_FIELD_LABELS);
+  if (fieldsByName.has(LEGACY_MANUAL_REVIEW_FIELD_LABEL) && fieldsByName.has(MANUAL_REVIEW_FIELD_LABEL)) {
+    removableLabels.add(LEGACY_MANUAL_REVIEW_FIELD_LABEL);
+  }
+
+  for (const label of removableLabels) {
+    const field = fieldsByName.get(label);
+    if (!field?.field_id) {
+      continue;
+    }
+    try {
+      await deleteBitableField(appToken, tableId, field.field_id);
+      fieldsByName.delete(label);
+    } catch (error) {
+      logger?.warn?.('bitable_delete_field_failed', {
+        table_id: tableId,
+        field_name: label,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+}
+
+function trailingFieldsNeedReorder(existingFields: BitableFieldRecord[]): boolean {
+  const presentIndexes = TRAILING_ACTION_FIELD_SEQUENCE
+    .map((label) => ({
+      label,
+      index: existingFields.findIndex((field) => field.field_name === label)
+    }))
+    .filter((item) => item.index >= 0);
+
+  if (presentIndexes.length <= 1) {
+    return false;
+  }
+
+  for (let index = 1; index < presentIndexes.length; index += 1) {
+    const previous = presentIndexes[index - 1];
+    const current = presentIndexes[index];
+    if (current.index !== previous.index + 1) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function reorderTrailingActionFields(
+  appToken: string,
+  tableId: string,
+  logger?: LoggerLike
+): Promise<void> {
+  const existingFields = await listBitableFields(appToken, tableId);
+  if (!trailingFieldsNeedReorder(existingFields)) {
+    return;
+  }
+
+  const fieldsByName = new Map(existingFields.map((field) => [field.field_name, field]));
+  const labelsToRebuild = TRAILING_ACTION_FIELD_SEQUENCE.filter((label) => fieldsByName.has(label));
+  if (labelsToRebuild.length <= 1) {
+    return;
+  }
+
+  const records = await listBitableRecords(appToken, tableId);
+  const preservedValues = records.map((record) => {
+    const fields: Record<string, unknown> = {};
+    for (const label of labelsToRebuild) {
+      fields[label] = record.fields[label];
+    }
+    return {
+      record_id: record.record_id,
+      fields
+    };
+  });
+
+  for (const label of labelsToRebuild) {
+    const field = fieldsByName.get(label);
+    if (!field?.field_id) {
+      continue;
+    }
+    await deleteBitableField(appToken, tableId, field.field_id);
+  }
+
+  for (const label of labelsToRebuild) {
+    const definition = fieldDefinitionForLabel(label);
+    if (!definition) {
+      continue;
+    }
+    await createBitableField(appToken, tableId, definition);
+  }
+
+  for (const record of preservedValues) {
+    const fields: Record<string, unknown> = {};
+    for (const label of labelsToRebuild) {
+      const definition = fieldDefinitionForLabel(label);
+      if (!definition) {
+        continue;
+      }
+      const value = serializeFieldValue(definition, record.fields[label]);
+      if (value !== undefined) {
+        fields[label] = value;
+      }
+    }
+    if (Object.keys(fields).length === 0) {
+      continue;
+    }
+    await updateBitableRecord(appToken, tableId, record.record_id, fields);
+  }
+
+  logger?.info?.('bitable_trailing_fields_reordered', {
+    table_id: tableId,
+    labels: labelsToRebuild
+  });
 }
 
 async function loadExistingRecordRefs(reportDate: string, tableId: string): Promise<BitableRecordRef[]> {
   const refs = await listBitableExportRecordRefs(SOURCE_TYPE, reportDate, tableId);
   return refs.map((row) => ({
-    record_id: row.record_id,
-    snapshot_id: row.snapshot_id,
-    sync_key: row.sync_key,
-    validation_result: String(row.validation_result || '').trim()
-  }));
+      record_id: row.record_id,
+      snapshot_id: row.snapshot_id,
+      sync_key: row.sync_key,
+      validation_result: String(row.validation_result || '').trim(),
+      is_adopted: row.is_adopted === true
+    }));
 }
 
-async function buildValidationResultMap(
+async function buildManualFeedbackMap(
   appToken: string,
   tableId: string,
   refs: BitableRecordRef[],
   logger?: LoggerLike
-): Promise<{ validationMap: Map<string, string>; staleRecordIds: string[] }> {
-  const validationMap = new Map<string, string>();
+): Promise<{ manualReviewMap: Map<string, string>; adoptedMap: Map<string, boolean>; staleRecordIds: string[] }> {
+  const manualReviewMap = new Map<string, string>();
+  const adoptedMap = new Map<string, boolean>();
   const staleRecordIds: string[] = [];
 
   for (const ref of refs) {
     try {
       const record = await getBitableRecord(appToken, tableId, ref.record_id);
-      const syncKey = String(record.fields['同步键'] || ref.sync_key || '').trim();
-      const validationResult = String(record.fields['验证结果'] || ref.validation_result || '').trim();
-      if (syncKey && validationResult && !validationMap.has(syncKey)) {
-        validationMap.set(syncKey, validationResult);
+      const syncKey = String(ref.sync_key || '').trim();
+      const manualReview = String(
+        record.fields[MANUAL_REVIEW_FIELD_LABEL] ??
+          record.fields[LEGACY_MANUAL_REVIEW_FIELD_LABEL] ??
+          ref.validation_result ??
+          ''
+      ).trim();
+      const isAdopted = parseCheckboxValue(record.fields[ADOPTED_FIELD_LABEL] ?? ref.is_adopted);
+      if (syncKey && manualReview && !manualReviewMap.has(syncKey)) {
+        manualReviewMap.set(syncKey, manualReview);
+      }
+      if (syncKey && !adoptedMap.has(syncKey)) {
+        adoptedMap.set(syncKey, isAdopted);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -829,7 +1124,7 @@ async function buildValidationResultMap(
     }
   }
 
-  return { validationMap, staleRecordIds };
+  return { manualReviewMap, adoptedMap, staleRecordIds };
 }
 
 async function deleteRecordsByIds(
@@ -859,23 +1154,20 @@ async function deleteRecordsByIds(
 function buildRecordFields(
   row: DeliveryActionRow,
   selectedFields: string[],
-  reportDate: string,
-  snapshotId: string,
   syncedAtMillis: number
 ): Record<string, unknown> {
   const catalog = fieldCatalog();
   const selected = new Set(selectedFields);
   const result: Record<string, unknown> = {
-    同步报告日期: reportDate,
-    同步键: syncKeyForRow(row),
-    同步快照ID: snapshotId,
+    [PRIMARY_SERIAL_FIELD_LABEL]: String(row.serial_no),
     同步时间: syncedAtMillis
   };
   for (const field of catalog) {
     if (field.system || !selected.has(field.key)) {
       continue;
     }
-    const value = serializeFieldValue(field, row[field.key as keyof DeliveryActionRow]);
+    const rawValue = displayValueForField(field, row[field.key as keyof DeliveryActionRow]);
+    const value = serializeFieldValue(field, rawValue);
     if (value !== undefined) {
       result[field.label] = value;
     }
@@ -1017,21 +1309,33 @@ export async function runBitableExport(
 
   const table = await resolveActionTable(appToken, config);
   await ensureTableFields(appToken, table.table_id, selectedFields, logger);
+  await reorderTrailingActionFields(appToken, table.table_id, logger);
+  const existingTableRecords = await listBitableRecords(appToken, table.table_id);
+  const existingTableRecordIds = existingTableRecords.map((record) => record.record_id);
 
   const { rows, breakdown } = await queryDeliveryActionRows(reportDate);
   const oldRecords = await loadExistingRecordRefs(reportDate, table.table_id);
-  const { validationMap, staleRecordIds } = await buildValidationResultMap(appToken, table.table_id, oldRecords, logger);
+  const { manualReviewMap, adoptedMap, staleRecordIds } = await buildManualFeedbackMap(
+    appToken,
+    table.table_id,
+    oldRecords,
+    logger
+  );
   const snapshotId = `${reportDate}:${Date.now()}:${SOURCE_TYPE}`;
   const syncedAtMillis = parseToEpochMillis(formatLocalDateTime()) ?? Date.now();
-  const rowsWithValidation = rows.map((row) => {
-    const existingValidationResult = validationMap.get(syncKeyForRow(row));
+  const rowsWithFeedback = rows.map((row) => {
+    const syncKey = syncKeyForRow(row);
     return {
       ...row,
-      validation_result: existingValidationResult || row.validation_result || '待验证'
+      serial_no: 0,
+      validation_result: manualReviewMap.get(syncKey) || row.validation_result || '',
+      is_adopted: adoptedMap.has(syncKey) ? adoptedMap.get(syncKey) === true : row.is_adopted === true
     };
-  });
-  const recordPayloads = rowsWithValidation.map((row) => buildRecordFields(row, selectedFields, reportDate, snapshotId, syncedAtMillis));
-  const oldRecordIds = oldRecords.map((record) => record.record_id).filter((recordId) => !staleRecordIds.includes(recordId));
+  }).map((row, index) => ({
+    ...row,
+    serial_no: index + 1
+  }));
+  const recordPayloads = rowsWithFeedback.map((row) => buildRecordFields(row, selectedFields, syncedAtMillis));
 
   let createdRecordIds: string[] = [];
   try {
@@ -1049,9 +1353,10 @@ export async function runBitableExport(
       report_date: reportDate,
       table_id: table.table_id,
       snapshot_id: snapshotId,
-      sync_key: syncKeyForRow(rowsWithValidation[index]),
+      sync_key: syncKeyForRow(rowsWithFeedback[index]),
       record_id: recordId,
-      validation_result: rowsWithValidation[index]?.validation_result || '待验证'
+      validation_result: rowsWithFeedback[index]?.validation_result || '',
+      is_adopted: rowsWithFeedback[index]?.is_adopted === true
     }))
   );
 
@@ -1059,14 +1364,14 @@ export async function runBitableExport(
     await deleteBitableExportRecordRefsByRecordIds(SOURCE_TYPE, staleRecordIds);
   }
 
-  const deleteResult = await deleteRecordsByIds(appToken, table.table_id, oldRecordIds, logger);
+  const deleteResult = await deleteRecordsByIds(appToken, table.table_id, existingTableRecordIds, logger);
   if (deleteResult.deletedIds.length > 0) {
     await deleteBitableExportRecordRefsByRecordIds(SOURCE_TYPE, deleteResult.deletedIds);
   }
   const deletedCount = deleteResult.deletedIds.length;
   const cleanupError =
-    oldRecordIds.length > 0 && deletedCount !== oldRecordIds.length
-      ? `snapshot_cleanup_incomplete deleted=${deletedCount}/${oldRecordIds.length}`
+    existingTableRecordIds.length > 0 && deletedCount !== existingTableRecordIds.length
+      ? `snapshot_cleanup_incomplete deleted=${deletedCount}/${existingTableRecordIds.length}`
       : null;
 
   const resultBase = {
@@ -1119,9 +1424,9 @@ export async function runBitableExport(
       source_type: SOURCE_TYPE,
       report_date: reportDate,
       table_id: table.table_id,
-      deleted_count: deletedCount,
-      expected_delete_count: oldRecordIds.length
-    });
+        deleted_count: deletedCount,
+        expected_delete_count: existingTableRecordIds.length
+      });
   }
 
   return result;

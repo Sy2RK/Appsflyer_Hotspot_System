@@ -1,10 +1,14 @@
+import crypto from 'crypto';
 import { env } from '@shared/config/env.js';
 import { logger } from '@api/common/logger/logger.js';
 import { runKeywordEngineCycle } from '@shared/utils/keywordEngine.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 
 let running = false;
 let firstCycle = true;
+const KEYWORD_ENGINE_JOB_LOCK = 'worker:keyword_engine:cycle';
+const KEYWORD_ENGINE_JOB_LOCK_TTL_MS = 2 * 60 * 60 * 1000;
 
 async function tick(): Promise<void> {
   if (running) {
@@ -13,10 +17,19 @@ async function tick(): Promise<void> {
   }
 
   running = true;
+  let lockOwnerId = '';
   const backfillDays = firstCycle
     ? env.keywordEngineInitialBackfillDays
     : env.keywordEngineRollingBackfillDays;
   try {
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(KEYWORD_ENGINE_JOB_LOCK, lockOwnerId, KEYWORD_ENGINE_JOB_LOCK_TTL_MS);
+    if (!lockAcquired) {
+      logger.warn('keyword_engine_skip_distributed_overlap', {
+        backfill_days: backfillDays
+      });
+      return;
+    }
     const result = await runKeywordEngineCycle(backfillDays, logger);
     logger.info('keyword_engine_cycle_result', {
       backfill_days: result.backfill_days,
@@ -58,6 +71,9 @@ async function tick(): Promise<void> {
       logger
     );
   } finally {
+    if (lockOwnerId) {
+      await releaseJobLock(KEYWORD_ENGINE_JOB_LOCK, lockOwnerId);
+    }
     firstCycle = false;
     running = false;
   }

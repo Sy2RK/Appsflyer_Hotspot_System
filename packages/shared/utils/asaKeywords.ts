@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { env } from '../config/env.js';
 import { chExec, chInsertJSON, chQuery } from './clickhouse.js';
 import { md5Hex } from './hash.js';
@@ -10,9 +11,11 @@ import {
   listProductStageConfigs,
   queryAsaKeywordRecommendations,
   queryAsaKeywordStates,
+  releaseJobLock,
   deleteStaleAsaKeywordRecommendations,
   deleteStaleAsaKeywordStates,
   replaceAsaKeywordRecommendationsForDate,
+  tryAcquireJobLock,
   upsertAsaKeywordRecommendation,
   upsertAsaKeywordState,
   upsertDailyBriefDispatch
@@ -22,6 +25,7 @@ import { sendAlertNotification, sendFeishuInteractiveCardNotification, type Aler
 import { resolveProductViewName } from './displayName.js';
 import { getDailyBriefDefaultReportDate } from './dailyBrief.js';
 import { getPushScheduleTarget } from './runtimeSchedule.js';
+import { getTzParts } from './schedule.js';
 import { buildPreviousDateList } from './businessDate.js';
 import type {
   AppConfigRecord,
@@ -200,6 +204,22 @@ const MASTER_MEDIA_SOURCE = 'apple search ads';
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ASA_KEYWORD_METRICS_TABLE = 'asa_keyword_daily_metrics_v2';
 const ASA_SLICE_SNAPSHOT_TABLE = 'asa_slice_snapshots';
+const ASA_KEYWORD_BRIEF_SEND_LOCK_PREFIX = 'asa_keyword_brief:send';
+const ASA_KEYWORD_BRIEF_SEND_LOCK_TTL_MS = 30 * 60 * 1000;
+
+function buildAsaKeywordBriefSendLockName(
+  reportDate: string,
+  routeKey: string,
+  filters: { appKey?: string; platform?: string }
+): string {
+  return [
+    ASA_KEYWORD_BRIEF_SEND_LOCK_PREFIX,
+    reportDate,
+    routeKey,
+    filters.appKey || 'all',
+    filters.platform || 'all'
+  ].join(':');
+}
 
 function buildLatestAsaSliceRangeCtes(table: string, dateColumn: string): string {
   return `
@@ -1174,6 +1194,8 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
 export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): Promise<AsaKeywordQueryResult> {
   const page = Math.max(1, Math.floor(filter.page ?? 1));
   const pageSize = Math.min(100, Math.max(1, Math.floor(filter.pageSize ?? 20)));
+  const rangeFrom = filter.from ?? '1970-01-01';
+  const rangeTo = filter.to ?? '2099-12-31';
   const stateResult = await queryAsaKeywordStates({
     appKey: filter.appKey,
     platform: filter.platform,
@@ -1203,7 +1225,10 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
   );
 
   const summaryWhere: string[] = [];
-  const summaryParams: Record<string, unknown> = {};
+  const summaryParams: Record<string, unknown> = {
+    from: rangeFrom,
+    to: rangeTo
+  };
   if (filter.appKey) {
     summaryWhere.push('m.app_key = {appKey:String}');
     summaryParams.appKey = filter.appKey;
@@ -1214,11 +1239,9 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
   }
   if (filter.from) {
     summaryWhere.push('m.date >= toDate({from:String})');
-    summaryParams.from = filter.from;
   }
   if (filter.to) {
     summaryWhere.push('m.date <= toDate({to:String})');
-    summaryParams.to = filter.to;
   }
   if (filter.keyword) {
     summaryWhere.push('positionCaseInsensitive(m.keyword, {keyword:String}) > 0');
@@ -1620,47 +1643,57 @@ export async function sendAsaKeywordBrief(
   const routes = await listEnabledAsaKeywordRoutes();
   const matchedRoute = asaRouteForFilters(routes, filters);
   const routeKey = filters.routeKey ?? (matchedRoute ? `asa:${matchedRoute.route_name}` : 'asa:default');
-  const dispatch = await getDailyBriefDispatch(reportDate, 'asa_keyword_daily', 'feishu', routeKey);
-  if (dispatch?.status === 'sent' && !filters.force) {
+  const lockOwnerId = crypto.randomUUID();
+  const lockName = buildAsaKeywordBriefSendLockName(reportDate, routeKey, filters);
+  const lockAcquired = await tryAcquireJobLock(lockName, lockOwnerId, ASA_KEYWORD_BRIEF_SEND_LOCK_TTL_MS);
+  if (!lockAcquired) {
     return { ok: true, skipped: true, report, notify: { ok: true, render_mode: 'interactive' } };
   }
-  const override: AlertChannelConfig | undefined = filters.channelOverride ?? (matchedRoute
-    ? {
-        notify_feishu_app_id: matchedRoute.notify_feishu_app_id,
-        notify_feishu_app_secret: matchedRoute.notify_feishu_app_secret,
-        notify_feishu_chat_id: matchedRoute.notify_feishu_chat_id
-      }
-    : undefined);
-  let notify = await sendFeishuInteractiveCardNotification(
-    { title: report.title, text: report.text, feishuCardPayload: report.feishu_card_payload },
-    override
-  );
-  if (!notify.ok) {
-    notify = await sendAlertNotification({ title: report.title, text: report.text }, override);
-  }
-  await upsertDailyBriefDispatch({
-    report_date: reportDate,
-    kind: 'asa_keyword_daily',
-    channel: 'feishu',
-    route_key: routeKey,
-    title: report.title,
-    content: report.text,
-    payload_json: {
-      ...report,
-      render_mode: notify.render_mode || 'text_fallback'
-    },
-    status: notify.ok ? 'sent' : 'failed',
-    manual_triggered: filters.manualTriggered ?? false,
-    last_error: notify.ok ? null : notify.error ?? null,
-    sent_at: notify.ok ? new Date().toISOString() : null
-  });
-  if (notify.ok && report.action_rows.length > 0) {
-    const rowIds = report.action_rows.filter((row) => row.status === 'pending').map((row) => row.id);
-    if (rowIds.length > 0) {
-      await pgQuery(`UPDATE asa_keyword_recommendations SET status = 'sent', updated_at = NOW() WHERE id = ANY($1::bigint[])`, [rowIds]);
+  try {
+    const dispatch = await getDailyBriefDispatch(reportDate, 'asa_keyword_daily', 'feishu', routeKey);
+    if (dispatch?.status === 'sent' && !filters.force) {
+      return { ok: true, skipped: true, report, notify: { ok: true, render_mode: 'interactive' } };
     }
+    const override: AlertChannelConfig | undefined = filters.channelOverride ?? (matchedRoute
+      ? {
+          notify_feishu_app_id: matchedRoute.notify_feishu_app_id,
+          notify_feishu_app_secret: matchedRoute.notify_feishu_app_secret,
+          notify_feishu_chat_id: matchedRoute.notify_feishu_chat_id
+        }
+      : undefined);
+    let notify = await sendFeishuInteractiveCardNotification(
+      { title: report.title, text: report.text, feishuCardPayload: report.feishu_card_payload },
+      override
+    );
+    if (!notify.ok) {
+      notify = await sendAlertNotification({ title: report.title, text: report.text }, override);
+    }
+    await upsertDailyBriefDispatch({
+      report_date: reportDate,
+      kind: 'asa_keyword_daily',
+      channel: 'feishu',
+      route_key: routeKey,
+      title: report.title,
+      content: report.text,
+      payload_json: {
+        ...report,
+        render_mode: notify.render_mode || 'text_fallback'
+      },
+      status: notify.ok ? 'sent' : 'failed',
+      manual_triggered: filters.manualTriggered ?? false,
+      last_error: notify.ok ? null : notify.error ?? null,
+      sent_at: notify.ok ? new Date().toISOString() : null
+    });
+    if (notify.ok && report.action_rows.length > 0) {
+      const rowIds = report.action_rows.filter((row) => row.status === 'pending').map((row) => row.id);
+      if (rowIds.length > 0) {
+        await pgQuery(`UPDATE asa_keyword_recommendations SET status = 'sent', updated_at = NOW() WHERE id = ANY($1::bigint[])`, [rowIds]);
+      }
+    }
+    return { ok: notify.ok, skipped: false, report, notify };
+  } finally {
+    await releaseJobLock(lockName, lockOwnerId);
   }
-  return { ok: notify.ok, skipped: false, report, notify };
 }
 
 export async function runScheduledAsaKeywordBrief(logger: LoggerLike): Promise<void> {
@@ -1670,14 +1703,9 @@ export async function runScheduledAsaKeywordBrief(logger: LoggerLike): Promise<v
   }
 
   const schedule = await getPushScheduleTarget();
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: env.timezone,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  }).formatToParts(new Date());
-  const currentHour = Number(parts.find((part) => part.type === 'hour')?.value ?? '0');
-  const currentMinute = Number(parts.find((part) => part.type === 'minute')?.value ?? '0');
+  const parts = getTzParts(new Date(), env.timezone);
+  const currentHour = parts.hour;
+  const currentMinute = parts.minute;
 
   if (currentHour < schedule.hour || (currentHour === schedule.hour && currentMinute < schedule.minute)) {
     logger.info?.('asa_daily_brief_skip_before_window', {

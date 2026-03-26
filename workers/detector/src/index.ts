@@ -1,9 +1,12 @@
+import crypto from 'crypto';
 import { env } from '@shared/config/env.js';
 import { logger } from '@api/common/logger/logger.js';
 import { runDetectionCycle } from './detector.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 
 let running = false;
+const DETECTOR_JOB_LOCK = 'worker:detector:cycle';
 
 async function tick(): Promise<void> {
   if (running) {
@@ -12,7 +15,15 @@ async function tick(): Promise<void> {
   }
 
   running = true;
+  let lockOwnerId = '';
   try {
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(DETECTOR_JOB_LOCK, lockOwnerId, env.detectorLockTtlMs);
+    if (!lockAcquired) {
+      logger.warn('detector_skip_distributed_overlap');
+      return;
+    }
+
     const stats = await runDetectionCycle();
     logger.info('detector_cycle_finished', {
       runtime_ms: stats.runtimeMs,
@@ -53,6 +64,9 @@ async function tick(): Promise<void> {
       logger
     );
   } finally {
+    if (lockOwnerId) {
+      await releaseJobLock(DETECTOR_JOB_LOCK, lockOwnerId);
+    }
     running = false;
   }
 }

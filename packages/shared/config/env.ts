@@ -25,6 +25,23 @@ function optionalNumber(name: string, fallback: number): number {
   return parsed;
 }
 
+function optionalJson<T>(name: string, fallback: T): T {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+  try {
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    throw new Error(`Invalid JSON env ${name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+interface BudgetMetricOverrideConfig {
+  primaryMetric: 'ecpi' | 'roas';
+  metricMode: 'active' | 'roas_pending_revenue';
+}
+
 export const env = {
   nodeEnv,
   port: optionalNumber('PORT', 3000),
@@ -36,7 +53,7 @@ export const env = {
     host: requireEnv('CLICKHOUSE_HOST', 'localhost'),
     port: optionalNumber('CLICKHOUSE_PORT', 8123),
     user: isProduction ? requireEnv('CLICKHOUSE_USER') : requireEnv('CLICKHOUSE_USER', 'default'),
-    password: isProduction ? requireEnv('CLICKHOUSE_PASSWORD') : process.env.CLICKHOUSE_PASSWORD ?? '',
+    password: requireEnv('CLICKHOUSE_PASSWORD'),
     database: requireEnv('CLICKHOUSE_DB', 'hotspot')
   },
 
@@ -117,6 +134,8 @@ export const env = {
   dailyBriefIntervalMs: optionalNumber('DAILY_BRIEF_INTERVAL_MS', 60 * 60 * 1000),
   dailyBriefReportHour: optionalNumber('DAILY_BRIEF_REPORT_HOUR', 10),
   dailyBriefTitlePrefix: process.env.DAILY_BRIEF_TITLE_PREFIX ?? 'Hotspot 每日简报',
+  detectorLockTtlMs: optionalNumber('DETECTOR_LOCK_TTL_MS', 30 * 60 * 1000),
+  budgetPrimaryMetricOverrides: optionalJson<Record<string, BudgetMetricOverrideConfig>>('BUDGET_PRIMARY_METRIC_OVERRIDES', {}),
 
   qwen: {
     baseUrl: process.env.QWEN_BASE_URL ?? '',
@@ -127,5 +146,35 @@ export const env = {
     maxTokens: optionalNumber('QWEN_MAX_TOKENS', 1200)
   }
 };
+
+function pushMissing(missing: string[], name: string, value: string): void {
+  if (!String(value || '').trim()) {
+    missing.push(name);
+  }
+}
+
+function validateEnv(): void {
+  const missing: string[] = [];
+  pushMissing(missing, 'CLICKHOUSE_HOST', env.clickhouse.host);
+  pushMissing(missing, 'CLICKHOUSE_USER', env.clickhouse.user);
+  pushMissing(missing, 'CLICKHOUSE_PASSWORD', env.clickhouse.password);
+  pushMissing(missing, 'CLICKHOUSE_DB', env.clickhouse.database);
+
+  const feishuFeaturesEnabled = env.dailyBriefEnabled || env.asaDailyBriefEnabled || env.feishuBitableEnabled;
+  if (feishuFeaturesEnabled) {
+    pushMissing(missing, 'FEISHU_APP_ID', env.feishuAppId);
+    pushMissing(missing, 'FEISHU_APP_SECRET', env.feishuAppSecret);
+  }
+  if (env.feishuBitableEnabled) {
+    pushMissing(missing, 'FEISHU_BITABLE_APP_TOKEN', env.feishuBitableAppToken);
+    pushMissing(missing, 'FEISHU_BITABLE_BASE_URL', env.feishuBitableBaseUrl);
+  }
+
+  if (missing.length > 0) {
+    throw new Error(`Missing required env: ${missing.join(', ')}`);
+  }
+}
+
+validateEnv();
 
 export type AppEnv = typeof env;

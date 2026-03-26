@@ -300,6 +300,20 @@ h4 {
   transform: translateY(-1px);
 }
 
+.help-icon-inline {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.term-with-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .help-group {
   position: relative;
   display: inline-flex;
@@ -1387,6 +1401,14 @@ input[aria-disabled-note='true'] {
   margin-bottom: 0;
 }
 
+.rules-section-body {
+  margin-top: 16px;
+}
+
+.rules-section-body.hidden {
+  display: none;
+}
+
 .toggle-switch {
   display: inline-flex;
   align-items: center;
@@ -2038,6 +2060,12 @@ pre {
 
 .simple-list li {
   margin-bottom: 6px;
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-weight: 600;
 }
 
 .detail-grid {

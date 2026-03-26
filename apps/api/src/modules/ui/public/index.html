@@ -3,29 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Hotspot 控制台</title>
+    <title>投放工作台</title>
     <link rel="stylesheet" href="/ui/styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar" aria-label="导航栏">
         <div class="brand-block">
-          <p class="brand-kicker">AppsFlyer Hotspot</p>
-          <h1>监测控制台</h1>
-          <p class="brand-sub">归因数据监测与异常处置</p>
+          <p class="brand-kicker">AppsFlyer 投放工作台</p>
+          <h1>投放工作台</h1>
+          <p class="brand-sub">给一线调控师使用的数据监测与处理面板</p>
         </div>
 
         <nav id="sideNav" class="nav-list" aria-label="主导航">
-          <button class="nav-item is-active" data-target="section-overview" type="button">总览</button>
-          <button class="nav-item" data-target="section-apps" type="button">应用配置</button>
-          <button class="nav-item" data-target="section-rules" type="button">规则管理</button>
-          <button class="nav-item" data-target="section-alerts" type="button">告警列表</button>
-          <button class="nav-item" data-target="section-metrics" type="button">指标趋势</button>
-          <button class="nav-item" data-target="section-keywords" type="button">关键词生命周期</button>
+          <button class="nav-item is-active" data-target="section-overview" type="button">今日工作台</button>
           <button class="nav-item" data-target="section-budget" type="button">预算建议</button>
           <button class="nav-item" data-target="section-asa-keywords" type="button">ASA 关键词管理</button>
-          <button class="nav-item" data-target="section-pull-records" type="button">Pull 明细</button>
-          <button class="nav-item" data-target="section-operation-logs" type="button">操作日志</button>
+          <button class="nav-item" data-target="section-metrics" type="button">指标趋势</button>
+          <button class="nav-item" data-target="section-alerts" type="button">告警列表</button>
+          <button class="nav-item" data-target="section-keywords" type="button">关键词生命周期</button>
+          <button class="nav-item" data-target="section-pull-records" type="button">广告日报明细</button>
+          <button class="nav-item" data-target="section-operation-logs" type="button">操作记录</button>
+          <button class="nav-item" data-target="section-apps" type="button">应用设置（高级）</button>
+          <button class="nav-item" data-target="section-rules" type="button">告警规则（高级）</button>
         </nav>
 
       </aside>
@@ -33,8 +33,8 @@
       <div class="main-shell">
         <header class="topbar">
           <div>
-            <p class="topbar-kicker">数据运行状态</p>
-            <h2>Hotspot 运营面板</h2>
+            <p class="topbar-kicker">今日处理面板</p>
+            <h2>投放工作台</h2>
           </div>
           <div class="topbar-actions">
             <button id="refreshAllBtn" class="btn btn-secondary" type="button">刷新全部</button>
@@ -46,24 +46,24 @@
         <main class="content sections">
           <section id="section-overview" class="section-panel" style="--delay: 0ms">
             <div class="card-head">
-              <h3>运行总览</h3>
-              <p>快速查看应用、规则与告警状态。</p>
+              <h3>今日工作台</h3>
+              <p>先看今天的风险、建议和执行进度，再进入对应模块处理。</p>
             </div>
             <div class="overview-grid">
               <article class="overview-card">
-                <span class="overview-label">应用数</span>
+                <span class="overview-label">告警风险</span>
                 <strong id="ovApps">0</strong>
               </article>
               <article class="overview-card">
-                <span class="overview-label">规则数</span>
+                <span class="overview-label">预算待处理</span>
                 <strong id="ovRules">0</strong>
               </article>
               <article class="overview-card">
-                <span class="overview-label">未恢复告警</span>
+                <span class="overview-label">ASA 待处理</span>
                 <strong id="ovOpenAlerts">0</strong>
               </article>
               <article class="overview-card">
-                <span class="overview-label">最近刷新</span>
+                <span class="overview-label">最近更新</span>
                 <strong id="ovLatestRefresh">-</strong>
               </article>
             </div>
@@ -71,21 +71,21 @@
             <div class="schedule-panel">
               <div class="card-head card-head-compact schedule-panel-head">
                 <div>
-                  <h4>全局调度设置</h4>
-                  <p>统一控制 Pull 与各类日报的每日自动执行时间。当前时区固定为 UTC+8（Asia/Shanghai）。</p>
+                  <h4>每日时间安排</h4>
+                  <p>统一设置数据准备和消息发送时间。当前时区固定为北京时间（UTC+8）。</p>
                 </div>
                 <div class="schedule-panel-badges">
                   <span class="schedule-badge">UTC+8</span>
-                  <span class="schedule-badge schedule-badge-muted">统一作用于 Pull / ASA / 日报</span>
+                  <span class="schedule-badge schedule-badge-muted">统一作用于日报数据、ASA 和简报发送</span>
                 </div>
               </div>
               <form id="runtimeScheduleForm" class="schedule-form" autocomplete="off">
                 <label class="filter-field schedule-field">
-                  <span class="field-label">Pull 时间</span>
+                  <span class="field-label">数据准备时间</span>
                   <input id="runtimePullTimeInput" type="time" step="60" />
                 </label>
                 <label class="filter-field schedule-field">
-                  <span class="field-label">推送时间</span>
+                  <span class="field-label">消息发送时间</span>
                   <input id="runtimePushTimeInput" type="time" step="60" />
                 </label>
                 <div class="schedule-actions">
@@ -95,20 +95,20 @@
               <div class="schedule-meta-grid">
                 <article class="schedule-meta-card">
                   <span class="schedule-meta-label">数据准备</span>
-                  <strong id="runtimeSchedulePullSummary">Puller 与 ASA 数据准备将在 09:00 开始。</strong>
+                  <strong id="runtimeSchedulePullSummary">广告日报与 ASA 数据将在 09:00 开始准备。</strong>
                 </article>
                 <article class="schedule-meta-card">
                   <span class="schedule-meta-label">消息推送</span>
-                  <strong id="runtimeSchedulePushSummary">通用日报与 ASA 简报将在 10:00 发送，多维表格自动顺延 5 分钟。</strong>
+                  <strong id="runtimeSchedulePushSummary">每日简报与 ASA 简报将在 10:00 发送，执行表会顺延 5 分钟。</strong>
                 </article>
               </div>
-              <div id="runtimeScheduleStatus" class="hint">当前使用系统默认时间：Pull 09:00，推送 10:00，多维表格 10:05。</div>
+              <div id="runtimeScheduleStatus" class="hint">当前使用系统默认时间：数据准备 09:00，消息发送 10:00，执行表 10:05。</div>
             </div>
 
             <div class="brief-panel">
               <div class="card-head card-head-compact">
                 <h4>每日简报</h4>
-                <p>汇总 Pull、预算建议与未恢复告警，推送到飞书群聊。</p>
+                <p>汇总广告日报、预算建议与未恢复告警，生成每天的工作结论并发送到飞书。</p>
               </div>
               <form id="dailyBriefForm" class="inline-form daily-brief-form">
                 <label class="filter-field">
@@ -135,14 +135,26 @@
                 <div id="dailyBriefMediaSources" class="media-chip-grid"></div>
                 <div id="dailyBriefMediaSourcesSummary" class="hint">媒体源默认全选。</div>
               </div>
-              <div id="dailyBriefStatus" class="hint">默认汇总前一天数据，并使用全局 Feishu 机器人配置发送。</div>
+              <div id="dailyBriefStatus" class="hint">默认汇总前一天数据，并使用全局飞书机器人配置发送。</div>
             </div>
 
             <div class="bitable-panel">
               <div class="card-head card-head-compact bitable-panel-head">
                 <div>
-                  <h4>投放执行表推送</h4>
-                  <p>只保留当前待处理的执行清单，并预留“验证结果”字段，方便后续按结果判断建议是否有效。</p>
+                  <h4>投放执行表</h4>
+                  <p>
+                    只保留当前待处理的执行清单，并预留“是否采纳 + 人工批复”字段，方便投放同学直接在飞书里处理与反馈。
+                    <span class="term-with-help">
+                      <span>字段说明</span>
+                      <span class="help-group">
+                        <button class="help-icon help-icon-inline" type="button" aria-label="查看执行表字段说明">?</button>
+                        <div class="help-popover help-popover-floating help-popover-compact">
+                          <h4>执行表字段说明</h4>
+                          <p>“是否采纳”表示你是否接受这条建议；“人工批复”用于记录为什么执行、暂停或不执行。</p>
+                        </div>
+                      </span>
+                    </span>
+                  </p>
                 </div>
                 <label class="filter-field bitable-report-date-field">
                   <span class="field-label">手动导出日期</span>
@@ -154,237 +166,8 @@
 
               <div class="bitable-note-card">
                 <strong>运行说明</strong>
-                <p id="bitableSchedulePrimaryNote">每日 10:05（Asia/Shanghai）自动执行。系统会在同一 Base 下创建 / 复用一张固定的「投放执行表」，并覆盖为最新执行清单。</p>
-                <p>表内只保留对实际投放有用的字段，不再推送 Pull 明细、ASA Raw 或 `raw_json` 这类技术字段。新建议默认写入“待验证”；同一天再次导出时，系统会按投放项保留你已填写的验证结果。</p>
-              </div>
-            </div>
-          </section>
-
-          <section id="section-apps" class="section-panel" style="--delay: 50ms">
-            <div class="card-head">
-              <h3>应用配置</h3>
-              <p>管理 Push 鉴权、Pull app_id、Feishu/Webhook 通知参数。</p>
-            </div>
-
-            <form id="appForm" class="app-config-form">
-              <div class="form-grid app-fields-grid">
-                <label class="field">
-                  <span class="field-label">应用名（display_name，可选）</span>
-                  <input name="display_name" />
-                </label>
-                <label class="field">
-                  <span class="field-label">iOS端名称（ios_display_name，可选）</span>
-                  <input name="ios_display_name" />
-                </label>
-                <label class="field">
-                  <span class="field-label">安卓端名称（android_display_name，可选）</span>
-                  <input name="android_display_name" />
-                </label>
-                <label class="field">
-                  <span class="field-label">应用 Key（app_key）</span>
-                  <input name="app_key" required />
-                </label>
-                <label class="field">
-                  <span class="field-label">iOS App ID（ios_pull_app_id）</span>
-                  <input name="ios_pull_app_id" />
-                </label>
-                <label class="field">
-                  <span class="field-label">Android App ID（android_pull_app_id）</span>
-                  <input name="android_pull_app_id" />
-                </label>
-                <label class="field">
-                  <span class="field-label">兼容 App ID（pull_app_id，可选）</span>
-                  <input name="pull_app_id" />
-                </label>
-                <label class="field">
-                  <span class="field-label">数据集（dataset）</span>
-                  <input name="dataset" required value="ods_events_device_detail" />
-                </label>
-                <label class="field">
-                  <span class="field-label">时区（timezone）</span>
-                  <input name="timezone" required value="Asia/Shanghai" />
-                </label>
-                <label class="field token-field">
-                  <span class="field-label">推送鉴权 Token（push_auth_token）</span>
-                  <div class="field-control with-action">
-                    <input name="push_auth_token" />
-                    <button type="button" id="generateTokenBtn" class="btn btn-ghost btn-inline-action">生成</button>
-                  </div>
-                </label>
-              </div>
-
-              <section id="appFeishuCard" class="collapse-card">
-                <div class="feature-toggle-row">
-                  <div>
-                    <h4>应用级 Feishu 配置</h4>
-                    <p class="hint">默认关闭。未启用或字段留空时，将自动使用 `.env` 中的全局 Feishu 配置。</p>
-                  </div>
-                  <label class="toggle-switch" for="appFeishuEnabled">
-                    <input id="appFeishuEnabled" type="checkbox" />
-                    <span class="toggle-slider" aria-hidden="true"></span>
-                    <span class="toggle-text">启用应用级 Feishu</span>
-                  </label>
-                </div>
-                <div id="appFeishuSummary" class="collapse-summary hint"></div>
-                <div id="appFeishuBody" class="collapse-card-body">
-                  <div class="form-grid app-feishu-grid">
-                    <label class="field">
-                      <span class="field-label">Feishu App ID（notify_feishu_app_id）</span>
-                      <input name="notify_feishu_app_id" />
-                    </label>
-                    <label class="field">
-                      <span class="field-label">Feishu App Secret（notify_feishu_app_secret）</span>
-                      <input name="notify_feishu_app_secret" />
-                    </label>
-                    <label class="field">
-                      <span class="field-label">Feishu Chat ID（notify_feishu_chat_id）</span>
-                      <input name="notify_feishu_chat_id" />
-                    </label>
-                    <label class="field">
-                      <span class="field-label">备用 Webhook（notify_webhook_url，可选）</span>
-                      <input name="notify_webhook_url" />
-                    </label>
-                  </div>
-                </div>
-              </section>
-
-              <div class="actions">
-                <button id="appSubmitBtn" class="btn btn-primary" type="submit">保存应用配置</button>
-                <button id="appResetBtn" class="btn btn-ghost" type="button">新建 / 清空</button>
-              </div>
-            </form>
-
-            <div class="table-wrap">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th>名称（display_name）</th>
-                    <th>iOS 名称</th>
-                    <th>Android 名称</th>
-                    <th>应用 Key（app_key）</th>
-                    <th>iOS App ID</th>
-                    <th>Android App ID</th>
-                    <th>兼容 App ID</th>
-                    <th>数据集（dataset）</th>
-                    <th>时区</th>
-                    <th>通知配置</th>
-                    <th>更新时间</th>
-                    <th>操作</th>
-                  </tr>
-                </thead>
-                <tbody id="appsTableBody"></tbody>
-              </table>
-            </div>
-          </section>
-
-          <section id="section-rules" class="section-panel" style="--delay: 100ms">
-            <div class="card-head">
-              <h3>规则管理</h3>
-              <p>支持 DSL 表单编辑，并可与 JSON 双向同步。</p>
-            </div>
-
-            <div class="split-layout">
-              <form id="ruleForm" class="stack">
-                <input type="hidden" name="id" />
-                <label>
-                  <span>应用 Key（app_key）</span>
-                  <input name="app_key" required />
-                </label>
-                <label>
-                  <span>规则名称</span>
-                  <input name="name" required />
-                </label>
-
-                <div class="dsl-grid">
-                  <label>
-                    <span>规则时区</span>
-                    <input name="dsl_timezone" value="Asia/Shanghai" />
-                  </label>
-                  <label>
-                    <span>静默分钟</span>
-                    <input type="number" name="dsl_silence_minutes" value="30" min="1" />
-                  </label>
-                  <label>
-                    <span>指标类型（metric）</span>
-                    <select name="dsl_metric">
-                      <option value="revenue">收入（revenue）</option>
-                      <option value="event_count">事件数（event_count）</option>
-                      <option value="purchase_count">购买数（purchase_count）</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>事件名（event_name，事件数 event_count 时）</span>
-                    <input name="dsl_event_name" />
-                  </label>
-                  <label>
-                    <span>窗口</span>
-                    <select name="dsl_window">
-                      <option value="last_1h">last_1h</option>
-                      <option value="last_2h">last_2h</option>
-                      <option value="last_3h">last_3h</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>基线</span>
-                    <select name="dsl_baseline">
-                      <option value="avg_7d_same_hour">avg_7d_same_hour</option>
-                      <option value="median_14d_same_hour">median_14d_same_hour</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>上升阈值 up_ratio</span>
-                    <input type="number" name="dsl_up_ratio" value="2" min="0" step="0.1" />
-                  </label>
-                  <label>
-                    <span>下降阈值 down_ratio</span>
-                    <input type="number" name="dsl_down_ratio" value="0.5" min="0" step="0.1" />
-                  </label>
-                  <label>
-                    <span>最小绝对差值 min_abs_delta</span>
-                    <input type="number" name="dsl_min_abs_delta" value="50" min="0" step="1" />
-                  </label>
-                  <label>
-                    <span>上升等级</span>
-                    <select name="dsl_sev_spike">
-                      <option value="P0">P0</option>
-                      <option value="P1" selected>P1</option>
-                      <option value="P2">P2</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>下降等级</span>
-                    <select name="dsl_sev_drop">
-                      <option value="P0" selected>P0</option>
-                      <option value="P1">P1</option>
-                      <option value="P2">P2</option>
-                    </select>
-                  </label>
-                </div>
-
-                <fieldset class="dim-group">
-                  <legend>下钻维度（drilldown_dims）</legend>
-                  <label><input type="checkbox" name="dsl_dim" value="media_source" checked /> 媒体源（media_source）</label>
-                  <label><input type="checkbox" name="dsl_dim" value="country" checked /> 国家（country）</label>
-                  <label><input type="checkbox" name="dsl_dim" value="campaign" checked /> 活动（campaign）</label>
-                  <label><input type="checkbox" name="dsl_dim" value="attribution" checked /> 归因类型（attribution）</label>
-                  <label><input type="checkbox" name="dsl_dim" value="event_type" checked /> 事件类型（event_type）</label>
-                </fieldset>
-
-                <div class="rule-json-actions">
-                  <button type="button" id="buildDslJsonBtn" class="btn btn-ghost">根据表单生成 JSON</button>
-                  <button type="button" id="loadDslFromJsonBtn" class="btn btn-ghost">根据 JSON 回填表单</button>
-                </div>
-
-                <textarea name="rule_json" rows="10"></textarea>
-                <button class="btn btn-primary" type="submit">保存规则</button>
-              </form>
-
-              <div>
-                <div class="card-head card-head-compact">
-                  <h4>已保存规则</h4>
-                  <p>支持启用/停用与回填编辑。</p>
-                </div>
-                <div id="rulesList" class="stack compact"></div>
+                <p id="bitableSchedulePrimaryNote">每日 10:05（北京时间）自动执行。系统会在同一飞书多维表格中创建或复用一张固定的「投放执行表」，并覆盖为最新执行清单。</p>
+                <p>表内只保留对实际投放有用的字段，不再显示技术字段。同一天再次导出时，系统会尽量保留你已填写的“是否采纳”和“人工批复”。</p>
               </div>
             </div>
           </section>
@@ -412,9 +195,9 @@
                 <span class="field-label">等级</span>
                 <select name="severity">
                   <option value="">全部等级</option>
-                  <option value="P0">P0</option>
-                  <option value="P1">P1</option>
-                  <option value="P2">P2</option>
+                  <option value="P0">P0（立即处理）</option>
+                  <option value="P1">P1（今日处理）</option>
+                  <option value="P2">P2（持续关注）</option>
                 </select>
               </label>
               <div class="filter-actions">
@@ -458,26 +241,26 @@
                   <option value="">全部平台</option>
                   <option value="ios">iOS</option>
                   <option value="android">Android</option>
-                  <option value="unknown">未知（unknown）</option>
+                  <option value="unknown">未知</option>
                 </select>
               </label>
                 <label class="filter-field">
                   <span class="field-label">数据源</span>
                   <select name="source" id="metricsSourceSelect">
-                  <option value="push">Push（小时）</option>
-                  <option value="pull" selected>Pull（日）</option>
+                  <option value="push">实时回传（小时）</option>
+                  <option value="pull" selected>广告日报（日）</option>
                   </select>
                 </label>
               <label class="filter-field">
                 <span class="field-label">指标</span>
                 <select name="metric" id="metricsMetricSelect">
-                  <option value="revenue">收入（revenue）</option>
-                  <option value="event_count">事件数（event_count）</option>
-                  <option value="purchase_count">购买数（purchase_count）</option>
+                  <option value="revenue">收入金额</option>
+                  <option value="event_count">事件次数</option>
+                  <option value="purchase_count">购买次数</option>
                 </select>
               </label>
               <label class="filter-field">
-                <span class="field-label">事件名（event_name，可选）</span>
+                <span class="field-label">事件名称（可选）</span>
                 <input name="eventName" id="metricsEventNameInput" />
               </label>
               <div class="filter-actions">
@@ -497,7 +280,7 @@
               <div class="card-head-row">
                 <div>
                   <h3>关键词生命周期</h3>
-                  <p>按阶段跟踪通用投放项代理（基于 campaign 解析），不包含 ASA 真实关键词。</p>
+                  <p>按阶段跟踪通用投放项表现，帮助判断关键词处于新建、放量还是需要暂停。</p>
                 </div>
                 <button id="keywordRecomputeBtn" class="btn btn-primary" type="button">手动重算</button>
               </div>
@@ -514,7 +297,7 @@
                   <option value="">全部平台</option>
                   <option value="ios">iOS</option>
                   <option value="android">Android</option>
-                  <option value="unknown">未知（unknown）</option>
+                  <option value="unknown">未知</option>
                 </select>
               </label>
               <label class="filter-field">
@@ -538,7 +321,7 @@
                 </select>
               </label>
               <label class="filter-field">
-                <span class="field-label">关键词（keyword）</span>
+                <span class="field-label">关键词</span>
                 <input name="keyword" id="keywordSearchInput" />
               </label>
               <div class="filter-actions">
@@ -551,15 +334,15 @@
                 <thead>
                   <tr>
                     <th>产品视图</th>
-                    <th>应用 Key（app_key）</th>
-                    <th>平台（platform）</th>
-                    <th>关键词（keyword）</th>
-                    <th>匹配类型（match_type）</th>
-                    <th>阶段（stage）</th>
-                    <th>评分（stage_score）</th>
-                    <th>最新安装（last_installs）</th>
-                    <th>最新 CPI（last_cpi）</th>
-                    <th>最近更新（updated_at）</th>
+                    <th>应用标识</th>
+                    <th>平台</th>
+                    <th>关键词</th>
+                    <th>匹配方式</th>
+                    <th>当前阶段</th>
+                    <th>阶段评分</th>
+                    <th>最近安装量</th>
+                    <th>最近每次安装成本</th>
+                    <th>最近更新时间</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -585,14 +368,14 @@
                         id="budgetRuleHelpBtn"
                         class="help-icon"
                         type="button"
-                        aria-label="查看 eCPI 分级规则说明"
+                        aria-label="查看每次安装成本分级规则说明"
                       >
                         ?
                       </button>
                       <div id="budgetRuleHelpPanel" class="help-popover help-popover-floating">
-                        <h4>eCPI 分级规则</h4>
+                        <h4>每次安装成本（eCPI）分级规则</h4>
                         <ul class="simple-list">
-                          <li>核心口径：优先使用 AppsFlyer Pull 返回的官方 eCPI（average_ecpi）。</li>
+                          <li>核心口径：优先使用 AppsFlyer 广告日报返回的官方 eCPI。</li>
                           <li>低量级：最近 3 天激活量 &lt; 15，默认观察，不自动调价。</li>
                           <li>中量级：最近 3 天激活量 15-30。eCPI ≤ 目标 90% 时上调 20%，≥ 目标 115% 时下调 20%。</li>
                           <li>高量级：最近 3 天激活量 &gt; 30。eCPI ≤ 目标时上调 20%，≥ 目标 120% 时下调 20%。</li>
@@ -602,7 +385,19 @@
                       </div>
                     </div>
                   </div>
-                  <p>半自动预算调控建议（仅建议，不自动执行）。</p>
+                  <p>
+                    这是给调控师参考的预算动作建议。系统不会自动执行，需要人工确认后再处理。
+                    <span class="term-with-help">
+                      <span>每次安装成本（eCPI）</span>
+                      <span class="help-group">
+                        <button class="help-icon help-icon-inline" type="button" aria-label="查看每次安装成本说明">?</button>
+                        <div class="help-popover help-popover-floating help-popover-compact">
+                          <h4>每次安装成本（eCPI）</h4>
+                          <p>表示平均花多少钱带来一个安装。越低通常代表买量效率越好，越高代表成本偏贵。</p>
+                        </div>
+                      </span>
+                    </span>
+                  </p>
                 </div>
                 <div class="budget-recompute-panel">
                   <button id="budgetRecomputeBtn" class="btn btn-primary" type="button">生成建议</button>
@@ -630,7 +425,7 @@
                   <option value="">全部平台</option>
                   <option value="ios">iOS</option>
                   <option value="android">Android</option>
-                  <option value="unknown">未知（unknown）</option>
+                  <option value="unknown">未知</option>
                 </select>
               </label>
               <label class="filter-field">
@@ -660,20 +455,20 @@
               <table class="data-table">
                 <thead>
                   <tr>
-                    <th>日期（date）</th>
+                    <th>日期</th>
                     <th>产品视图</th>
-                    <th>应用 Key（app_key）</th>
-                    <th>平台（platform）</th>
-                    <th>媒体源（media_source）</th>
-                    <th>关键词（keyword）</th>
+                    <th>应用标识</th>
+                    <th>平台</th>
+                    <th>媒体源</th>
+                    <th>关键词</th>
                     <th>主指标</th>
                     <th>量级</th>
-                    <th>当前 eCPI（AF）</th>
-                    <th>目标 eCPI</th>
-                    <th>动作（action）</th>
-                    <th>调整比例（change_ratio）</th>
-                    <th>置信度（confidence）</th>
-                    <th>状态（status）</th>
+                    <th>当前表现</th>
+                    <th>目标表现</th>
+                    <th>建议动作</th>
+                    <th>调整比例</th>
+                    <th>可信度</th>
+                    <th>处理状态</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -693,7 +488,7 @@
               <div class="card-head-row">
                 <div>
                   <h3>ASA 关键词管理</h3>
-                  <p>仅服务 Apple Search Ads。关键词、安装与收入来自 Raw Data；关键词级成本直接来自 AppsFlyer Master API。</p>
+                  <p>这里用于查看和处理 Apple Search Ads 的关键词表现。关键指标会帮助你判断该放量、下调还是继续观察。</p>
                 </div>
                 <div class="inline-actions">
                   <button id="asaKeywordRecomputeBtn" class="btn btn-primary" type="button">手动重算</button>
@@ -706,7 +501,42 @@
                 <div class="card-head card-head-compact asa-zone-head">
                   <div>
                     <h4>数据检索</h4>
-                    <p>先筛选关键词数据，再查看 ASA 成本、eCPI、CPP 与 D7 ROAS 表现。</p>
+                    <p>
+                      先筛选关键词数据，再查看成本、
+                      <span class="term-with-help">
+                        <span>每次安装成本（eCPI）</span>
+                        <span class="help-group">
+                          <button class="help-icon help-icon-inline" type="button" aria-label="查看 eCPI 说明">?</button>
+                          <div class="help-popover help-popover-floating help-popover-compact">
+                            <h4>每次安装成本（eCPI）</h4>
+                            <p>表示平均花多少钱带来一个安装。越低通常代表扩量更健康。</p>
+                          </div>
+                        </span>
+                      </span>
+                      、
+                      <span class="term-with-help">
+                        <span>每次购买成本（CPP）</span>
+                        <span class="help-group">
+                          <button class="help-icon help-icon-inline" type="button" aria-label="查看 CPP 说明">?</button>
+                          <div class="help-popover help-popover-floating help-popover-compact">
+                            <h4>每次购买成本（CPP）</h4>
+                            <p>表示平均花多少钱带来一次购买。越低通常代表更容易买到有价值的用户。</p>
+                          </div>
+                        </span>
+                      </span>
+                      和
+                      <span class="term-with-help">
+                        <span>7 日回收率（D7 ROAS）</span>
+                        <span class="help-group">
+                          <button class="help-icon help-icon-inline" type="button" aria-label="查看 D7 ROAS 说明">?</button>
+                          <div class="help-popover help-popover-floating help-popover-compact">
+                            <h4>7 日回收率（D7 ROAS）</h4>
+                            <p>表示投放 7 天内回收了多少收入。越高通常代表回本表现越好。</p>
+                          </div>
+                        </span>
+                      </span>
+                      。
+                    </p>
                   </div>
                 </div>
 
@@ -740,11 +570,11 @@
                     <input type="date" name="to" id="asaKeywordToInput" />
                   </label>
                   <label class="filter-field asa-filter-field asa-filter-search">
-                    <span class="field-label">关键词（keyword）</span>
+                    <span class="field-label">关键词</span>
                     <input name="keyword" id="asaKeywordSearchInput" />
                   </label>
                   <label class="filter-field asa-filter-field asa-filter-search">
-                    <span class="field-label">Campaign 搜索</span>
+                    <span class="field-label">广告系列搜索</span>
                     <input name="campaign" id="asaKeywordCampaignInput" />
                   </label>
                   <div class="filter-actions asa-filter-actions">
@@ -784,20 +614,20 @@
                     <thead>
                       <tr>
                         <th>产品视图</th>
-                        <th>应用 Key（app_key）</th>
-                        <th>平台（platform）</th>
-                        <th>关键词（keyword）</th>
-                        <th>Campaign</th>
-                        <th>广告组（adset）</th>
+                        <th>应用标识</th>
+                        <th>平台</th>
+                        <th>关键词</th>
+                        <th>广告系列</th>
+                        <th>广告组</th>
                         <th>安装量</th>
                         <th>成本</th>
-                        <th>Purchase</th>
+                        <th>购买次数</th>
                         <th>eCPI</th>
                         <th>CPP</th>
                         <th>D7 ROAS</th>
                         <th>阶段</th>
                         <th>建议动作</th>
-                        <th>推送状态</th>
+                        <th>简报状态</th>
                         <th>操作</th>
                       </tr>
                     </thead>
@@ -824,7 +654,7 @@
                   <div class="stack asa-subpanel">
                     <div class="card-head card-head-compact">
                       <h5>阶段配置</h5>
-                      <p>按应用与平台手动指定上升期 / 稳定期评价标准。</p>
+                      <p>按应用与平台指定当前属于上升期还是稳定期，便于系统给出更贴近实际的建议。</p>
                     </div>
                     <form id="asaStageForm" class="inline-form asa-stage-form">
                       <label class="filter-field">
@@ -853,8 +683,8 @@
 
                   <div class="stack asa-subpanel">
                     <div class="card-head card-head-compact">
-                      <h5>ASA 推送</h5>
-                      <p>独立预览与发送 ASA 简报，建议操作已并入简报，不混入现有通用日报。</p>
+                      <h5>ASA 简报</h5>
+                      <p>可单独预览和发送 ASA 简报，建议动作会随简报一起发送，不会混入通用日报。</p>
                     </div>
                     <form id="asaBriefForm" class="asa-brief-form">
                       <div class="asa-brief-controls">
@@ -880,7 +710,7 @@
                         <button id="sendAsaBriefBtn" class="btn btn-primary" type="button">发送 ASA 简报</button>
                       </div>
                     </form>
-                    <div id="asaBriefStatus" class="hint">默认按独立 ASA route 推送；建议操作已包含在简报内，未命中 route 时回退应用级或全局 Feishu 配置。</div>
+                    <div id="asaBriefStatus" class="hint">默认使用 ASA 简报专用发送配置；如果没有命中专用配置，会回退到应用级或全局飞书配置。</div>
                   </div>
                 </div>
               </section>
@@ -891,10 +721,10 @@
             <div class="card-head">
               <div class="card-head-row">
                 <div>
-                  <h3>Pull 明细记录</h3>
-                  <p>展示每条 Pull 入库结果，可按条件筛选并查看原始 JSON。</p>
+                  <h3>广告日报明细</h3>
+                  <p>展示每条广告日报入库结果，可按条件筛选并查看技术详情。</p>
                 </div>
-                <button id="triggerPullBtn" class="btn btn-primary" type="button">手动读取</button>
+                <button id="triggerPullBtn" class="btn btn-primary" type="button">手动拉取数据</button>
               </div>
             </div>
 
@@ -909,7 +739,7 @@
                   <option value="">全部平台</option>
                   <option value="ios">iOS</option>
                   <option value="android">Android</option>
-                  <option value="unknown">未知（unknown）</option>
+                  <option value="unknown">未知</option>
                 </select>
               </label>
               <label class="filter-field">
@@ -937,17 +767,17 @@
               <table class="data-table">
                 <thead>
                   <tr>
-                    <th>入库时间（ingest_time，美国时间）</th>
-                    <th>日期（date）</th>
+                    <th>入库时间（美国时间）</th>
+                    <th>日期</th>
                     <th>产品视图</th>
-                    <th>应用 Key（app_key）</th>
-                    <th>平台（platform）</th>
-                    <th>媒体源（media_source）</th>
-                    <th>活动（campaign）</th>
-                    <th>安装量（installs）</th>
-                    <th>点击量（clicks）</th>
-                    <th>成本（total_cost）</th>
-                    <th>来源报表（source_report）</th>
+                    <th>应用标识</th>
+                    <th>平台</th>
+                    <th>媒体源</th>
+                    <th>广告系列</th>
+                    <th>安装量</th>
+                    <th>点击量</th>
+                    <th>成本</th>
+                    <th>来源报表</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -964,29 +794,29 @@
 
           <section id="section-operation-logs" class="section-panel" style="--delay: 400ms">
             <div class="card-head">
-              <h3>操作日志</h3>
-              <p>记录手动操作与关键定时任务执行结果，便于追溯每次变更与运行状态。</p>
+              <h3>操作记录</h3>
+              <p>记录手动操作与关键任务结果，帮助你确认刚才做的动作是否已经完成。</p>
             </div>
 
             <form id="operationLogsFilter" class="inline-form operation-logs-form">
               <label class="filter-field">
-                <span class="field-label">来源</span>
+                <span class="field-label">记录来源</span>
                 <select id="operationLogsSourceSelect" name="source">
                   <option value="">全部来源</option>
-                  <option value="api.apps">api.apps</option>
-                  <option value="api.rules">api.rules</option>
-                  <option value="api.pull_records">api.pull_records</option>
-                  <option value="api.keywords">api.keywords</option>
-                  <option value="api.budget">api.budget</option>
-                  <option value="api.daily_brief">api.daily_brief</option>
-                  <option value="api.bitable_export">api.bitable_export</option>
-                  <option value="worker.aggregator">worker.aggregator</option>
-                  <option value="worker.detector">worker.detector</option>
-                  <option value="worker.puller">worker.puller</option>
-                  <option value="worker.keyword_engine">worker.keyword_engine</option>
-                  <option value="worker.budget_advisor">worker.budget_advisor</option>
-                  <option value="worker.daily_brief">worker.daily_brief</option>
-                  <option value="worker.bitable_export">worker.bitable_export</option>
+                  <option value="api.apps">应用设置</option>
+                  <option value="api.rules">规则设置</option>
+                  <option value="api.pull_records">广告日报明细</option>
+                  <option value="api.keywords">关键词生命周期</option>
+                  <option value="api.budget">预算建议</option>
+                  <option value="api.daily_brief">每日简报</option>
+                  <option value="api.bitable_export">投放执行表</option>
+                  <option value="worker.aggregator">小时聚合任务</option>
+                  <option value="worker.detector">告警检测任务</option>
+                  <option value="worker.puller">广告日报抓取任务</option>
+                  <option value="worker.keyword_engine">关键词分析任务</option>
+                  <option value="worker.budget_advisor">预算建议任务</option>
+                  <option value="worker.daily_brief">每日报告任务</option>
+                  <option value="worker.bitable_export">执行表同步任务</option>
                 </select>
               </label>
               <label class="filter-field">
@@ -1009,7 +839,7 @@
                 </select>
               </label>
               <div class="filter-actions">
-                <button class="btn btn-secondary" type="submit">查询日志</button>
+                <button class="btn btn-secondary" type="submit">查询记录</button>
               </div>
             </form>
 
@@ -1018,16 +848,247 @@
                 <thead>
                   <tr>
                     <th>时间</th>
-                    <th>来源</th>
-                    <th>动作</th>
-                    <th>目标</th>
+                    <th>事项</th>
                     <th>状态</th>
                     <th>摘要</th>
-                    <th>详情</th>
+                    <th>技术详情</th>
                   </tr>
                 </thead>
                 <tbody id="operationLogsTableBody"></tbody>
               </table>
+            </div>
+          </section>
+
+          <section id="section-apps" class="section-panel" style="--delay: 450ms">
+            <div class="card-head">
+              <h3>应用设置（高级）</h3>
+              <p>管理应用标识、数据抓取信息和通知配置。这里更适合管理员或熟悉系统的人使用。</p>
+            </div>
+
+            <form id="appForm" class="app-config-form">
+              <div class="form-grid app-fields-grid">
+                <label class="field">
+                  <span class="field-label">应用名称（可选）</span>
+                  <input name="display_name" />
+                </label>
+                <label class="field">
+                  <span class="field-label">iOS 展示名称（可选）</span>
+                  <input name="ios_display_name" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Android 展示名称（可选）</span>
+                  <input name="android_display_name" />
+                </label>
+                <label class="field">
+                  <span class="field-label">应用标识</span>
+                  <input name="app_key" required />
+                </label>
+                <label class="field">
+                  <span class="field-label">iOS 应用 ID</span>
+                  <input name="ios_pull_app_id" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Android 应用 ID</span>
+                  <input name="android_pull_app_id" />
+                </label>
+                <label class="field">
+                  <span class="field-label">兼容应用 ID（可选）</span>
+                  <input name="pull_app_id" />
+                </label>
+                <label class="field">
+                  <span class="field-label">数据集名称</span>
+                  <input name="dataset" required value="ods_events_device_detail" />
+                </label>
+                <label class="field">
+                  <span class="field-label">时区</span>
+                  <input name="timezone" required value="Asia/Shanghai" />
+                </label>
+                <label class="field token-field">
+                  <span class="field-label">实时回传鉴权口令</span>
+                  <div class="field-control with-action">
+                    <input name="push_auth_token" />
+                    <button type="button" id="generateTokenBtn" class="btn btn-ghost btn-inline-action">生成</button>
+                  </div>
+                </label>
+              </div>
+
+              <section id="appFeishuCard" class="collapse-card">
+                <div class="feature-toggle-row">
+                  <div>
+                    <h4>应用级飞书配置</h4>
+                    <p class="hint">默认关闭。未启用或字段留空时，将自动使用系统默认的全局飞书配置。</p>
+                  </div>
+                  <label class="toggle-switch" for="appFeishuEnabled">
+                    <input id="appFeishuEnabled" type="checkbox" />
+                    <span class="toggle-slider" aria-hidden="true"></span>
+                    <span class="toggle-text">启用应用级飞书配置</span>
+                  </label>
+                </div>
+                <div id="appFeishuSummary" class="collapse-summary hint"></div>
+                <div id="appFeishuBody" class="collapse-card-body">
+                  <div class="form-grid app-feishu-grid">
+                    <label class="field">
+                      <span class="field-label">飞书应用 ID</span>
+                      <input name="notify_feishu_app_id" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">飞书应用密钥</span>
+                      <input name="notify_feishu_app_secret" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">飞书群 ID</span>
+                      <input name="notify_feishu_chat_id" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">备用通知地址（可选）</span>
+                      <input name="notify_webhook_url" />
+                    </label>
+                  </div>
+                </div>
+              </section>
+
+              <div class="actions">
+                <button id="appSubmitBtn" class="btn btn-primary" type="submit">保存应用设置</button>
+                <button id="appResetBtn" class="btn btn-ghost" type="button">新建 / 清空</button>
+              </div>
+            </form>
+
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>应用名称</th>
+                    <th>iOS 名称</th>
+                    <th>Android 名称</th>
+                    <th>应用标识</th>
+                    <th>iOS 应用 ID</th>
+                    <th>Android 应用 ID</th>
+                    <th>兼容应用 ID</th>
+                    <th>数据集名称</th>
+                    <th>时区</th>
+                    <th>通知配置</th>
+                    <th>更新时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="appsTableBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="section-rules" class="section-panel" style="--delay: 500ms">
+            <div class="card-head card-head-row">
+              <div>
+                <h3>告警规则（高级）</h3>
+                <p>这里用于维护异常判断规则。默认收起，避免干扰一线日常操作。</p>
+              </div>
+              <button id="toggleRulesSectionBtn" class="btn btn-secondary" type="button">展开规则设置</button>
+            </div>
+            <div id="rulesSectionSummary" class="hint">当前默认收起。需要编辑规则、启停规则或查看高级配置时再展开。</div>
+
+            <div id="rulesSectionBody" class="split-layout hidden">
+              <form id="ruleForm" class="stack">
+                <input type="hidden" name="id" />
+                <label>
+                  <span>应用标识</span>
+                  <input name="app_key" required />
+                </label>
+                <label>
+                  <span>规则名称</span>
+                  <input name="name" required />
+                </label>
+
+                <div class="dsl-grid">
+                  <label>
+                    <span>规则时区</span>
+                    <input name="dsl_timezone" value="Asia/Shanghai" />
+                  </label>
+                  <label>
+                    <span>静默分钟</span>
+                    <input type="number" name="dsl_silence_minutes" value="30" min="1" />
+                  </label>
+                  <label>
+                    <span>监测指标</span>
+                    <select name="dsl_metric">
+                      <option value="revenue">收入金额</option>
+                      <option value="event_count">事件次数</option>
+                      <option value="purchase_count">购买次数</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>事件名称（仅事件次数时需要）</span>
+                    <input name="dsl_event_name" />
+                  </label>
+                  <label>
+                    <span>窗口</span>
+                    <select name="dsl_window">
+                      <option value="last_1h">最近 1 小时</option>
+                      <option value="last_2h">最近 2 小时</option>
+                      <option value="last_3h">最近 3 小时</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>对比基线</span>
+                    <select name="dsl_baseline">
+                      <option value="avg_7d_same_hour">近 7 天同小时平均值</option>
+                      <option value="median_14d_same_hour">近 14 天同小时中位数</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>异常上升阈值</span>
+                    <input type="number" name="dsl_up_ratio" value="2" min="0" step="0.1" />
+                  </label>
+                  <label>
+                    <span>异常下降阈值</span>
+                    <input type="number" name="dsl_down_ratio" value="0.5" min="0" step="0.1" />
+                  </label>
+                  <label>
+                    <span>最小触发差值</span>
+                    <input type="number" name="dsl_min_abs_delta" value="50" min="0" step="1" />
+                  </label>
+                  <label>
+                    <span>上升等级</span>
+                    <select name="dsl_sev_spike">
+                      <option value="P0">P0（立即处理）</option>
+                      <option value="P1" selected>P1（今日处理）</option>
+                      <option value="P2">P2（持续关注）</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>下降等级</span>
+                    <select name="dsl_sev_drop">
+                      <option value="P0" selected>P0（立即处理）</option>
+                      <option value="P1">P1（今日处理）</option>
+                      <option value="P2">P2（持续关注）</option>
+                    </select>
+                  </label>
+                </div>
+
+                <fieldset class="dim-group">
+                  <legend>拆分查看维度</legend>
+                  <label><input type="checkbox" name="dsl_dim" value="media_source" checked /> 媒体源</label>
+                  <label><input type="checkbox" name="dsl_dim" value="country" checked /> 国家</label>
+                  <label><input type="checkbox" name="dsl_dim" value="campaign" checked /> 广告系列</label>
+                  <label><input type="checkbox" name="dsl_dim" value="attribution" checked /> 归因类型</label>
+                  <label><input type="checkbox" name="dsl_dim" value="event_type" checked /> 事件类型</label>
+                </fieldset>
+
+                <div class="rule-json-actions">
+                  <button type="button" id="buildDslJsonBtn" class="btn btn-ghost">根据表单生成规则配置</button>
+                  <button type="button" id="loadDslFromJsonBtn" class="btn btn-ghost">根据规则配置回填表单</button>
+                </div>
+
+                <textarea name="rule_json" rows="10"></textarea>
+                <button class="btn btn-primary" type="submit">保存规则</button>
+              </form>
+
+              <div>
+                <div class="card-head card-head-compact">
+                  <h4>已保存规则</h4>
+                  <p>支持启用、停用和回填编辑。</p>
+                </div>
+                <div id="rulesList" class="stack compact"></div>
+              </div>
             </div>
           </section>
         </main>
@@ -1048,7 +1109,7 @@
         </div>
         <div id="keywordTrendLegend" class="hint"></div>
         <details>
-          <summary>原始趋势 JSON</summary>
+          <summary>技术详情</summary>
           <pre id="keywordTrendRaw"></pre>
         </details>
       </div>
@@ -1069,7 +1130,10 @@
           <div id="asaKeywordTooltip" class="chart-tooltip hidden"></div>
         </div>
         <div id="asaKeywordTrendLegend" class="hint"></div>
-        <pre id="asaKeywordTrendRaw" class="pull-result-pre"></pre>
+        <details>
+          <summary>技术详情</summary>
+          <pre id="asaKeywordTrendRaw" class="pull-result-pre"></pre>
+        </details>
       </div>
     </aside>
 
@@ -1097,17 +1161,17 @@
           </table>
         </div>
         <details>
-          <summary>原始贡献 JSON</summary>
+          <summary>技术详情</summary>
           <pre id="alertContribRaw"></pre>
         </details>
       </div>
     </aside>
 
-    <div id="pullResultModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="手动读取结果">
+    <div id="pullResultModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="手动拉取结果">
       <div class="modal-backdrop" id="pullResultModalBackdrop"></div>
       <div class="modal-panel">
         <div class="modal-head">
-          <h3>读取详情</h3>
+          <h3>拉取结果</h3>
           <button id="pullResultModalCloseBtn" class="btn btn-ghost" type="button">关闭</button>
         </div>
         <div id="pullResultSummary" class="hint"></div>
@@ -1127,7 +1191,7 @@
           <p><strong>产品视图：</strong><span id="budgetDetailDisplayName">-</span></p>
           <p><strong>媒体源：</strong><span id="budgetDetailMediaSource">-</span></p>
           <p><strong>主指标：</strong><span id="budgetDetailPrimaryMetric">-</span></p>
-          <p><strong>运行模式：</strong><span id="budgetDetailMetricMode">-</span></p>
+          <p><strong>建议模式：</strong><span id="budgetDetailMetricMode">-</span></p>
           <p><strong>量级：</strong><span id="budgetDetailTier">-</span></p>
           <p><strong>当前 eCPI：</strong><span id="budgetDetailEcpi">-</span></p>
           <p><strong>目标 eCPI：</strong><span id="budgetDetailTargetEcpi">-</span></p>
@@ -1138,12 +1202,12 @@
           <p><strong>调整比例：</strong><span id="budgetDetailChangeRatio">-</span></p>
         </div>
         <p><strong>风险等级：</strong><span id="budgetDetailRisk">-</span></p>
-        <h4>检查清单 checklist</h4>
+        <h4>处理前确认</h4>
         <ul id="budgetDetailChecklist" class="simple-list"></ul>
-        <h4>解释要点 explanation_points</h4>
+        <h4>建议原因</h4>
         <ul id="budgetDetailPoints" class="simple-list"></ul>
         <details>
-          <summary>原始摘要 JSON</summary>
+          <summary>技术详情</summary>
           <pre id="budgetDetailRaw"></pre>
         </details>
       </div>
@@ -1160,10 +1224,10 @@
         <section id="dailyBriefPreview" class="daily-brief-preview">
           <div class="daily-brief-hero">
             <div>
-              <p class="daily-brief-kicker">Feishu 卡片预览</p>
+              <p class="daily-brief-kicker">飞书消息预览</p>
               <h4 id="dailyBriefHeroTitle">日报标题</h4>
             </div>
-            <div id="dailyBriefRenderBadge" class="badge badge-open">interactive</div>
+            <div id="dailyBriefRenderBadge" class="badge badge-open">已生成卡片</div>
           </div>
 
           <div id="dailyBriefSummaryGrid" class="daily-brief-summary-grid"></div>
@@ -1205,7 +1269,7 @@
           </section>
 
           <details class="daily-brief-raw">
-            <summary>原始飞书卡片 JSON</summary>
+            <summary>技术详情</summary>
             <pre id="dailyBriefRaw" class="pull-result-pre"></pre>
           </details>
         </section>
@@ -1235,7 +1299,7 @@
         </section>
         <section class="section-panel section-panel-inner">
           <div class="card-head card-head-compact">
-            <h4>原始卡片 Payload</h4>
+            <h4>技术详情</h4>
           </div>
           <pre id="asaBriefRaw" class="pull-result-pre"></pre>
         </section>

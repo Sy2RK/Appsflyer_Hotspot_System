@@ -305,6 +305,7 @@ CREATE TABLE IF NOT EXISTS bitable_export_record_refs (
   sync_key TEXT NOT NULL DEFAULT '',
   record_id TEXT NOT NULL,
   validation_result TEXT,
+  is_adopted BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (source_type, record_id)
@@ -312,6 +313,9 @@ CREATE TABLE IF NOT EXISTS bitable_export_record_refs (
 
 CREATE INDEX IF NOT EXISTS idx_bitable_export_record_refs_lookup
   ON bitable_export_record_refs (source_type, report_date, created_at DESC);
+
+ALTER TABLE bitable_export_record_refs
+  ADD COLUMN IF NOT EXISTS is_adopted BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS runtime_schedule_configs (
   singleton_key TEXT PRIMARY KEY,

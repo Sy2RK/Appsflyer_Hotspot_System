@@ -1,7 +1,10 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import {
   queryBudgetRecommendations,
-  setBudgetRecommendationStatus
+  releaseJobLock,
+  setBudgetRecommendationStatus,
+  tryAcquireJobLock
 } from '@shared/utils/repositories.js';
 import { runBudgetAdvisorCycle, BudgetAdvisorProgressSnapshot } from '@shared/utils/budgetAdvisor.js';
 import { logger } from '../../common/logger/logger.js';
@@ -9,7 +12,8 @@ import { env } from '@shared/config/env.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 
 const router = Router();
-let recomputeRunning = false;
+const MANUAL_BUDGET_RECOMPUTE_LOCK = 'api:budget:recompute';
+const MANUAL_BUDGET_RECOMPUTE_LOCK_TTL_MS = 60 * 60 * 1000;
 type BudgetRecomputeStatus = BudgetAdvisorProgressSnapshot & {
   running: boolean;
   finished_at: string | null;
@@ -155,11 +159,17 @@ router.post('/api/budget/recommendations/:id/mark-applied', async (req, res, nex
 });
 
 router.post('/api/budget/recommendations/recompute', async (req, res, next) => {
+  let lockOwnerId = '';
   try {
-    if (recomputeRunning) {
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(
+      MANUAL_BUDGET_RECOMPUTE_LOCK,
+      lockOwnerId,
+      MANUAL_BUDGET_RECOMPUTE_LOCK_TTL_MS
+    );
+    if (!lockAcquired) {
       return res.status(409).json({ ok: false, error: 'budget_recompute_running' });
     }
-    recomputeRunning = true;
     recomputeStatus = {
       running: true,
       started_at: new Date().toISOString(),
@@ -235,7 +245,9 @@ router.post('/api/budget/recommendations/recompute', async (req, res, next) => {
     );
     return next(error);
   } finally {
-    recomputeRunning = false;
+    if (lockOwnerId) {
+      await releaseJobLock(MANUAL_BUDGET_RECOMPUTE_LOCK, lockOwnerId);
+    }
   }
 });
 

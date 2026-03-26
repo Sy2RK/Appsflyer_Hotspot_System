@@ -31,21 +31,22 @@ const state = {
   activeAsaKeywordDetail: null,
   appFeishuEnabled: false,
   dailyBriefMediaSources: [],
-  dailyBriefSelectedMediaSources: []
+  dailyBriefSelectedMediaSources: [],
+  rulesSectionExpanded: false
 };
 
 let budgetRecomputePollTimer = null;
 
 const PUSH_METRIC_OPTIONS = [
-  { value: 'revenue', label: '收入（revenue）' },
-  { value: 'event_count', label: '事件数（event_count）' },
-  { value: 'purchase_count', label: '购买数（purchase_count）' }
+  { value: 'revenue', label: '收入金额' },
+  { value: 'event_count', label: '事件次数' },
+  { value: 'purchase_count', label: '购买次数' }
 ];
 
 const PULL_METRIC_OPTIONS = [
-  { value: 'installs', label: '安装量（installs）' },
-  { value: 'clicks', label: '点击量（clicks）' },
-  { value: 'total_cost', label: '成本（total_cost）' }
+  { value: 'installs', label: '安装量' },
+  { value: 'clicks', label: '点击量' },
+  { value: 'total_cost', label: '花费金额' }
 ];
 
 const defaultRule = {
@@ -114,6 +115,9 @@ const el = {
   rulesList: document.getElementById('rulesList'),
   buildDslJsonBtn: document.getElementById('buildDslJsonBtn'),
   loadDslFromJsonBtn: document.getElementById('loadDslFromJsonBtn'),
+  toggleRulesSectionBtn: document.getElementById('toggleRulesSectionBtn'),
+  rulesSectionBody: document.getElementById('rulesSectionBody'),
+  rulesSectionSummary: document.getElementById('rulesSectionSummary'),
 
   alertsFilter: document.getElementById('alertsFilter'),
   alertsAppSelect: document.getElementById('alertsAppSelect'),
@@ -399,8 +403,8 @@ function asNumber(value, fallback = 0) {
 }
 
 function statusLabel(status) {
-  if (status === 'open') return '未恢复（open）';
-  if (status === 'resolved') return '已恢复（resolved）';
+  if (status === 'open') return '未恢复';
+  if (status === 'resolved') return '已恢复';
   if (status === 'ok') return '成功';
   if (status === 'failed') return '失败';
   if (status === 'skipped') return '已跳过';
@@ -412,30 +416,35 @@ function statusLabel(status) {
 }
 
 function metricLabel(metric) {
-  if (metric === 'revenue') return '收入（revenue）';
-  if (metric === 'event_count') return '事件数（event_count）';
-  if (metric === 'purchase_count') return '购买数（purchase_count）';
-  if (metric === 'installs') return '安装量（installs）';
-  if (metric === 'clicks') return '点击量（clicks）';
-  if (metric === 'total_cost') return '成本（total_cost）';
+  if (metric === 'revenue') return '收入金额';
+  if (metric === 'event_count') return '事件次数';
+  if (metric === 'purchase_count') return '购买次数';
+  if (metric === 'installs') return '安装量';
+  if (metric === 'clicks') return '点击量';
+  if (metric === 'total_cost') return '花费金额';
   return metric || '-';
 }
 
 function platformLabel(platform) {
   if (platform === 'ios') return 'iOS';
   if (platform === 'android') return 'Android';
-  if (platform === 'unknown') return '未知（unknown）';
+  if (platform === 'unknown') return '未知';
   return platform || '-';
 }
 
+function timezoneLabel(timezone) {
+  if (!timezone || timezone === 'Asia/Shanghai') return '北京时间（UTC+8）';
+  return timezone;
+}
+
 function primaryMetricLabel(metric) {
-  if (metric === 'roas') return 'ROAS（roas）';
-  return 'eCPI（ecpi）';
+  if (metric === 'roas') return '回收率（ROAS）';
+  return '每次安装成本（eCPI）';
 }
 
 function metricModeLabel(mode) {
-  if (mode === 'roas_pending_revenue') return 'ROAS 待收入数据（roas_pending_revenue）';
-  return '生效中（active）';
+  if (mode === 'roas_pending_revenue') return '收入数据待补齐';
+  return '当前生效';
 }
 
 function asaStageLabel(stage) {
@@ -461,7 +470,7 @@ function asaPrimaryMetricLabel(metric) {
 }
 
 function matchTypeLabel(matchType) {
-  if (matchType === 'unknown') return '未知（unknown）';
+  if (matchType === 'unknown') return '未知';
   return matchType || '-';
 }
 
@@ -479,11 +488,6 @@ function appConfigOf(appKey) {
 
 function productViewName(appKey, platform) {
   const normalizedPlatform = String(platform || '').trim().toLowerCase();
-  if (appKey === 'ai-seek') {
-    if (normalizedPlatform === 'ios') return 'Novix';
-    if (normalizedPlatform === 'android') return 'AI Seek';
-  }
-
   const app = appConfigOf(appKey);
   if (!app) {
     return String(appKey || '').replaceAll('-', ' ').trim();
@@ -522,10 +526,10 @@ function actionLabel(action) {
 
 function budgetStatusLabel(status) {
   const mapping = {
-    pending: '待处理（pending）',
-    applied: '已执行（applied）',
-    rejected: '已拒绝（rejected）',
-    expired: '已过期（expired）'
+    pending: '待处理',
+    applied: '已执行',
+    rejected: '不执行',
+    expired: '已过期'
   };
   return mapping[status] || status || '-';
 }
@@ -547,6 +551,51 @@ function operationStatusLabel(status) {
     info: '信息'
   };
   return mapping[status] || status || '-';
+}
+
+function severityLabel(severity) {
+  if (severity === 'P0') return 'P0（立即处理）';
+  if (severity === 'P1') return 'P1（今日处理）';
+  if (severity === 'P2') return 'P2（持续关注）';
+  return severity || '-';
+}
+
+function operationSourceLabel(source) {
+  const mapping = {
+    'api.apps': '应用设置',
+    'api.rules': '规则设置',
+    'api.pull_records': '广告日报明细',
+    'api.keywords': '关键词生命周期',
+    'api.budget': '预算建议',
+    'api.daily_brief': '每日简报',
+    'api.bitable_export': '投放执行表',
+    'worker.aggregator': '小时聚合任务',
+    'worker.detector': '告警检测任务',
+    'worker.puller': '广告日报抓取任务',
+    'worker.keyword_engine': '关键词分析任务',
+    'worker.budget_advisor': '预算建议任务',
+    'worker.daily_brief': '每日报告任务',
+    'worker.bitable_export': '执行表同步任务'
+  };
+  return mapping[source] || source || '-';
+}
+
+function operationActionLabel(action) {
+  const mapping = {
+    create: '新建',
+    update: '更新',
+    delete: '删除',
+    enable: '启用',
+    disable: '停用',
+    preview: '预览',
+    send: '发送',
+    run: '执行',
+    recompute: '重算',
+    save: '保存',
+    refresh: '刷新',
+    trigger: '手动触发'
+  };
+  return mapping[action] || action || '-';
 }
 
 function safeJsonParse(value, fallback = {}) {
@@ -582,8 +631,8 @@ function syncAppFeishuSection() {
   el.appFeishuEnabled.checked = state.appFeishuEnabled;
   el.appFeishuCard.classList.toggle('is-open', state.appFeishuEnabled);
   el.appFeishuSummary.textContent = state.appFeishuEnabled
-    ? '当前启用应用级 Feishu 配置。未填写的项不会覆盖现有值。'
-    : '当前使用全局配置（.env）。如需单独通知到某个机器人或群聊，再手动启用。';
+    ? '当前启用应用级飞书配置。未填写的项不会覆盖现有值。'
+    : '当前使用系统默认的全局飞书配置。如需单独通知到某个机器人或群聊，再手动启用。';
 
   const inputs = el.appFeishuBody.querySelectorAll('input, textarea, select');
   for (const input of inputs) {
@@ -665,6 +714,13 @@ function getHelpTrigger(group) {
   return trigger instanceof HTMLElement ? trigger : group;
 }
 
+function syncHelpTriggerExpandedState(group, expanded) {
+  const trigger = getHelpTrigger(group);
+  if (trigger instanceof HTMLElement) {
+    trigger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  }
+}
+
 function positionHelpPopover(group) {
   const popover = getHelpPopover(group);
   const trigger = getHelpTrigger(group);
@@ -716,6 +772,7 @@ function showHelpPopover(group) {
   clearHelpPopoverHideTimer(group);
   popover.classList.add('is-visible');
   activeHelpPopovers.add(group);
+  syncHelpTriggerExpandedState(group, true);
   positionHelpPopover(group);
 }
 
@@ -736,6 +793,24 @@ function hideHelpPopover(group) {
   popover.classList.remove('is-visible');
   popover.dataset.placement = '';
   activeHelpPopovers.delete(group);
+  syncHelpTriggerExpandedState(group, false);
+}
+
+function hideAllHelpPopovers() {
+  helpPopoverGroups.forEach((group) => hideHelpPopover(group));
+}
+
+function toggleHelpPopover(group) {
+  const popover = getHelpPopover(group);
+  if (!popover) {
+    return;
+  }
+  if (popover.classList.contains('is-visible')) {
+    hideHelpPopover(group);
+    return;
+  }
+  hideAllHelpPopovers();
+  showHelpPopover(group);
 }
 
 function refreshHelpPopoverPositions() {
@@ -774,11 +849,11 @@ function setMetricsMode(source) {
     .join('');
 
   if (isPull) {
-    el.metricsEventNameInput.value = 'Pull（每日）下不可用';
+    el.metricsEventNameInput.value = '广告日报（日级）下不可用';
     el.metricsEventNameInput.placeholder = '';
     el.metricsEventNameInput.disabled = true;
     el.metricsEventNameInput.setAttribute('aria-disabled-note', 'true');
-    el.metricsDesc.textContent = '查看最近 14 天 Pull 日级趋势。';
+    el.metricsDesc.textContent = '查看最近 14 天广告日报（日级）趋势。';
     if (submitBtn) {
       submitBtn.textContent = '加载最近 14 天';
     }
@@ -787,7 +862,7 @@ function setMetricsMode(source) {
     el.metricsEventNameInput.placeholder = '例如 purchase';
     el.metricsEventNameInput.disabled = false;
     el.metricsEventNameInput.removeAttribute('aria-disabled-note');
-    el.metricsDesc.textContent = '查看最近 72 小时趋势。';
+    el.metricsDesc.textContent = '查看最近 72 小时实时回传（小时级）趋势。';
     if (submitBtn) {
       submitBtn.textContent = '加载最近 72 小时';
     }
@@ -968,10 +1043,25 @@ function syncActiveSectionOnScroll() {
   });
 }
 
+function setRulesSectionExpanded(expanded) {
+  state.rulesSectionExpanded = expanded === true;
+  el.rulesSectionBody?.classList.toggle('hidden', !state.rulesSectionExpanded);
+  if (el.toggleRulesSectionBtn) {
+    el.toggleRulesSectionBtn.textContent = state.rulesSectionExpanded ? '收起规则设置' : '展开规则设置';
+  }
+  if (el.rulesSectionSummary) {
+    el.rulesSectionSummary.textContent = state.rulesSectionExpanded
+      ? '当前已展开。这里是高级设置区，适合修改规则、启停规则和检查配置。'
+      : '当前默认收起。需要编辑规则、启停规则或查看高级配置时再展开。';
+  }
+}
+
 function updateOverviewCards(refreshedAt = new Date()) {
-  el.ovApps.textContent = String(state.apps.length);
-  el.ovRules.textContent = String(state.ruleTotalCount);
-  el.ovOpenAlerts.textContent = String(state.openAlertTotalCount);
+  const pendingBudgetCount = (state.budgetRows || []).filter((row) => row.status === 'pending').length;
+  const pendingAsaCount = (state.asaKeywordRows || []).filter((row) => row.recommendation_status === 'pending').length;
+  el.ovApps.textContent = String(state.openAlertTotalCount);
+  el.ovRules.textContent = String(pendingBudgetCount);
+  el.ovOpenAlerts.textContent = String(pendingAsaCount);
   el.ovLatestRefresh.textContent = new Date(refreshedAt).toLocaleTimeString();
 }
 
@@ -1070,8 +1160,8 @@ function renderApps() {
         <td class="table-cell-mono">${escapeHtml(app.android_pull_app_id || '-')}</td>
         <td class="table-cell-mono">${escapeHtml(app.pull_app_id || '-')}</td>
         <td>${escapeHtml(app.dataset)}</td>
-        <td>${escapeHtml(app.timezone)}</td>
-        <td>${hasAppLevelFeishuConfig(app) ? '应用级配置' : '全局默认（.env）'}</td>
+        <td>${escapeHtml(timezoneLabel(app.timezone))}</td>
+        <td>${hasAppLevelFeishuConfig(app) ? '应用级飞书配置' : '全局默认配置'}</td>
         <td>${fmtTime(app.updated_at)}</td>
         <td>
           <div class="table-actions">
@@ -1102,7 +1192,7 @@ function resetAppEditor() {
   appField('notify_webhook_url').value = '';
   state.appFeishuEnabled = false;
   syncAppFeishuSection();
-  el.appSubmitBtn.textContent = '保存应用配置';
+  el.appSubmitBtn.textContent = '保存应用设置';
 }
 
 function applyAppToEditor(app) {
@@ -1123,7 +1213,7 @@ function applyAppToEditor(app) {
   appField('notify_webhook_url').value = app.notify_webhook_url || '';
   state.appFeishuEnabled = resolveInitialFeishuEnabled(app);
   syncAppFeishuSection();
-  el.appSubmitBtn.textContent = `更新应用配置: ${app.app_key}`;
+  el.appSubmitBtn.textContent = `更新应用设置：${app.app_key}`;
 }
 
 function syncAsaStageFormSelection() {
@@ -1153,7 +1243,7 @@ async function saveAppConfig(event) {
   const androidPullAppId = String(payload.android_pull_app_id || '').trim();
   const legacyPullAppId = String(payload.pull_app_id || '').trim();
   if (!iosPullAppId && !androidPullAppId && !legacyPullAppId) {
-    throw new Error('请至少填写一个 App ID（iOS / Android / 兼容 App ID）');
+    throw new Error('请至少填写一个应用 ID（iOS / Android / 兼容应用 ID）');
   }
   if (!state.appFeishuEnabled) {
     delete payload.notify_feishu_app_id;
@@ -1171,7 +1261,7 @@ async function saveAppConfig(event) {
     body: JSON.stringify(payload)
   });
 
-  showToast(existed ? `应用配置已更新: ${appKey}` : `应用配置已创建: ${appKey}`);
+  showToast(existed ? `应用设置已更新：${appKey}` : `应用设置已创建：${appKey}`);
   await loadApps();
   const savedApp = state.apps.find((app) => app.app_key === appKey);
   if (savedApp) {
@@ -1195,7 +1285,7 @@ async function handleAppsTableClick(event) {
   }
 
   applyAppToEditor(app);
-  showToast(`正在编辑应用: ${editAppKey}`);
+  showToast(`正在编辑应用：${editAppKey}`);
 }
 
 function generateToken(bytes = 48) {
@@ -1210,6 +1300,11 @@ async function loadRules(appKey) {
   const body = await api(`/api/rules${query}`);
   state.rules = body.data || [];
 
+  if (state.rules.length === 0) {
+    el.rulesList.innerHTML = '<div class="hint">当前还没有已保存规则。</div>';
+    return;
+  }
+
   el.rulesList.innerHTML = state.rules
     .map(
       (rule) => `
@@ -1218,7 +1313,7 @@ async function loadRules(appKey) {
             <strong>${rule.name}</strong>
             <span class="badge ${rule.enabled ? 'badge-P2' : 'badge-P0'}">${rule.enabled ? '已启用' : '已停用'}</span>
           </div>
-          <div class="hint">应用=${rule.app_key} · 更新时间=${fmtTime(rule.updated_at)}</div>
+          <div class="hint">应用标识 ${rule.app_key} · 更新时间 ${fmtTime(rule.updated_at)}</div>
           <div class="actions" style="margin-top:8px">
             <button class="btn btn-ghost" data-rule-id="${rule.id}" data-enable="${rule.enabled ? '0' : '1'}" type="button">
               ${rule.enabled ? '停用' : '启用'}
@@ -1289,6 +1384,7 @@ async function handleRulesListClick(event) {
       return;
     }
     applyRuleToEditor(rule);
+    setRulesSectionExpanded(true);
     showToast(`正在编辑规则 #${editRuleId}`);
     scrollToSection('section-rules', true);
   }
@@ -1317,7 +1413,7 @@ async function loadAlerts(event) {
         <td class="table-cell-wrap">${escapeHtml(String(a.explanation || '').slice(0, 80) || '-')}</td>
         <td>
           <div class="table-actions">
-            <button class="btn btn-ghost btn-compact" data-alert-id="${a.id}" type="button">查看详情</button>
+            <button class="btn btn-ghost btn-compact" data-alert-id="${a.id}" type="button">查看说明</button>
           </div>
         </td>
       </tr>
@@ -1332,7 +1428,7 @@ async function openAlertDetail(alertId) {
   const contributors = parseContributors(alert.top_contributors);
 
   el.alertDrawerMeta.textContent =
-    `告警ID=${alert.id} · 应用=${alert.app_key} · 指标=${metricLabel(alert.metric)} · 状态=${statusLabel(alert.status)} · 等级=${alert.severity} · 创建时间=${fmtTime(alert.created_at)}`;
+    `告警编号 ${alert.id} · 应用标识 ${alert.app_key} · 指标 ${metricLabel(alert.metric)} · 状态 ${statusLabel(alert.status)} · 等级 ${severityLabel(alert.severity)} · 创建时间 ${fmtTime(alert.created_at)}`;
   el.alertDrawerExplanation.textContent = alert.explanation || '-';
   el.alertContribRaw.textContent = JSON.stringify(alert.top_contributors, null, 2);
   el.alertContribBody.innerHTML = contributors
@@ -1536,7 +1632,7 @@ function renderPullRecordsTable() {
   const rows = state.pullRecords || [];
   if (rows.length === 0) {
     el.pullRecordsTableBody.innerHTML =
-      '<tr><td class="table-empty" colspan="12">当前筛选条件下暂无 Pull 记录</td></tr>';
+      '<tr><td class="table-empty" colspan="12">当前筛选条件下暂无广告日报记录</td></tr>';
     return;
   }
 
@@ -1544,7 +1640,7 @@ function renderPullRecordsTable() {
   rows.forEach((row, idx) => {
     const rowKey = pullRowKey(row, idx);
     const expanded = rowKey === state.expandedPullRowKey;
-    const actionText = expanded ? '收起 JSON' : '展开 JSON';
+    const actionText = expanded ? '收起技术详情' : '查看技术详情';
 
       html.push(`
       <tr>
@@ -1562,7 +1658,7 @@ function renderPullRecordsTable() {
         <td>
           <div class="table-actions">
             <button class="btn btn-ghost btn-compact" type="button" data-pull-row-key="${escapeHtml(rowKey)}">${actionText}</button>
-            <button class="btn btn-ghost btn-compact" type="button" data-pull-delete-key="${escapeHtml(rowKey)}">删除</button>
+            <button class="btn btn-ghost btn-compact" type="button" data-pull-delete-key="${escapeHtml(rowKey)}">删除记录</button>
           </div>
         </td>
       </tr>
@@ -1606,7 +1702,7 @@ function renderPullTriggerResult(result) {
   const details = Array.isArray(result.details) ? result.details : [];
 
   el.pullResultSummary.textContent =
-    `开始 ${started} · 结束 ${ended} · 耗时 ${duration}ms · 成功 ${successCount} · 失败 ${failedCount} · 跳过 ${skippedCount}`;
+    `开始时间 ${started} · 结束时间 ${ended} · 耗时 ${duration}ms · 成功 ${successCount} · 失败 ${failedCount} · 跳过 ${skippedCount}`;
 
   const lines = details.map((item) => {
     const appKey = item.app_key || '-';
@@ -1615,10 +1711,10 @@ function renderPullTriggerResult(result) {
     const status = item.status ? statusLabel(item.status) : '-';
     const rows = Number(item.rows || 0);
     const metricsRows = Number(item.metrics_rows || 0);
-    const error = item.error ? ` · 错误（error）=${item.error}` : '';
-    return `应用（app）=${appKey} · 平台（platform）=${platform} · 日期（date）=${date} · 状态（status）=${status} · 记录数（rows）=${rows} · 指标行数（metrics_rows）=${metricsRows}${error}`;
+    const error = item.error ? ` · 错误信息 ${item.error}` : '';
+    return `应用标识 ${appKey} · 平台 ${platform} · 日期 ${date} · 状态 ${status} · 记录数 ${rows} · 指标行数 ${metricsRows}${error}`;
   });
-  el.pullResultDetail.textContent = lines.length > 0 ? lines.join('\n') : '无读取明细';
+  el.pullResultDetail.textContent = lines.length > 0 ? lines.join('\n') : '没有可展示的拉取明细';
 }
 
 function setDefaultPullDateRange() {
@@ -1728,7 +1824,7 @@ function dailyBriefSummaryItems(summary) {
     { label: '安装', value: toFixed2(summary.total_installs || 0) },
     { label: '点击', value: toFixed2(summary.total_clicks || 0) },
     { label: '成本', value: `$${toFixed2(summary.total_cost || 0)}` },
-    { label: '综合 eCPI', value: `$${toFixed2(summary.blended_ecpi || 0)}` },
+    { label: '每次安装成本（eCPI）', value: `$${toFixed2(summary.blended_ecpi || 0)}` },
     { label: '待处理预算', value: String(summary.pending_budget_actions || 0) }
   ];
 }
@@ -1768,11 +1864,11 @@ function renderDailyBriefBody(report) {
                 lines: [
                   `平台 ${platformLabel(row.platform || 'unknown')}`,
                   `安装 ${toFixed2(row.installs)} ｜ 点击 ${toFixed2(row.clicks)}`,
-                  `成本 $${toFixed2(row.total_cost)} ｜ eCPI $${toFixed2(row.blended_ecpi)}`
+                  `成本 $${toFixed2(row.total_cost)} ｜ 每次安装成本（eCPI） $${toFixed2(row.blended_ecpi)}`
                 ]
               })
             )
-          : [{ title: '暂无数据', source: '-', lines: ['当前日期暂无 Pull 汇总数据。'] }]
+          : [{ title: '暂无数据', source: '-', lines: ['当前日期暂无广告日报汇总数据。'] }]
     },
     {
       title: `🎯 预算动作（超过阈值，共 ${budgets.length} 条）`,
@@ -1783,8 +1879,8 @@ function renderDailyBriefBody(report) {
               (row) => {
                 const metricText =
                   row.metric_mode === 'roas_pending_revenue'
-                    ? 'ROAS 待收入数据，当前仍按 eCPI 生成建议'
-                    : `当前 eCPI $${toFixed2(row.current_ecpi)} ｜ 目标 $${toFixed2(row.target_ecpi)}`;
+                    ? '收入回收数据待补齐，当前仍按每次安装成本（eCPI）生成建议'
+                    : `当前每次安装成本（eCPI） $${toFixed2(row.current_ecpi)} ｜ 目标 $${toFixed2(row.target_ecpi)}`;
                 return {
                   title: `${actionLabel(row.action)} ${Math.abs((Number(row.change_ratio) || 0) * 100).toFixed(0)}% ｜ ${productViewName(row.app_key, row.platform)}`,
                   source: row.media_source || '-',
@@ -1865,14 +1961,20 @@ function renderDailyBriefModal(payload, mode) {
   const filterItems = dailyBriefFilterItems(report);
 
   el.dailyBriefModalTitle.textContent = mode === 'send' ? '每日简报发送结果' : '每日简报预览';
+  const deliveryStatus = notify?.ok
+    ? renderMode === 'text_fallback'
+      ? '已回退为文本发送'
+      : skipped
+        ? '今日已发送，已跳过重复发送'
+        : '已发送到飞书'
+    : '发送失败';
   el.dailyBriefMeta.textContent =
     `报告日期 ${report.report_date || '-'} · 产品 ${summary.app_count || 0} 个 · 覆盖 ${summary.apps_with_data || 0} 个 · 安装 ${toFixed2(summary.total_installs || 0)} · 成本 ${toFixed2(summary.total_cost || 0)} · 待处理预算 ${summary.pending_budget_actions || 0} · 建议操作 ${actionItems.length}` +
     (dispatch?.sent_at ? ` · 最近发送 ${fmtTime(dispatch.sent_at)}` : '') +
-    (notify?.ok ? ` · Feishu 状态 ${notify.status || 200}` : '') +
-    (skipped ? ' · 当日已发送，本次跳过' : '');
-  el.dailyBriefHeroTitle.textContent = String(report.title || 'Hotspot 每日简报');
+    (notify || skipped ? ` · ${deliveryStatus}` : '');
+  el.dailyBriefHeroTitle.textContent = String(report.title || '每日简报');
   el.dailyBriefRenderBadge.textContent =
-    renderMode === 'text_fallback' ? '文本回退（text_fallback）' : '交互卡片（interactive）';
+    renderMode === 'text_fallback' ? '文本消息' : '卡片消息';
   el.dailyBriefRenderBadge.className =
     `badge ${renderMode === 'text_fallback' ? 'badge-P1' : 'badge-open'}`;
   el.dailyBriefSummaryGrid.innerHTML = dailyBriefSummaryItems(summary)
@@ -1928,16 +2030,16 @@ function renderRuntimeSchedule(snapshot) {
   }
 
   if (el.runtimeSchedulePullSummary) {
-    el.runtimeSchedulePullSummary.textContent = `Puller 与 ASA 数据准备将在 ${pullTime} 开始。`;
+    el.runtimeSchedulePullSummary.textContent = `广告日报与 ASA 数据将在 ${pullTime} 开始准备。`;
   }
   if (el.runtimeSchedulePushSummary) {
-    el.runtimeSchedulePushSummary.textContent = `通用日报与 ASA 简报将在 ${pushTime} 发送，多维表格自动顺延至 ${bitableTime}。`;
+    el.runtimeSchedulePushSummary.textContent = `每日简报与 ASA 简报将在 ${pushTime} 发送，执行表会顺延到 ${bitableTime}。`;
   }
   if (el.runtimeScheduleStatus) {
-    el.runtimeScheduleStatus.textContent = `当前全局调度：Pull ${pullTime} ｜ Push ${pushTime} ｜ 多维表格 ${bitableTime} ｜ 时区 ${timezone} ｜ 最近更新 ${updatedAt}`;
+    el.runtimeScheduleStatus.textContent = `当前时间安排：数据准备 ${pullTime} ｜ 消息发送 ${pushTime} ｜ 执行表 ${bitableTime} ｜ 时区 ${timezoneLabel(timezone)} ｜ 最近更新 ${updatedAt}`;
   }
   if (el.bitableSchedulePrimaryNote) {
-    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（${timezone}）自动执行。系统会在同一 Base 下创建 / 复用一张固定的「投放执行表」，并覆盖为最新执行清单。`;
+    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（北京时间）自动执行。系统会在同一飞书多维表格中创建或复用一张固定的「投放执行表」，并覆盖为最新执行清单。`;
   }
 }
 
@@ -1947,13 +2049,13 @@ function renderRuntimeSchedulePreview() {
   const bitableTime = addMinutesToTimeValue(pushTime, 5);
 
   if (el.runtimeSchedulePullSummary) {
-    el.runtimeSchedulePullSummary.textContent = `Puller 与 ASA 数据准备将在 ${pullTime} 开始。`;
+    el.runtimeSchedulePullSummary.textContent = `广告日报与 ASA 数据将在 ${pullTime} 开始准备。`;
   }
   if (el.runtimeSchedulePushSummary) {
-    el.runtimeSchedulePushSummary.textContent = `通用日报与 ASA 简报将在 ${pushTime} 发送，多维表格自动顺延至 ${bitableTime}。`;
+    el.runtimeSchedulePushSummary.textContent = `每日简报与 ASA 简报将在 ${pushTime} 发送，执行表会顺延到 ${bitableTime}。`;
   }
   if (el.bitableSchedulePrimaryNote) {
-    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（Asia/Shanghai）自动执行。系统会在同一 Base 下创建 / 复用一张固定的「投放执行表」，并覆盖为最新执行清单。`;
+    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（北京时间）自动执行。系统会在同一飞书多维表格中创建或复用一张固定的「投放执行表」，并覆盖为最新执行清单。`;
   }
 }
 
@@ -1972,7 +2074,7 @@ async function saveRuntimeSchedule(event) {
   const pushTime = String(el.runtimePushTimeInput?.value || '').trim();
 
   if (!isValidTimeValue(pullTime)) {
-    throw new Error('请输入有效的 Pull 时间');
+    throw new Error('请输入有效的数据准备时间');
   }
   if (!isValidTimeValue(pushTime)) {
     throw new Error('请输入有效的推送时间');
@@ -1991,7 +2093,7 @@ async function saveRuntimeSchedule(event) {
     });
     state.runtimeSchedule = body.data || null;
     renderRuntimeSchedule(state.runtimeSchedule);
-    showToast(`已更新全局调度：Pull ${pullTime} / Push ${pushTime}`);
+    showToast(`已更新时间安排：数据准备 ${pullTime} / 消息发送 ${pushTime}`);
   } finally {
     if (el.saveRuntimeScheduleBtn) {
       el.saveRuntimeScheduleBtn.disabled = false;
@@ -2041,8 +2143,8 @@ async function sendDailyBriefOnce() {
       body: JSON.stringify({ reportDate, force: true, mediaSources: selectedMediaSources })
     });
     renderDailyBriefModal(body.data, 'send');
-    el.dailyBriefStatus.textContent = `日报已发送到飞书群聊：${reportDate}`;
-    showToast('每日简报已发送');
+    el.dailyBriefStatus.textContent = `日报已发送到飞书：${reportDate}`;
+    showToast('每日简报已发送到飞书');
   } finally {
     el.sendDailyBriefBtn.disabled = false;
     el.sendDailyBriefBtn.textContent = originalText;
@@ -2073,7 +2175,7 @@ function renderBitableExportCards() {
   }
 
   if (sources.length === 0) {
-    el.bitableExportCards.innerHTML = '<div class="hint">正在加载多维表格导出配置...</div>';
+    el.bitableExportCards.innerHTML = '<div class="hint">正在加载投放执行表配置...</div>';
     return;
   }
 
@@ -2122,8 +2224,8 @@ function renderBitableExportCards() {
 
           <div class="bitable-export-config-grid">
             <label class="filter-field">
-              <span class="field-label">群聊 Chat ID</span>
-              <input type="text" data-role="chat-id" value="${escapeHtml(chatId)}" placeholder="oc_xxx / chat_id" />
+              <span class="field-label">飞书群 ID</span>
+              <input type="text" data-role="chat-id" value="${escapeHtml(chatId)}" placeholder="例如 oc_xxx" />
             </label>
           </div>
 
@@ -2142,7 +2244,7 @@ function renderBitableExportCards() {
                   : ''
               }
             </div>
-            <p class="hint">系统固定输出产品、平台、媒体源、主指标、建议动作、状态与理由，不再允许在页面里拼装原始技术列。</p>
+            <p class="hint">系统固定输出产品、平台、媒体源、主指标、建议动作、是否采纳、人工批复与建议理由，不再允许在页面里拼装原始技术列。</p>
           </div>
 
           <div class="bitable-export-status">
@@ -2168,7 +2270,7 @@ function renderBitableExportCards() {
 
           <div class="bitable-export-actions">
             <button class="btn btn-secondary" type="button" data-role="save-config">保存配置</button>
-            <button class="btn btn-primary" type="button" data-role="run-export">立即导入并推送</button>
+            <button class="btn btn-primary" type="button" data-role="run-export">立即更新并推送</button>
           </div>
         </article>
       `;
@@ -2235,10 +2337,10 @@ async function runBitableExportCard(sourceType) {
   }
 
   const button = findBitableExportCard(sourceType)?.querySelector('[data-role="run-export"]');
-  const originalText = button instanceof HTMLButtonElement ? button.textContent || '立即导入并推送' : '';
+  const originalText = button instanceof HTMLButtonElement ? button.textContent || '立即更新并推送' : '';
   if (button instanceof HTMLButtonElement) {
     button.disabled = true;
-    button.textContent = '导入中...';
+    button.textContent = '更新中...';
   }
 
   try {
@@ -2316,11 +2418,11 @@ function togglePullRowJson(rowKey) {
 async function deletePullRecord(rowKey) {
   const row = state.pullRecords.find((item, idx) => pullRowKey(item, idx) === rowKey);
   if (!row) {
-    throw new Error('未找到对应的 Pull 记录');
+    throw new Error('未找到对应的广告日报记录');
   }
 
   const confirmed = window.confirm(
-    `确认删除这条 Pull 记录？\n应用：${row.app_key}\n日期：${row.date}\n媒体源：${row.media_source}\n活动：${row.campaign}`
+    `确认删除这条广告日报记录？\n应用标识：${row.app_key}\n日期：${row.date}\n媒体源：${row.media_source}\n广告系列：${row.campaign}`
   );
   if (!confirmed) {
     return;
@@ -2335,7 +2437,7 @@ async function deletePullRecord(rowKey) {
     state.expandedPullRowKey = '';
   }
 
-  showToast('Pull 记录已删除');
+  showToast('广告日报记录已删除');
   await loadPullRecords(undefined, state.pullPage);
 }
 
@@ -2369,9 +2471,9 @@ async function triggerPullOnce() {
     return;
   }
 
-  const originalText = el.triggerPullBtn.textContent || '手动读取';
+  const originalText = el.triggerPullBtn.textContent || '手动拉取数据';
   el.triggerPullBtn.disabled = true;
-  el.triggerPullBtn.textContent = '读取中...';
+  el.triggerPullBtn.textContent = '拉取中...';
 
   try {
     const body = await api('/api/pull-records/trigger', {
@@ -2388,13 +2490,13 @@ async function triggerPullOnce() {
     const failedCount = Number(result.failed_count || 0);
     const skippedCount = Number(result.skipped_count || 0);
     if (successCount > 0 && failedCount === 0 && skippedCount === 0) {
-      showToast('手动读取完成');
+      showToast('手动拉取完成');
     } else if (successCount === 0 && failedCount === 0 && skippedCount > 0) {
-      showToast('本次未发起实际读取，已命中跳过策略');
+      showToast('本次未发起实际拉取，已命中跳过策略');
     } else if (successCount > 0) {
-      showToast('手动读取完成，部分条目已跳过或失败');
+      showToast('手动拉取完成，部分条目已跳过或失败');
     } else {
-      showToast('手动读取完成，但全部失败或被跳过', true);
+      showToast('手动拉取完成，但全部失败或被跳过', true);
     }
   } finally {
     el.triggerPullBtn.disabled = false;
@@ -2507,9 +2609,9 @@ async function openKeywordTrend(row) {
   drawLineChart(el.keywordTrendCanvas, chartRows);
 
   el.keywordDrawerMeta.textContent =
-    `产品视图=${productViewName(row.app_key, row.platform || 'unknown')} · 应用=${row.app_key} · 平台（platform）=${platformLabel(row.platform || 'unknown')} · 关键词（keyword）=${row.keyword} · 匹配类型（match_type）=${matchTypeLabel(row.match_type || 'unknown')} · 阶段（stage）=${lifecycleStageLabel(row.current_stage)} · 阶段天数（days_in_stage）=${row.days_in_stage}`;
+    `产品视图 ${productViewName(row.app_key, row.platform || 'unknown')} · 应用标识 ${row.app_key} · 平台 ${platformLabel(row.platform || 'unknown')} · 关键词 ${row.keyword} · 匹配方式 ${matchTypeLabel(row.match_type || 'unknown')} · 当前阶段 ${lifecycleStageLabel(row.current_stage)} · 已处于该阶段 ${row.days_in_stage} 天`;
   const last = trendRows.at(-1);
-  el.keywordTrendLegend.textContent = `数据点=${trendRows.length} · 最新安装量（installs）=${toFixed2(last?.installs)} · 最新 CPI（cpi）=${toFixed2(last?.cpi)}`;
+  el.keywordTrendLegend.textContent = `数据点 ${trendRows.length} · 最新安装量 ${toFixed2(last?.installs)} · 最新每次安装成本 ${toFixed2(last?.cpi)}`;
   el.keywordTrendRaw.textContent = JSON.stringify(trendRows, null, 2);
   setKeywordDrawerOpen(true);
 }
@@ -2573,9 +2675,9 @@ function renderBudgetTable() {
         <td><span class="badge badge-${escapeHtml(row.status)}">${budgetStatusLabel(row.status)}</span></td>
         <td>
           <div class="table-actions">
-            <button class="btn btn-ghost btn-compact" type="button" data-budget-view-id="${row.id}">详情</button>
-            ${canOperate ? `<button class="btn btn-ghost btn-compact" type="button" data-budget-apply-id="${row.id}">标记执行</button>` : ''}
-            ${canOperate ? `<button class="btn btn-ghost btn-compact" type="button" data-budget-reject-id="${row.id}">拒绝</button>` : ''}
+            <button class="btn btn-ghost btn-compact" type="button" data-budget-view-id="${row.id}">查看说明</button>
+            ${canOperate ? `<button class="btn btn-ghost btn-compact" type="button" data-budget-apply-id="${row.id}">标记已执行</button>` : ''}
+            ${canOperate ? `<button class="btn btn-ghost btn-compact" type="button" data-budget-reject-id="${row.id}">标记不执行</button>` : ''}
           </div>
         </td>
       </tr>
@@ -2638,8 +2740,8 @@ function openBudgetDetail(row) {
   const checklist = Array.isArray(llmSummary.checklist) ? llmSummary.checklist : [];
   const points = Array.isArray(llmSummary.explanation_points) ? llmSummary.explanation_points : [];
 
-  el.budgetDetailTitle.textContent = `预算建议详情 · ${productViewName(row.app_key, row.platform || 'unknown')} · ${row.keyword}`;
-  el.budgetDetailSummary.textContent = String(llmSummary.summary_cn || `reason_code=${row.reason_code}`);
+  el.budgetDetailTitle.textContent = `预算建议说明 · ${productViewName(row.app_key, row.platform || 'unknown')} · ${row.keyword}`;
+  el.budgetDetailSummary.textContent = String(llmSummary.summary_cn || row.reason_code || '暂无补充说明');
   el.budgetDetailDisplayName.textContent = productViewName(row.app_key, row.platform || 'unknown');
   el.budgetDetailMediaSource.textContent = String(row.media_source || '-');
   el.budgetDetailPrimaryMetric.textContent = primaryMetricLabel(row.primary_metric || 'ecpi');
@@ -2665,7 +2767,7 @@ async function updateBudgetStatus(id, mode) {
       ? `/api/budget/recommendations/${id}/mark-applied`
       : `/api/budget/recommendations/${id}/reject`;
   await api(endpoint, { method: 'POST' });
-  showToast(mode === 'apply' ? '预算建议已标记为已执行' : '预算建议已拒绝');
+  showToast(mode === 'apply' ? '预算建议已标记为已执行' : '预算建议已标记为不执行');
   await loadBudgetRecommendations(undefined, state.budgetPage);
 }
 
@@ -2882,7 +2984,7 @@ function renderAsaKeywordTable() {
         <td>${escapeHtml(platformLabel(row.platform || 'unknown'))}</td>
         <td class="table-cell-wrap">${escapeHtml(row.keyword)}</td>
         <td class="table-cell-wrap">${escapeHtml(row.campaign)}</td>
-        <td class="table-cell-wrap">${escapeHtml(row.adset || 'unknown')}</td>
+        <td class="table-cell-wrap">${escapeHtml(row.adset || '-')}</td>
         <td>${toFixed2(row.installs_7d || row.last_installs || 0)}</td>
         <td>$${toFixed2(row.total_cost_7d || 0)}</td>
         <td>${toFixed2(row.purchase_count_7d || 0)}</td>
@@ -2894,7 +2996,7 @@ function renderAsaKeywordTable() {
         <td>${escapeHtml(asaRecommendationStatusLabel(row.recommendation_status))}</td>
         <td>
           <div class="table-actions">
-            <button class="btn btn-ghost btn-compact" type="button" data-asa-keyword-view-id="${row.id}">详情</button>
+            <button class="btn btn-ghost btn-compact" type="button" data-asa-keyword-view-id="${row.id}">查看说明</button>
           </div>
         </td>
       </tr>
@@ -3002,7 +3104,7 @@ async function openAsaKeywordDetail(row) {
       `日期：${item.date}`,
       `安装量：${toFixed2(item.installs)}`,
       `成本：$${toFixed2(item.total_cost)}`,
-      `Purchase：${toFixed2(item.purchase_count)}`,
+      `购买次数：${toFixed2(item.purchase_count)}`,
       `eCPI：${formatAsaEcpiDisplayWithReason(item.ecpi, item.total_cost, item.installs)}`,
       `官方 eCPI：$${toFixed2(item.average_ecpi || 0)}`,
       `CPP：${Number(item.cpp || 0) > 0 ? `$${toFixed2(item.cpp)}` : '-'}`,
@@ -3012,10 +3114,10 @@ async function openAsaKeywordDetail(row) {
   drawLineChart(el.asaKeywordTrendCanvas, chartRows);
   const llmSummary = safeJsonParse(row.llm_summary, {});
   el.asaKeywordDrawerMeta.textContent =
-    `产品视图=${productViewName(row.app_key, row.platform || 'unknown')} · 应用=${row.app_key} · 平台=${platformLabel(row.platform || 'unknown')} · 关键词=${row.keyword} · Campaign=${row.campaign} · 广告组=${row.adset || 'unknown'} · 阶段=${asaStageLabel(row.current_stage)} · 建议指标=${asaPrimaryMetricLabel(row.primary_metric)}`;
+    `产品视图 ${productViewName(row.app_key, row.platform || 'unknown')} · 应用标识 ${row.app_key} · 平台 ${platformLabel(row.platform || 'unknown')} · 关键词 ${row.keyword} · 广告系列 ${row.campaign} · 广告组 ${row.adset || '-'} · 当前阶段 ${asaStageLabel(row.current_stage)} · 建议指标 ${asaPrimaryMetricLabel(row.primary_metric)}`;
   const last = trendRows.at(-1);
   el.asaKeywordTrendLegend.textContent =
-    `数据点=${trendRows.length} · 最新安装量=${toFixed2(last?.installs)} · 最新 eCPI=${formatAsaEcpiDisplayWithReason(last?.ecpi, last?.total_cost, last?.installs)} · 官方 eCPI=$${toFixed2(last?.average_ecpi || 0)} · 最新 D7 ROAS=${formatAsaD7RoasDisplayWithReason(last?.d7_roas, last?.total_cost, last?.revenue_d7)}`;
+    `数据点 ${trendRows.length} · 最新安装量 ${toFixed2(last?.installs)} · 最新 eCPI ${formatAsaEcpiDisplayWithReason(last?.ecpi, last?.total_cost, last?.installs)} · 参考 eCPI $${toFixed2(last?.average_ecpi || 0)} · 最新 D7 ROAS ${formatAsaD7RoasDisplayWithReason(last?.d7_roas, last?.total_cost, last?.revenue_d7)}`;
   el.asaKeywordTrendRaw.textContent = JSON.stringify(
     {
       recommendation: {
@@ -3024,7 +3126,7 @@ async function openAsaKeywordDetail(row) {
         summary: llmSummary.summary_cn || '',
         explanation_points: llmSummary.explanation_points || []
       },
-      note: 'ASA 关键词成本直接来自 AppsFlyer Master API（关键词 + 广告系列 + 广告组）。eCPI 显示为“—”表示有花费无安装；D7 ROAS 显示 0.00x 表示当前未观察到 D7 收入。',
+      note: 'ASA 关键词成本来自 AppsFlyer 的关键词级成本接口。eCPI 显示为“—”表示有花费但没有安装；D7 ROAS 显示 0.00x 表示当前未观察到 D7 收入。',
       trend: trendRows
     },
     null,
@@ -3054,7 +3156,7 @@ async function triggerAsaKeywordRecompute() {
       body: JSON.stringify({ backfillDays: 30 })
     });
     const result = body.data || {};
-    showToast(`ASA 关键词重算完成：状态 ${result.state_rows || 0} / 建议 ${result.recommendation_rows || 0}`);
+    showToast(`ASA 关键词重算完成：阶段记录 ${result.state_rows || 0} / 建议 ${result.recommendation_rows || 0}`);
     state.asaKeywordPage = 1;
     await loadAsaKeywords(undefined, 1);
   } finally {
@@ -3070,9 +3172,9 @@ function asaBriefSummaryItems(report) {
     { label: '关键词数', value: String(summary.keyword_count || 0) },
     { label: '安装量', value: toFixed2(summary.installs || 0) },
     { label: '成本', value: `$${toFixed2(summary.total_cost || 0)}` },
-    { label: 'eCPI', value: formatAsaEcpiDisplay(summary.ecpi || 0, summary.total_cost || 0, summary.installs || 0) },
-    { label: 'CPP', value: Number(summary.cpp || 0) > 0 ? `$${toFixed2(summary.cpp || 0)}` : '-' },
-    { label: 'D7 ROAS', value: formatAsaD7RoasDisplay(summary.d7_roas || 0, summary.total_cost || 0, summary.revenue_d7 || 0) }
+    { label: '每次安装成本（eCPI）', value: formatAsaEcpiDisplay(summary.ecpi || 0, summary.total_cost || 0, summary.installs || 0) },
+    { label: '每次购买成本（CPP）', value: Number(summary.cpp || 0) > 0 ? `$${toFixed2(summary.cpp || 0)}` : '-' },
+    { label: '7 日回收率（D7 ROAS）', value: formatAsaD7RoasDisplay(summary.d7_roas || 0, summary.total_cost || 0, summary.revenue_d7 || 0) }
   ];
 }
 
@@ -3082,10 +3184,10 @@ function renderAsaBriefModal(payload, mode) {
   const skipped = payload?.skipped === true;
   const actionRows = Array.isArray(report.action_rows) ? report.action_rows : [];
   el.asaBriefModalTitle.textContent = mode === 'send' ? 'ASA 简报发送结果' : 'ASA 简报预览';
+  const sendStatus = notify?.ok ? (skipped ? '今日已发送，已跳过重复发送' : '已发送到飞书') : '发送失败';
   el.asaBriefMeta.textContent =
     `报告日期 ${report.report_date || '-'} · 当前阶段 ${asaStageLabel(report.current_stage)} · 关键词数 ${report.summary?.keyword_count || 0}` +
-    (notify?.ok ? ` · Feishu 状态 ${notify.status || 200}` : '') +
-    (skipped ? ' · 当日已发送，本次跳过' : '');
+    (notify || skipped ? ` · ${sendStatus}` : '');
   el.asaBriefSummaryGrid.innerHTML = asaBriefSummaryItems(report)
     .map(
       (item) => `
@@ -3099,8 +3201,8 @@ function renderAsaBriefModal(payload, mode) {
   el.asaBriefJudgment.textContent =
     report.today_judgment ||
     (report.current_stage === 'stable'
-      ? '当前已按稳定期口径输出建议，优先观察 D7 ROAS 与 CPP 是否同步达标。成本直接取自 AppsFlyer Master API。'
-      : '当前按上升期口径输出建议，优先观察 eCPI 与安装扩张效率。成本直接取自 AppsFlyer Master API。');
+      ? '当前按稳定期标准输出建议，优先观察 7 日回收率和每次购买成本是否同步达标。'
+      : '当前按上升期标准输出建议，优先观察每次安装成本和安装增长效率。');
   el.asaBriefActions.innerHTML = actionRows.length
     ? actionRows
         .slice(0, 12)
@@ -3112,8 +3214,8 @@ function renderAsaBriefModal(payload, mode) {
                 <span class="badge ${asaRecommendationBadgeClass(row.action)}">${escapeHtml(actionLabel(row.action))}</span>
                 <strong>${escapeHtml(productViewName(row.app_key, row.platform))} / ${escapeHtml(row.keyword)}</strong>
               </div>
-              <p>Campaign：${escapeHtml(row.campaign)}</p>
-              <p>广告组：${escapeHtml(row.adset || 'unknown')}</p>
+              <p>广告系列：${escapeHtml(row.campaign)}</p>
+              <p>广告组：${escapeHtml(row.adset || '-')}</p>
               <p>${escapeHtml(
                 row.primary_metric === 'd7_roas_cpp'
                   ? `D7 ROAS ${formatAsaD7RoasDisplayWithReason(row.current_d7_roas, row.total_cost_7d, row.revenue_d7_7d)} / 目标 ${toFixed2(row.target_d7_roas)}x ｜ CPP ${row.current_cpp > 0 ? `$${toFixed2(row.current_cpp)}` : '-'} / 目标 ${row.target_cpp > 0 ? `$${toFixed2(row.target_cpp)}` : '-'}`
@@ -3144,7 +3246,7 @@ async function previewAsaBrief(event) {
   if (platform) params.set('platform', platform);
   const body = await api(`/api/asa-keywords/brief/preview?${params.toString()}`);
   renderAsaBriefModal(body.data, 'preview');
-  el.asaBriefStatus.textContent = `已生成 ${reportDate} 的 ASA 简报预览，建议操作已并入简报。`;
+  el.asaBriefStatus.textContent = `已生成 ${reportDate} 的 ASA 简报预览，建议动作会随简报一起发送。`;
 }
 
 async function sendAsaBrief() {
@@ -3157,8 +3259,8 @@ async function sendAsaBrief() {
     body: JSON.stringify({ reportDate, appKey: appKey || undefined, platform: platform || undefined, force: true })
   });
   renderAsaBriefModal(body.data, 'send');
-  el.asaBriefStatus.textContent = `ASA 简报已发送：${reportDate}，建议操作已随简报一并发送。`;
-  showToast('ASA 简报已发送');
+  el.asaBriefStatus.textContent = `ASA 简报已发送到飞书：${reportDate}，建议动作已随简报一并发送。`;
+  showToast('ASA 简报已发送到飞书');
 }
 
 async function loadMetrics(event) {
@@ -3216,17 +3318,17 @@ async function loadMetrics(event) {
   const lastValue = last ? Number(last.value).toFixed(2) : '无';
   if (source === 'pull' && rows.length === 0) {
     el.metricsLegend.textContent =
-      '暂无 Pull 数据。请检查 Pull token、PULLER_BACKFILL_DAYS，并查看 puller 日志。';
+      '当前没有广告日报数据。请联系管理员检查数据连接或抓取配置。';
     return;
   }
-  el.metricsLegend.textContent = `数据点=${rows.length} · 最新值=${lastValue} · 来源=${source === 'pull' ? 'Pull(日)' : 'Push(小时)'}`;
+  el.metricsLegend.textContent = `数据点 ${rows.length} · 最新值 ${lastValue} · 来源 ${source === 'pull' ? '广告日报（日）' : '实时回传（小时）'}`;
 }
 
 function renderOperationLogsTable() {
   const rows = state.operationLogs || [];
   if (rows.length === 0) {
     el.operationLogsTableBody.innerHTML =
-      '<tr><td class="table-empty" colspan="7">当前筛选条件下暂无操作日志</td></tr>';
+      '<tr><td class="table-empty" colspan="5">当前筛选条件下暂无操作记录</td></tr>';
     return;
   }
 
@@ -3234,17 +3336,18 @@ function renderOperationLogsTable() {
     .map((row) => {
       const detail = safeJsonParse(row.detail_json, row.detail_json || {});
       const pretty = typeof detail === 'string' ? detail : JSON.stringify(detail, null, 2);
+      const sourceText = operationSourceLabel(row.source);
+      const actionText = operationActionLabel(row.action);
+      const summaryText = row.summary || '无摘要';
       return `
         <tr>
           <td class="table-cell-mono">${escapeHtml(fmtTime(row.created_at))}</td>
-          <td class="table-cell-mono">${escapeHtml(row.source)}</td>
-          <td>${escapeHtml(row.action)}</td>
-          <td class="table-cell-wrap">${escapeHtml(`${row.target_type || '-'} / ${row.target_key || '-'}`)}</td>
+          <td class="table-cell-wrap">${escapeHtml(`${sourceText} · ${actionText}`)}</td>
           <td><span class="badge badge-${escapeHtml(row.status)}">${escapeHtml(operationStatusLabel(row.status))}</span></td>
-          <td class="table-cell-wrap">${escapeHtml(row.summary || '-')}</td>
+          <td class="table-cell-wrap">${escapeHtml(summaryText)}</td>
           <td>
             <details>
-              <summary>查看</summary>
+              <summary>查看技术详情</summary>
               <pre class="log-detail-pre">${escapeHtml(pretty)}</pre>
             </details>
           </td>
@@ -3294,18 +3397,18 @@ async function refreshAll() {
   updateOverviewCards(now);
 
   const firstApp = state.apps[0]?.app_key || '';
-  await safeRefresh('规则列表', () => loadRules(firstApp));
+  await safeRefresh('规则设置', () => loadRules(firstApp));
 
   el.alertsAppSelect.value = firstApp;
   await safeRefresh('告警列表', () => loadAlerts());
 
   if (firstApp) {
     el.metricsAppSelect.value = firstApp;
-    await safeRefresh('趋势图', () => loadMetrics());
+    await safeRefresh('指标趋势', () => loadMetrics());
   }
 
   state.pullPage = 1;
-  await safeRefresh('Pull 明细', () => loadPullRecords(undefined, 1));
+  await safeRefresh('广告日报明细', () => loadPullRecords(undefined, 1));
 
   state.keywordPage = 1;
   await safeRefresh('关键词生命周期', () => loadKeywordLifecycle(undefined, 1));
@@ -3316,7 +3419,7 @@ async function refreshAll() {
   await safeRefresh('ASA 阶段配置', () => loadAsaStageConfigs());
   state.asaKeywordPage = 1;
   await safeRefresh('ASA 关键词', () => loadAsaKeywords(undefined, 1));
-  await safeRefresh('操作日志', () => loadOperationLogs());
+  await safeRefresh('操作记录', () => loadOperationLogs());
   await safeRefresh('日报媒体源', () => loadDailyBriefMediaSources(true));
   await safeRefresh('多维表格配置', () => loadBitableExportConfigs());
 
@@ -3341,6 +3444,7 @@ async function bootstrap() {
   }
   renderRuntimeSchedulePreview();
   syncAppFeishuSection();
+  setRulesSectionExpanded(false);
   applyUniformFieldLabels();
   setActiveNav('section-overview');
   setupSideNav();
@@ -3390,18 +3494,21 @@ el.appFeishuEnabled.addEventListener('change', () => {
 
 el.ruleForm.addEventListener('submit', (e) => saveRule(e).catch((err) => showToast(err.message || '规则保存失败', true)));
 el.rulesList.addEventListener('click', (e) => handleRulesListClick(e).catch((err) => showToast(err.message || '规则操作失败', true)));
+el.toggleRulesSectionBtn?.addEventListener('click', () => {
+  setRulesSectionExpanded(!state.rulesSectionExpanded);
+});
 el.buildDslJsonBtn.addEventListener('click', () => {
   const json = buildRuleFromDslForm();
   ruleField('rule_json').value = JSON.stringify(json, null, 2);
-  showToast('已根据表单生成 JSON');
+  showToast('已根据表单生成规则配置');
 });
 el.loadDslFromJsonBtn.addEventListener('click', () => {
   try {
     const parsed = JSON.parse(ruleField('rule_json').value || '{}');
     loadDslFormFromRule(parsed);
-    showToast('已根据 JSON 回填表单');
+    showToast('已根据规则配置回填表单');
   } catch (err) {
-    showToast(err.message || 'JSON 格式无效', true);
+    showToast(err.message || '规则配置格式无效', true);
   }
 });
 
@@ -3429,10 +3536,10 @@ el.metricsAppSelect.addEventListener('change', triggerMetricsAutoRefresh);
 el.metricsPlatformSelect.addEventListener('change', triggerMetricsAutoRefresh);
 el.metricsMetricSelect.addEventListener('change', triggerMetricsAutoRefresh);
 el.pullRecordsFilter.addEventListener('submit', (e) =>
-  loadPullRecords(e, 1).catch((err) => showToast(err.message || 'Pull 明细加载失败，请检查 API 与 ClickHouse 连接', true))
+  loadPullRecords(e, 1).catch((err) => showToast(err.message || '广告日报明细加载失败，请联系管理员检查数据连接', true))
 );
 el.pullRecordsTableBody.addEventListener('click', (e) =>
-  handlePullRecordsTableClick(e).catch((err) => showToast(err.message || 'Pull 行详情加载失败', true))
+  handlePullRecordsTableClick(e).catch((err) => showToast(err.message || '广告日报详情加载失败', true))
 );
 el.pullPrevPageBtn.addEventListener('click', () =>
   changePullPage(-1).catch((err) => showToast(err.message || '翻页失败', true))
@@ -3441,7 +3548,7 @@ el.pullNextPageBtn.addEventListener('click', () =>
   changePullPage(1).catch((err) => showToast(err.message || '翻页失败', true))
 );
 el.triggerPullBtn.addEventListener('click', () =>
-  triggerPullOnce().catch((err) => showToast(err.message || '手动读取失败', true))
+  triggerPullOnce().catch((err) => showToast(err.message || '手动拉取失败', true))
 );
 el.pullResultModalCloseBtn.addEventListener('click', () => setPullResultModalOpen(false));
 el.pullResultModalBackdrop.addEventListener('click', () => setPullResultModalOpen(false));
@@ -3532,7 +3639,7 @@ el.logoutBtn?.addEventListener('click', async () => {
   }
 });
 el.operationLogsFilter.addEventListener('submit', (e) =>
-  loadOperationLogs(e).catch((err) => showToast(err.message || '操作日志加载失败', true))
+  loadOperationLogs(e).catch((err) => showToast(err.message || '操作记录加载失败', true))
 );
 el.dailyBriefForm.addEventListener('submit', (e) =>
   previewDailyBrief(e).catch((err) => showToast(err.message || '日报预览失败', true))
@@ -3607,13 +3714,30 @@ initializeHelpPopovers();
 
 helpPopoverGroups.forEach((group) => {
   const popover = getHelpPopover(group);
+  const trigger = getHelpTrigger(group);
+  syncHelpTriggerExpandedState(group, false);
   group.addEventListener('mouseenter', () => showHelpPopover(group));
   group.addEventListener('mouseleave', () => scheduleHideHelpPopover(group));
   group.addEventListener('focusin', () => showHelpPopover(group));
   group.addEventListener('focusout', (event) => handleHelpFocusOut(group, event));
+  if (trigger) {
+    trigger.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleHelpPopover(group);
+    });
+  }
   if (popover) {
+    popover.addEventListener('click', (event) => event.stopPropagation());
     popover.addEventListener('mouseenter', () => showHelpPopover(group));
     popover.addEventListener('mouseleave', () => scheduleHideHelpPopover(group));
+  }
+});
+
+document.addEventListener('click', () => hideAllHelpPopovers());
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    hideAllHelpPopovers();
   }
 });
 
