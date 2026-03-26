@@ -9,6 +9,10 @@
 - WebUI 顶部全局调度配置
   - 统一编辑 `Pull 时间` 与 `推送时间`
   - `bitable-export` 自动使用 `推送时间 + 5 分钟`
+- WebUI 全局 AI 悬浮入口
+  - 右下角提供统一的 AI 功能舱入口
+  - 当前内置 Gemini 官网跳转
+  - 后续可继续扩展诊断助手、投放 Copilot 等功能
 - 通用投放项 / 广告系列监控与预算建议
   - 手动生成预算建议时支持进度条与 `已生成建议 / 总建议` 实时展示
 - ASA 关键词专项管理
@@ -46,6 +50,7 @@
 ## 文档索引
 
 - 接口文档：`docs/API.md`
+- WebUI 说明：`docs/UI.md`
 - 表结构文档：`docs/SCHEMA.md`
 - 启动 / 验证手册：`docs/RUNBOOK.md`
 - Agent 部署手册：`docs/DEPLOYMENT_AGENT.md`
@@ -88,6 +93,7 @@ docker compose up -d --build
 ## 最近补充
 
 - 顶部全局调度配置（Pull / Push 时间统一管理）
+- WebUI 全局 Gemini 悬浮舱入口
 - ASA keyword 成本切换到 AppsFlyer Master API
 - Feishu 多维表格原始数据推送模块
 - 默认 `09:00 / 10:00 / 10:05 (Asia/Shanghai)` 调度，可在页面顶部修改

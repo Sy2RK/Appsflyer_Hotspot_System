@@ -143,14 +143,14 @@
                 <div>
                   <h4>投放执行表</h4>
                   <p>
-                    只保留当前待处理的执行清单，并预留“是否采纳 + 人工批复”字段，方便投放同学直接在飞书里处理与反馈。
+                    只保留当前待处理的执行清单，并预留“执行状态 + 是否采纳 + 人工批复”字段，方便投放同学直接在飞书里处理与反馈。
                     <span class="term-with-help">
                       <span>字段说明</span>
                       <span class="help-group">
                         <button class="help-icon help-icon-inline" type="button" aria-label="查看执行表字段说明">?</button>
                         <div class="help-popover help-popover-floating help-popover-compact">
                           <h4>执行表字段说明</h4>
-                          <p>“是否采纳”表示你是否接受这条建议；“人工批复”用于记录为什么执行、暂停或不执行。</p>
+                          <p>“执行状态”改为单选，用来标记待处理、执行中、已完成、暂缓、不执行等进度；“是否采纳”表示你是否接受这条建议；“人工批复”用于补充原因和上下文。</p>
                         </div>
                       </span>
                     </span>
@@ -167,7 +167,7 @@
               <div class="bitable-note-card">
                 <strong>运行说明</strong>
                 <p id="bitableSchedulePrimaryNote">每日 10:05（北京时间）自动执行。系统会在同一飞书多维表格中创建或复用一张固定的「投放执行表」，并覆盖为最新执行清单。</p>
-                <p>表内只保留对实际投放有用的字段，不再显示技术字段。同一天再次导出时，系统会尽量保留你已填写的“是否采纳”和“人工批复”。</p>
+                <p>表内只保留对实际投放有用的字段，不再显示技术字段。同一天再次导出时，系统会尽量保留你已填写的“执行状态”“是否采纳”和“人工批复”。</p>
               </div>
             </div>
           </section>
@@ -1305,6 +1305,60 @@
         </section>
       </div>
     </div>
+
+    <aside id="aiDock" class="ai-dock" aria-label="AI 功能入口">
+      <div class="ai-dock-ambient ai-dock-ambient-1" aria-hidden="true"></div>
+      <div class="ai-dock-ambient ai-dock-ambient-2" aria-hidden="true"></div>
+      <div class="ai-dock-ambient ai-dock-ambient-3" aria-hidden="true"></div>
+      <div id="aiDockPanel" class="ai-dock-panel hidden" aria-hidden="true">
+        <div class="ai-dock-panel-shell">
+          <div class="ai-dock-panel-head">
+            <div>
+              <p class="ai-dock-kicker">Control Surface</p>
+              <h3>未来功能舱</h3>
+            </div>
+            <span class="ai-dock-status">Gemini 已接入</span>
+          </div>
+          <p class="ai-dock-copy">先放一个 Gemini 官方入口，后续会继续接入诊断助手、投放 Copilot、日报快读等 AI 工作流。</p>
+          <div class="ai-dock-actions">
+            <a
+              class="ai-dock-action ai-dock-action-primary"
+              href="https://gemini.google.com/"
+              target="_blank"
+              rel="noreferrer noopener"
+              data-role="gemini-link"
+            >
+              <span class="ai-dock-action-glow" aria-hidden="true"></span>
+              <span class="ai-dock-action-label">打开 Gemini 官网</span>
+              <span class="ai-dock-action-meta">Google AI Workspace</span>
+            </a>
+            <button class="ai-dock-action ai-dock-action-placeholder" type="button" disabled>
+              <span class="ai-dock-action-label">更多功能预留</span>
+              <span class="ai-dock-action-meta">即将解锁更多 AI 模块</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <button
+        id="aiDockToggle"
+        class="ai-dock-toggle"
+        type="button"
+        aria-label="打开 AI 功能舱"
+        aria-expanded="false"
+        aria-controls="aiDockPanel"
+      >
+        <span class="ai-dock-core" aria-hidden="true">
+          <span class="ai-dock-core-ring ai-dock-core-ring-1"></span>
+          <span class="ai-dock-core-ring ai-dock-core-ring-2"></span>
+          <span class="ai-dock-core-ring ai-dock-core-ring-3"></span>
+          <span class="ai-dock-core-symbol">G</span>
+        </span>
+        <span class="ai-dock-toggle-copy">
+          <strong>Gemini</strong>
+          <small>AI 功能舱</small>
+        </span>
+      </button>
+    </aside>
 
     <div id="toast" class="toast hidden"></div>
 

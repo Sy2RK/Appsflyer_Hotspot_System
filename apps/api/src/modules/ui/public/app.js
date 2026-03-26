@@ -286,6 +286,10 @@ const el = {
   alertContribBody: document.getElementById('alertContribBody'),
   alertContribRaw: document.getElementById('alertContribRaw'),
 
+  aiDock: document.getElementById('aiDock'),
+  aiDockToggle: document.getElementById('aiDockToggle'),
+  aiDockPanel: document.getElementById('aiDockPanel'),
+
   toast: document.getElementById('toast')
 };
 
@@ -344,6 +348,23 @@ function showToast(message, isError = false) {
   toastTimer = setTimeout(() => {
     el.toast.classList.add('hidden');
   }, 2600);
+}
+
+function setAIDockOpen(open) {
+  if (!(el.aiDock instanceof HTMLElement) || !(el.aiDockToggle instanceof HTMLButtonElement) || !(el.aiDockPanel instanceof HTMLElement)) {
+    return;
+  }
+
+  el.aiDock.classList.toggle('is-open', open);
+  el.aiDockPanel.classList.toggle('hidden', !open);
+  el.aiDockPanel.setAttribute('aria-hidden', open ? 'false' : 'true');
+  el.aiDockToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  el.aiDockToggle.setAttribute('aria-label', open ? '关闭 AI 功能舱' : '打开 AI 功能舱');
+}
+
+function toggleAIDock() {
+  const isOpen = el.aiDock?.classList.contains('is-open') === true;
+  setAIDockOpen(!isOpen);
 }
 
 async function api(path, options = {}) {
@@ -2244,7 +2265,7 @@ function renderBitableExportCards() {
                   : ''
               }
             </div>
-            <p class="hint">系统固定输出产品、平台、媒体源、主指标、建议动作、是否采纳、人工批复与建议理由，不再允许在页面里拼装原始技术列。</p>
+            <p class="hint">系统固定输出产品、平台、媒体源、主指标、建议动作、执行状态、是否采纳、人工批复与建议理由，不再允许在页面里拼装原始技术列。</p>
           </div>
 
           <div class="bitable-export-status">
@@ -3709,6 +3730,20 @@ el.bitableExportCards?.addEventListener('change', (event) => {
 });
 el.dailyBriefModalCloseBtn.addEventListener('click', () => setDailyBriefModalOpen(false));
 el.dailyBriefModalBackdrop.addEventListener('click', () => setDailyBriefModalOpen(false));
+el.aiDockToggle?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  toggleAIDock();
+});
+el.aiDockPanel?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+  if (target.closest('[data-role="gemini-link"]')) {
+    showToast('正在打开 Gemini 官网');
+    setAIDockOpen(false);
+  }
+});
 
 initializeHelpPopovers();
 
@@ -3735,9 +3770,20 @@ helpPopoverGroups.forEach((group) => {
 });
 
 document.addEventListener('click', () => hideAllHelpPopovers());
+document.addEventListener('click', (event) => {
+  if (!(el.aiDock instanceof HTMLElement)) {
+    return;
+  }
+  const target = event.target;
+  if (target instanceof Node && el.aiDock.contains(target)) {
+    return;
+  }
+  setAIDockOpen(false);
+});
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     hideAllHelpPopovers();
+    setAIDockOpen(false);
   }
 });
 
