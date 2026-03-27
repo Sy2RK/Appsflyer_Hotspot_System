@@ -5,9 +5,10 @@ import {
   listApps,
   releasePullCycleLock,
   tryAcquirePullCycleLock,
-  upsertPullContentGuard
+  upsertPullContentGuard,
+  upsertPullReportReadiness
 } from './repositories.js';
-import { chInsertJSON } from './clickhouse.js';
+import { chExec, chInsertJSON } from './clickhouse.js';
 import { md5Hex } from './hash.js';
 import { buildPreviousDateList, getPreviousDateString } from './businessDate.js';
 
@@ -100,6 +101,11 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const PULL_SOURCE_REPORT = 'daily_report_v5';
 const PULL_CYCLE_LOCK_NAME = 'pull_daily_report_v5_cycle';
 const PULL_REVIEW_RETRY_DELAY_MS = 30 * 1000;
+const NON_BLOCKING_READINESS_STATUSES = new Set<PullCycleDetail['status']>([
+  'ok',
+  'skipped_recently_pulled',
+  'skipped_same_content_cooldown'
+]);
 
 interface PullAttemptResult {
   ok: boolean;
@@ -116,6 +122,96 @@ interface PullReviewCandidate {
   pullAppId: string;
   date: string;
   platform: string;
+}
+
+interface PullSliceScope {
+  appKey: string;
+  date: string;
+  platform: string;
+}
+
+function buildPullTargets(app: {
+  ios_pull_app_id: string;
+  android_pull_app_id: string;
+  pull_app_id: string;
+}): Array<{ pullAppId: string; platform: string }> {
+  const targets: Array<{ pullAppId: string; platform: string }> = [];
+  if (app.ios_pull_app_id) {
+    targets.push({ pullAppId: app.ios_pull_app_id, platform: 'ios' });
+  }
+  if (app.android_pull_app_id) {
+    targets.push({ pullAppId: app.android_pull_app_id, platform: 'android' });
+  }
+  if (targets.length === 0 && app.pull_app_id) {
+    targets.push({ pullAppId: app.pull_app_id, platform: 'unknown' });
+  }
+  return targets;
+}
+
+function buildPullReadinessErrorSummary(details: PullCycleDetail[]): string | null {
+  const summaries = Array.from(
+    new Set(
+      details
+        .filter((detail) => !NON_BLOCKING_READINESS_STATUSES.has(detail.status))
+        .map((detail) => {
+          const platform = detail.platform ? `/${detail.platform}` : '';
+          const reason = String(detail.error || detail.status).trim();
+          return `${detail.app_key}${platform}:${reason}`;
+        })
+        .filter((value) => value.length > 0)
+    )
+  ).slice(0, 5);
+
+  return summaries.length > 0 ? summaries.join(' | ') : null;
+}
+
+async function markPullReadinessPending(
+  dates: string[],
+  expectedTargets: number,
+  startedAt: string
+): Promise<void> {
+  await Promise.all(
+    dates.map((date) =>
+      upsertPullReportReadiness({
+        report_date: date,
+        source_report: PULL_SOURCE_REPORT,
+        status: 'pending',
+        expected_targets: expectedTargets,
+        ok_targets: 0,
+        blocked_targets: 0,
+        last_cycle_started_at: startedAt,
+        last_cycle_finished_at: null,
+        last_error_summary: null
+      })
+    )
+  );
+}
+
+async function finalizePullReadiness(
+  dates: string[],
+  details: PullCycleDetail[],
+  expectedTargets: number,
+  startedAt: string,
+  finishedAt: string
+): Promise<void> {
+  await Promise.all(
+    dates.map(async (date) => {
+      const dateDetails = details.filter((detail) => detail.date === date && detail.status !== 'skipped_missing_pull_app_id');
+      const okTargets = dateDetails.filter((detail) => NON_BLOCKING_READINESS_STATUSES.has(detail.status)).length;
+      const blockedTargets = Math.max(0, expectedTargets - okTargets);
+      await upsertPullReportReadiness({
+        report_date: date,
+        source_report: PULL_SOURCE_REPORT,
+        status: blockedTargets > 0 ? 'blocked' : 'ready',
+        expected_targets: expectedTargets,
+        ok_targets: okTargets,
+        blocked_targets: blockedTargets,
+        last_cycle_started_at: startedAt,
+        last_cycle_finished_at: finishedAt,
+        last_error_summary: buildPullReadinessErrorSummary(dateDetails)
+      });
+    })
+  );
 }
 
 const HEADER_ALIASES: Record<string, string> = {
@@ -227,6 +323,46 @@ function normalizeHeader(header: string): string {
   }
 
   return stripped.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+async function replacePullDailySlice(
+  scope: PullSliceScope,
+  pullRows: PullAggregateDailyRow[],
+  metricRows: DailyMetricRow[]
+): Promise<void> {
+  const mutationParams = {
+    date: scope.date,
+    app_key: scope.appKey,
+    platform: scope.platform,
+    source_report: PULL_SOURCE_REPORT
+  };
+
+  await chExec(
+    `ALTER TABLE pull_aggregate_daily
+      DELETE WHERE date = toDate({date:String})
+        AND app_key = {app_key:String}
+        AND lowerUTF8(platform) = {platform:String}
+        AND source_report = {source_report:String}
+      SETTINGS mutations_sync = 2`,
+    mutationParams
+  );
+
+  await chExec(
+    `ALTER TABLE metrics_daily
+      DELETE WHERE date = toDate({date:String})
+        AND app_key = {app_key:String}
+        AND lowerUTF8(platform) = {platform:String}
+        AND source = {source_report:String}
+      SETTINGS mutations_sync = 2`,
+    mutationParams
+  );
+
+  if (pullRows.length > 0) {
+    await chInsertJSON('pull_aggregate_daily', pullRows);
+  }
+  if (metricRows.length > 0) {
+    await chInsertJSON('metrics_daily', metricRows);
+  }
 }
 
 function parseCsv(csv: string): CsvRow[] {
@@ -551,8 +687,15 @@ async function executePullAttempt(params: {
       };
     }
 
-    await chInsertJSON('pull_aggregate_daily', pullRows);
-    await chInsertJSON('metrics_daily', metricRows);
+    await replacePullDailySlice(
+      {
+        appKey: params.appKey,
+        date: params.date,
+        platform: params.platform
+      },
+      pullRows,
+      metricRows
+    );
     await upsertPullContentGuard({
       app_key: params.appKey,
       platform: params.platform,
@@ -596,12 +739,14 @@ async function executePullAttempt(params: {
 
 export async function runPullCycle(backfillDays: number, logger?: PullLogger): Promise<PullCycleResult> {
   const startedAt = new Date();
+  const startedAtIso = startedAt.toISOString();
   const safeBackfillDays = Math.max(1, Math.floor(backfillDays));
   const apps = await listApps();
   const dates = buildDateList(safeBackfillDays);
   const details: PullCycleDetail[] = [];
   const reviewQueue: PullReviewCandidate[] = [];
   const lockOwnerId = crypto.randomUUID();
+  const expectedTargets = apps.reduce((sum, app) => sum + buildPullTargets(app).length, 0);
 
   const lockAcquired = await tryAcquirePullCycleLock(PULL_CYCLE_LOCK_NAME, lockOwnerId, env.pullerLockTtlMs);
   if (!lockAcquired) {
@@ -631,6 +776,7 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
   }
 
   try {
+    await markPullReadinessPending(dates, expectedTargets, startedAtIso);
     logInfo(logger, 'puller_cycle_started', {
       apps: apps.length,
       backfill_days: safeBackfillDays,
@@ -638,17 +784,7 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
     });
 
     for (const app of apps) {
-      const targets: Array<{ pullAppId: string; platform: string }> = [];
-      if (app.ios_pull_app_id) {
-        targets.push({ pullAppId: app.ios_pull_app_id, platform: 'ios' });
-      }
-      if (app.android_pull_app_id) {
-        targets.push({ pullAppId: app.android_pull_app_id, platform: 'android' });
-      }
-      if (targets.length === 0 && app.pull_app_id) {
-        targets.push({ pullAppId: app.pull_app_id, platform: 'unknown' });
-      }
-
+      const targets = buildPullTargets(app);
       if (targets.length === 0) {
         details.push({
           app_key: app.app_key,
@@ -852,13 +988,16 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
     }
 
     const endedAt = new Date();
+    const endedAtIso = endedAt.toISOString();
     const successCount = details.filter((item) => item.status === 'ok').length;
     const failedCount = details.filter((item) => item.status === 'failed').length;
     const skippedCount = details.filter((item) => item.status.startsWith('skipped_')).length;
 
+    await finalizePullReadiness(dates, details, expectedTargets, startedAtIso, endedAtIso);
+
     const summary: PullCycleResult = {
-      started_at: startedAt.toISOString(),
-      ended_at: endedAt.toISOString(),
+      started_at: startedAtIso,
+      ended_at: endedAtIso,
       duration_ms: endedAt.getTime() - startedAt.getTime(),
       backfill_days: safeBackfillDays,
       dates,
@@ -880,6 +1019,25 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
     });
 
     return summary;
+  } catch (error) {
+    const endedAtIso = new Date().toISOString();
+    const errorText = error instanceof Error ? error.message : String(error);
+    await Promise.all(
+      dates.map((date) =>
+        upsertPullReportReadiness({
+          report_date: date,
+          source_report: PULL_SOURCE_REPORT,
+          status: 'blocked',
+          expected_targets: expectedTargets,
+          ok_targets: 0,
+          blocked_targets: expectedTargets,
+          last_cycle_started_at: startedAtIso,
+          last_cycle_finished_at: endedAtIso,
+          last_error_summary: errorText
+        })
+      )
+    );
+    throw error;
   } finally {
     await releasePullCycleLock(PULL_CYCLE_LOCK_NAME, lockOwnerId);
   }

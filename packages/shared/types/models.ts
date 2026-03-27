@@ -188,6 +188,7 @@ export interface KeywordLifecycleStateRow {
 
 export type BudgetAction = 'increase' | 'decrease' | 'hold' | 'pause';
 export type BudgetRecommendationStatus = 'pending' | 'applied' | 'rejected' | 'expired';
+export type RecommendationType = 'budget' | 'asa_keyword';
 
 export interface LlmExplainResult {
   summary_cn: string;
@@ -220,6 +221,10 @@ export interface BudgetRecommendationRow {
   reason_code: string;
   llm_summary: unknown;
   status: BudgetRecommendationStatus;
+  execution_status: string | null;
+  is_adopted: boolean;
+  validation_result: string | null;
+  feedback_synced_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -375,12 +380,26 @@ export interface BitableExportConfigRecord {
   enabled: boolean;
   target_table_id: string | null;
   target_table_name: string | null;
+  table_name_prefix: string;
   chat_id: string | null;
   selected_fields: string[];
   last_status: 'idle' | 'success' | 'failed' | 'partial_success';
   last_error: string | null;
   last_synced_at: string | null;
   last_record_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BitableExportDailyTableRecord {
+  id: number;
+  source_type: BitableExportSourceType;
+  report_date: string;
+  table_id: string;
+  table_name: string;
+  table_name_prefix: string;
+  last_record_count: number;
+  last_synced_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -393,10 +412,45 @@ export interface BitableExportRecordRefRecord {
   snapshot_id: string;
   sync_key: string;
   record_id: string;
+  recommendation_type: RecommendationType | null;
+  recommendation_id: number | null;
   validation_result: string | null;
   is_adopted: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface RecommendationExecutionFeedbackRecord {
+  id: number;
+  source_type: BitableExportSourceType;
+  recommendation_type: RecommendationType;
+  recommendation_id: number;
+  report_date: string;
+  table_id: string;
+  record_id: string;
+  sync_key: string;
+  execution_status: string | null;
+  is_adopted: boolean;
+  validation_result: string | null;
+  raw_fields_json: unknown;
+  bitable_last_modified_time: string | null;
+  synced_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FeedbackSkillVersionRecord {
+  id: number;
+  scope: string;
+  source_type: BitableExportSourceType;
+  from_date: string | null;
+  to_date: string | null;
+  dataset_row_count: number;
+  stats_json: unknown;
+  skills_markdown: string;
+  model: string;
+  prompt_hash: string;
+  created_at: string;
 }
 
 export interface RuntimeScheduleConfigRecord {

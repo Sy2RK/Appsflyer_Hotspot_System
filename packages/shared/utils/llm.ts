@@ -1,6 +1,7 @@
 import { env } from '../config/env.js';
 import { md5Hex } from './hash.js';
 import { LlmExplainResult } from '../types/models.js';
+import { loadLatestFeedbackSkillPrompt } from './recommendationFeedback.js';
 
 export interface BudgetLlmInput {
   appKey: string;
@@ -106,6 +107,7 @@ function normalizeExplain(raw: unknown, input: BudgetLlmInput): LlmExplainResult
 
 export async function explainBudgetRecommendationWithLlm(input: BudgetLlmInput): Promise<LlmCallResult> {
   const fallback = fallbackExplain(input);
+  const feedbackSkillPrompt = await loadLatestFeedbackSkillPrompt('budget');
   const promptPayload = {
     task: 'budget_recommendation_explain',
     locale: 'zh-CN',
@@ -116,7 +118,8 @@ export async function explainBudgetRecommendationWithLlm(input: BudgetLlmInput):
       'checklist 为可执行检查项',
       '风险等级仅 low/medium/high'
     ],
-    context: input
+    context: input,
+    learned_feedback_constraints: feedbackSkillPrompt || undefined
   };
   const promptText = JSON.stringify(promptPayload);
   const promptHash = md5Hex(promptText);
@@ -142,7 +145,9 @@ export async function explainBudgetRecommendationWithLlm(input: BudgetLlmInput):
       {
         role: 'system',
         content:
-          '你是增长投放分析助手。仅输出 JSON，字段必须是 summary_cn,risk_level,checklist,explanation_points。禁止输出思考过程。summary_cn 保持简洁，但不要为了控字数截断关键信息。'
+          `你是增长投放分析助手。仅输出 JSON，字段必须是 summary_cn,risk_level,checklist,explanation_points。禁止输出思考过程。summary_cn 保持简洁，但不要为了控字数截断关键信息。${
+            feedbackSkillPrompt ? `\n请额外遵守以下历史反馈经验：\n${feedbackSkillPrompt}` : ''
+          }`
       },
       {
         role: 'user',

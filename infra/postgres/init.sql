@@ -263,6 +263,7 @@ CREATE TABLE IF NOT EXISTS bitable_export_configs (
   enabled BOOLEAN NOT NULL DEFAULT FALSE,
   target_table_id TEXT,
   target_table_name TEXT,
+  table_name_prefix TEXT NOT NULL DEFAULT '投放执行表',
   chat_id TEXT,
   selected_fields JSONB NOT NULL DEFAULT '[]'::jsonb,
   last_status TEXT NOT NULL DEFAULT 'idle' CHECK (last_status IN ('idle', 'success', 'failed', 'partial_success')),
@@ -296,6 +297,26 @@ ALTER TABLE bitable_export_configs
 CREATE INDEX IF NOT EXISTS idx_bitable_export_configs_lookup
   ON bitable_export_configs (enabled, source_type, updated_at DESC);
 
+ALTER TABLE bitable_export_configs
+  ADD COLUMN IF NOT EXISTS table_name_prefix TEXT NOT NULL DEFAULT '投放执行表';
+
+CREATE TABLE IF NOT EXISTS bitable_export_daily_tables (
+  id BIGSERIAL PRIMARY KEY,
+  source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')),
+  report_date DATE NOT NULL,
+  table_id TEXT NOT NULL DEFAULT '',
+  table_name TEXT NOT NULL DEFAULT '',
+  table_name_prefix TEXT NOT NULL DEFAULT '投放执行表',
+  last_record_count INTEGER NOT NULL DEFAULT 0,
+  last_synced_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (source_type, report_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bitable_export_daily_tables_lookup
+  ON bitable_export_daily_tables (source_type, report_date DESC, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS bitable_export_record_refs (
   id BIGSERIAL PRIMARY KEY,
   source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')),
@@ -304,6 +325,8 @@ CREATE TABLE IF NOT EXISTS bitable_export_record_refs (
   snapshot_id TEXT NOT NULL DEFAULT '',
   sync_key TEXT NOT NULL DEFAULT '',
   record_id TEXT NOT NULL,
+  recommendation_type TEXT,
+  recommendation_id BIGINT,
   validation_result TEXT,
   is_adopted BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -316,6 +339,52 @@ CREATE INDEX IF NOT EXISTS idx_bitable_export_record_refs_lookup
 
 ALTER TABLE bitable_export_record_refs
   ADD COLUMN IF NOT EXISTS is_adopted BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE bitable_export_record_refs
+  ADD COLUMN IF NOT EXISTS recommendation_type TEXT;
+
+ALTER TABLE bitable_export_record_refs
+  ADD COLUMN IF NOT EXISTS recommendation_id BIGINT;
+
+CREATE TABLE IF NOT EXISTS recommendation_execution_feedbacks (
+  id BIGSERIAL PRIMARY KEY,
+  source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')),
+  recommendation_type TEXT NOT NULL CHECK (recommendation_type IN ('budget', 'asa_keyword')),
+  recommendation_id BIGINT NOT NULL,
+  report_date DATE NOT NULL,
+  table_id TEXT NOT NULL DEFAULT '',
+  record_id TEXT NOT NULL DEFAULT '',
+  sync_key TEXT NOT NULL DEFAULT '',
+  execution_status TEXT,
+  is_adopted BOOLEAN NOT NULL DEFAULT FALSE,
+  validation_result TEXT,
+  raw_fields_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  bitable_last_modified_time TIMESTAMPTZ,
+  synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (source_type, recommendation_type, recommendation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recommendation_execution_feedbacks_lookup
+  ON recommendation_execution_feedbacks (source_type, recommendation_type, report_date DESC, synced_at DESC);
+
+CREATE TABLE IF NOT EXISTS feedback_skill_versions (
+  id BIGSERIAL PRIMARY KEY,
+  scope TEXT NOT NULL,
+  source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')),
+  from_date DATE,
+  to_date DATE,
+  dataset_row_count INTEGER NOT NULL DEFAULT 0,
+  stats_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  skills_markdown TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  prompt_hash TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_skill_versions_lookup
+  ON feedback_skill_versions (scope, source_type, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS runtime_schedule_configs (
   singleton_key TEXT PRIMARY KEY,
@@ -353,6 +422,23 @@ CREATE TABLE IF NOT EXISTS pull_content_guards (
 
 CREATE INDEX IF NOT EXISTS idx_pull_content_guards_next_allowed
   ON pull_content_guards (next_allowed_at);
+
+CREATE TABLE IF NOT EXISTS pull_report_readiness (
+  report_date DATE NOT NULL,
+  source_report TEXT NOT NULL DEFAULT 'daily_report_v5',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'ready', 'blocked')),
+  expected_targets INTEGER NOT NULL DEFAULT 0,
+  ok_targets INTEGER NOT NULL DEFAULT 0,
+  blocked_targets INTEGER NOT NULL DEFAULT 0,
+  last_cycle_started_at TIMESTAMPTZ,
+  last_cycle_finished_at TIMESTAMPTZ,
+  last_error_summary TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (report_date, source_report)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pull_report_readiness_status
+  ON pull_report_readiness (status, report_date DESC);
 
 CREATE TABLE IF NOT EXISTS product_stage_configs (
   id BIGSERIAL PRIMARY KEY,
@@ -530,9 +616,21 @@ BEFORE UPDATE ON bitable_export_configs
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 
+DROP TRIGGER IF EXISTS trg_bitable_export_daily_tables_updated_at ON bitable_export_daily_tables;
+CREATE TRIGGER trg_bitable_export_daily_tables_updated_at
+BEFORE UPDATE ON bitable_export_daily_tables
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
 DROP TRIGGER IF EXISTS trg_bitable_export_record_refs_updated_at ON bitable_export_record_refs;
 CREATE TRIGGER trg_bitable_export_record_refs_updated_at
 BEFORE UPDATE ON bitable_export_record_refs
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_recommendation_execution_feedbacks_updated_at ON recommendation_execution_feedbacks;
+CREATE TRIGGER trg_recommendation_execution_feedbacks_updated_at
+BEFORE UPDATE ON recommendation_execution_feedbacks
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 

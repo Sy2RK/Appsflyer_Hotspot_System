@@ -173,13 +173,51 @@ function normalizeMediaSources(mediaSources?: string[]): string[] {
   );
 }
 
-function filtersToRouteKey(filters: DailyBriefFilters, prefix = 'manual'): string {
-  const payload = JSON.stringify({
+function buildDailyBriefRoutePayload(filters: DailyBriefFilters): {
+  app_key: string | null;
+  platform: string | null;
+  media_sources: string[];
+} {
+  return {
     app_key: cleanText(filters.appKey) || null,
     platform: normalizePlatformValue(filters.platform) || null,
     media_sources: normalizeMediaSources(filters.mediaSources)
-  });
+  };
+}
+
+function hasDailyBriefRouteScope(filters: DailyBriefFilters): boolean {
+  const payload = buildDailyBriefRoutePayload(filters);
+  return Boolean(payload.app_key || payload.platform || payload.media_sources.length > 0);
+}
+
+function filtersToRouteKey(filters: DailyBriefFilters, prefix = 'scope'): string {
+  const payload = JSON.stringify(buildDailyBriefRoutePayload(filters));
   return `${prefix}:${md5Hex(payload)}`;
+}
+
+function dailyBriefRouteForFilters(routes: DailyBriefRouteRecord[], filters: DailyBriefFilters): DailyBriefRouteRecord | null {
+  const target = buildDailyBriefRoutePayload(filters);
+  return routes.find((route) => {
+    const candidate = buildDailyBriefRoutePayload(buildRouteFilters(route));
+    return candidate.app_key === target.app_key
+      && candidate.platform === target.platform
+      && JSON.stringify(candidate.media_sources) === JSON.stringify(target.media_sources);
+  }) ?? null;
+}
+
+function resolveDailyBriefDispatchRouteKey(
+  filters: DailyBriefFilters,
+  routes: DailyBriefRouteRecord[],
+  explicitRouteKey?: string
+): string {
+  if (explicitRouteKey) {
+    return explicitRouteKey;
+  }
+  const matchedRoute = dailyBriefRouteForFilters(routes, filters);
+  if (matchedRoute) {
+    return `route:${matchedRoute.id}`;
+  }
+  return hasDailyBriefRouteScope(filters) ? filtersToRouteKey(filters) : 'all';
 }
 
 function buildDailyBriefSendLockName(
@@ -733,6 +771,8 @@ export async function buildDailyBriefPreview(
   options?: { routeKey?: string }
 ): Promise<DailyBriefPreview> {
   const mediaSourcesApplied = normalizeMediaSources(filters.mediaSources);
+  const routes = await listEnabledDailyBriefRoutes();
+  const routeKey = resolveDailyBriefDispatchRouteKey(filters, routes, options?.routeKey);
   const [apps, appMetrics, openAlertCounts, pendingBudgetCounts, budgetHighlights, existingDispatch, availableMediaSources] =
     await Promise.all([
       listApps(),
@@ -740,7 +780,7 @@ export async function buildDailyBriefPreview(
       queryOpenAlertCounts(filters),
       queryPendingBudgetCounts(reportDate, filters),
       queryPendingBudgetHighlights(reportDate, filters),
-      getDailyBriefDispatch(reportDate, 'ops_daily', 'feishu', options?.routeKey ?? filtersToRouteKey(filters)),
+      getDailyBriefDispatch(reportDate, 'ops_daily', 'feishu', routeKey),
       queryDistinctMediaSources(reportDate, {
         appKey: filters.appKey,
         platform: filters.platform
@@ -811,7 +851,6 @@ export async function buildDailyBriefPreview(
     summary
   });
   const todayJudgment = buildTodayJudgment(summary);
-  const routeKey = options?.routeKey ?? filtersToRouteKey(filters);
   const title = `${env.dailyBriefTitlePrefix}｜${reportDate}`;
   const cardPayload = buildDailyBriefInteractiveCard({
     reportDate,
@@ -1024,7 +1063,8 @@ export async function sendDailyBrief(
   }
 ): Promise<DailyBriefSendResult> {
   const filters = options?.filters ?? {};
-  const routeKey = options?.routeKey ?? filtersToRouteKey(filters);
+  const routes = await listEnabledDailyBriefRoutes();
+  const routeKey = resolveDailyBriefDispatchRouteKey(filters, routes, options?.routeKey);
   return sendSingleDailyBrief(reportDate, filters, routeKey, options?.channelOverride, options);
 }
 
@@ -1072,16 +1112,16 @@ export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> 
     if (preview.summary.apps_with_data === 0) {
       logger.info('daily_brief_skip_no_data', {
         report_date: reportDate,
-        route_key: 'scheduled:all'
+        route_key: 'all'
       });
       return;
     }
 
-    const existing = await getDailyBriefDispatch(reportDate, 'ops_daily', 'feishu', 'scheduled:all');
+    const existing = await getDailyBriefDispatch(reportDate, 'ops_daily', 'feishu', 'all');
     if (existing?.status === 'sent') {
       logger.info('daily_brief_skip_already_sent', {
         report_date: reportDate,
-        route_key: 'scheduled:all',
+        route_key: 'all',
         sent_at: existing.sent_at
       });
       return;
@@ -1090,19 +1130,19 @@ export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> 
     const result = await sendDailyBrief(reportDate, {
       force: false,
       manualTriggered: false,
-      routeKey: 'scheduled:all'
+      routeKey: 'all'
     });
     if (result.ok) {
       logger.info('daily_brief_sent', {
         report_date: reportDate,
-        route_key: 'scheduled:all',
+        route_key: 'all',
         render_mode: result.notify.render_mode || result.report.render_mode
       });
       return;
     }
     logger.error('daily_brief_send_failed', {
       report_date: reportDate,
-      route_key: 'scheduled:all',
+      route_key: 'all',
       error: result.notify.error ?? `status_${String(result.notify.status ?? 'unknown')}`
     });
     return;

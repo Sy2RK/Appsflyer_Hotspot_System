@@ -8,7 +8,9 @@
 - AppsFlyer Pull `daily_report_v5` 日级拉取与指标趋势
 - WebUI 顶部全局调度配置
   - 统一编辑 `Pull 时间` 与 `推送时间`
+  - `budget-advisor` 与 `asa-keywords` 自动使用 `Pull 时间`
   - `bitable-export` 自动使用 `推送时间 + 5 分钟`
+  - 自动发送链路会等待 `budget-advisor` 与 `asa-keywords` 对应报告日真正完成后，再继续日报 / ASA 简报 / Feishu 多维表格
 - WebUI 全局 AI 悬浮入口
   - 右下角提供统一的 AI 功能舱入口
   - 当前内置 Gemini 官网跳转
@@ -22,6 +24,7 @@
 - 每日简报
   - 通用简报
   - ASA 专项简报
+  - 自动发送前会校验下游建议链路是否完成，避免“日报先发、建议后补”
 - Feishu 多维表格投放执行表推送
   - 通用投放建议 + ASA 关键词建议合并到单张执行表
   - 仅保留投放同学可直接使用的字段
@@ -37,13 +40,13 @@
 - `workers/puller`
   - Pull 定时拉取
 - `workers/daily-brief`
-  - 通用日报定时发送
+  - 通用日报定时发送（等待预算建议 + ASA 关键词链路完成）
 - `workers/asa-keywords`
-  - ASA 专项数据拉取与重算
+  - ASA 专项数据拉取与重算（按 `Pull 时间` 对齐）
 - `workers/asa-daily-brief`
-  - ASA 简报定时发送
+  - ASA 简报定时发送（等待预算建议 + ASA 关键词链路完成）
 - `workers/bitable-export`
-  - Feishu 多维表格定时导出
+  - Feishu 多维表格定时导出（等待预算建议 + ASA 关键词链路完成）
 - `infra`
   - Docker Compose、ClickHouse、Postgres 初始化脚本
 

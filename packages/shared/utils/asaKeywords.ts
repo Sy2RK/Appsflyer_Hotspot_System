@@ -1446,6 +1446,24 @@ function asaRouteFilters(route: AsaKeywordRouteRecord): { appKey?: string; platf
   };
 }
 
+function resolveAsaDispatchRouteKey(
+  filters: { appKey?: string; platform?: string; routeKey?: string },
+  matchedRoute: AsaKeywordRouteRecord | null
+): string {
+  if (filters.routeKey) {
+    return filters.routeKey;
+  }
+  if (matchedRoute) {
+    return `route:${matchedRoute.id}`;
+  }
+  const appKey = String(filters.appKey || '').trim();
+  const platform = String(filters.platform || '').trim().toLowerCase();
+  if (!appKey && !platform) {
+    return 'all';
+  }
+  return ['scope', appKey || 'all', platform || 'all'].join(':');
+}
+
 export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Promise<AsaBriefPreview> {
   const result = await queryAsaKeywordDashboard({
     appKey: filters.appKey,
@@ -1642,7 +1660,7 @@ export async function sendAsaKeywordBrief(
   const report = await buildAsaKeywordBriefPreview({ reportDate, appKey: filters.appKey, platform: filters.platform });
   const routes = await listEnabledAsaKeywordRoutes();
   const matchedRoute = asaRouteForFilters(routes, filters);
-  const routeKey = filters.routeKey ?? (matchedRoute ? `asa:${matchedRoute.route_name}` : 'asa:default');
+  const routeKey = resolveAsaDispatchRouteKey(filters, matchedRoute);
   const lockOwnerId = crypto.randomUUID();
   const lockName = buildAsaKeywordBriefSendLockName(reportDate, routeKey, filters);
   const lockAcquired = await tryAcquireJobLock(lockName, lockOwnerId, ASA_KEYWORD_BRIEF_SEND_LOCK_TTL_MS);
@@ -1723,12 +1741,12 @@ export async function runScheduledAsaKeywordBrief(logger: LoggerLike): Promise<v
     const briefResult = await sendAsaKeywordBrief(reportDate, {
       force: false,
       manualTriggered: false,
-      routeKey: 'scheduled:asa:all'
+      routeKey: 'all'
     });
     if (briefResult.ok && !briefResult.skipped) {
       logger.info?.('asa_daily_brief_sent', {
         report_date: reportDate,
-        route_key: 'scheduled:asa:all',
+        route_key: 'all',
         render_mode: briefResult.notify.render_mode || 'interactive'
       });
     }
@@ -1746,13 +1764,13 @@ export async function runScheduledAsaKeywordBrief(logger: LoggerLike): Promise<v
       ...routeFilters,
       force: false,
       manualTriggered: false,
-      routeKey: `scheduled:asa-route:${route.id}`,
+      routeKey: `route:${route.id}`,
       channelOverride: override
     });
     if (briefResult.ok && !briefResult.skipped) {
       logger.info?.('asa_daily_brief_route_sent', {
         report_date: reportDate,
-        route_key: `scheduled:asa-route:${route.id}`,
+        route_key: `route:${route.id}`,
         route_name: route.route_name
       });
     }

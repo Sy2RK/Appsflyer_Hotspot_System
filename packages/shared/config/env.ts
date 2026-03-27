@@ -131,6 +131,7 @@ export const env = {
   feishuBitableEnabled: (process.env.FEISHU_BITABLE_ENABLED ?? 'true').toLowerCase() !== 'false',
   feishuBitableScheduleHour: optionalNumber('FEISHU_BITABLE_SCHEDULE_HOUR', 10),
   feishuBitableScheduleMinute: optionalNumber('FEISHU_BITABLE_SCHEDULE_MINUTE', 5),
+  bitableFeedbackSyncIntervalMs: optionalNumber('BITABLE_FEEDBACK_SYNC_INTERVAL_MS', 15 * 60 * 1000),
   dailyBriefEnabled: (process.env.DAILY_BRIEF_ENABLED ?? 'true').toLowerCase() !== 'false',
   dailyBriefIntervalMs: optionalNumber('DAILY_BRIEF_INTERVAL_MS', 60 * 60 * 1000),
   dailyBriefReportHour: optionalNumber('DAILY_BRIEF_REPORT_HOUR', 10),

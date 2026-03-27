@@ -6,17 +6,21 @@ import {
   AsaKeywordRouteRecord,
   AsaKeywordStateRow,
   BitableExportConfigRecord,
+  BitableExportDailyTableRecord,
   BitableExportRecordRefRecord,
   BudgetRecommendationRow,
   BudgetRecommendationStatus,
   BitableExportSourceType,
   DailyBriefDispatchRecord,
   DailyBriefRouteRecord,
+  FeedbackSkillVersionRecord,
   KeywordExtractRuleRecord,
   KeywordLifecycleStateRow,
   OperationLogRecord,
   ProductStage,
   ProductStageConfigRecord,
+  RecommendationExecutionFeedbackRecord,
+  RecommendationType,
   RuntimeScheduleConfigRecord
 } from '../types/models.js';
 
@@ -90,6 +94,21 @@ export interface PullContentGuardRecord {
   updated_at: string;
 }
 
+export type PullReportReadinessStatus = 'pending' | 'ready' | 'blocked';
+
+export interface PullReportReadinessRecord {
+  report_date: string;
+  source_report: string;
+  status: PullReportReadinessStatus;
+  expected_targets: number;
+  ok_targets: number;
+  blocked_targets: number;
+  last_cycle_started_at: string | null;
+  last_cycle_finished_at: string | null;
+  last_error_summary: string | null;
+  updated_at: string;
+}
+
 export interface UpsertPullContentGuardInput {
   app_key: string;
   platform: string;
@@ -100,6 +119,18 @@ export interface UpsertPullContentGuardInput {
   last_error?: string | null;
   attempted_at?: string;
   next_allowed_at?: string | null;
+}
+
+export interface UpsertPullReportReadinessInput {
+  report_date: string;
+  source_report: string;
+  status: PullReportReadinessStatus;
+  expected_targets: number;
+  ok_targets: number;
+  blocked_targets: number;
+  last_cycle_started_at?: string | null;
+  last_cycle_finished_at?: string | null;
+  last_error_summary?: string | null;
 }
 
 export async function claimIngestDedupKeys(
@@ -150,6 +181,19 @@ export async function releasePullCycleLock(name: string, ownerId: string): Promi
   await pgQuery(`DELETE FROM pull_cycle_locks WHERE name = $1 AND owner_id = $2`, [name, ownerId]);
 }
 
+export async function getActivePullCycleLock(name: string): Promise<PullCycleLockRecord | null> {
+  const result = await pgQuery<PullCycleLockRecord>(
+    `SELECT name, owner_id, expires_at, created_at, updated_at
+       FROM pull_cycle_locks
+      WHERE name = $1
+        AND expires_at > NOW()
+      LIMIT 1`,
+    [name]
+  );
+
+  return result.rows[0] ?? null;
+}
+
 export async function tryAcquireJobLock(name: string, ownerId: string, ttlMs: number): Promise<boolean> {
   return tryAcquirePullCycleLock(name, ownerId, ttlMs);
 }
@@ -158,14 +202,130 @@ export async function releaseJobLock(name: string, ownerId: string): Promise<voi
   await releasePullCycleLock(name, ownerId);
 }
 
+export async function getActiveJobLock(name: string): Promise<PullCycleLockRecord | null> {
+  return getActivePullCycleLock(name);
+}
+
 let ensureBitableExportRecordRefsSchemaPromise: Promise<void> | null = null;
+let ensureBitableExportConfigSchemaPromise: Promise<void> | null = null;
+let ensureBitableExportDailyTablesSchemaPromise: Promise<void> | null = null;
+let ensureRecommendationExecutionFeedbacksSchemaPromise: Promise<void> | null = null;
+let ensureFeedbackSkillVersionsSchemaPromise: Promise<void> | null = null;
+let ensurePullReportReadinessSchemaPromise: Promise<void> | null = null;
+
+async function ensurePullReportReadinessSchema(): Promise<void> {
+  if (!ensurePullReportReadinessSchemaPromise) {
+    ensurePullReportReadinessSchemaPromise = (async () => {
+      await pgQuery(`CREATE TABLE IF NOT EXISTS pull_report_readiness (
+        report_date DATE NOT NULL,
+        source_report TEXT NOT NULL DEFAULT 'daily_report_v5',
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'ready', 'blocked')),
+        expected_targets INTEGER NOT NULL DEFAULT 0,
+        ok_targets INTEGER NOT NULL DEFAULT 0,
+        blocked_targets INTEGER NOT NULL DEFAULT 0,
+        last_cycle_started_at TIMESTAMPTZ,
+        last_cycle_finished_at TIMESTAMPTZ,
+        last_error_summary TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (report_date, source_report)
+      )`);
+      await pgQuery(
+        `CREATE INDEX IF NOT EXISTS idx_pull_report_readiness_status
+          ON pull_report_readiness (status, report_date DESC)`
+      );
+    })()
+      .then(() => undefined)
+      .catch((error) => {
+        ensurePullReportReadinessSchemaPromise = null;
+        throw error;
+      });
+  }
+  await ensurePullReportReadinessSchemaPromise;
+}
+
+async function ensureBitableExportConfigSchema(): Promise<void> {
+  if (!ensureBitableExportConfigSchemaPromise) {
+    ensureBitableExportConfigSchemaPromise = (async () => {
+      await pgQuery(`CREATE TABLE IF NOT EXISTS bitable_export_configs (
+        id BIGSERIAL PRIMARY KEY,
+        source_type TEXT NOT NULL UNIQUE,
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        target_table_id TEXT,
+        target_table_name TEXT,
+        table_name_prefix TEXT NOT NULL DEFAULT '投放执行表',
+        chat_id TEXT,
+        selected_fields JSONB NOT NULL DEFAULT '[]'::jsonb,
+        last_status TEXT NOT NULL DEFAULT 'idle',
+        last_error TEXT,
+        last_synced_at TIMESTAMPTZ,
+        last_record_count INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await pgQuery(
+        `ALTER TABLE bitable_export_configs
+           ADD COLUMN IF NOT EXISTS table_name_prefix TEXT NOT NULL DEFAULT '投放执行表'`
+      );
+      await pgQuery(
+        `CREATE INDEX IF NOT EXISTS idx_bitable_export_configs_lookup
+          ON bitable_export_configs (enabled, source_type, updated_at DESC)`
+      );
+    })()
+      .then(() => undefined)
+      .catch((error) => {
+        ensureBitableExportConfigSchemaPromise = null;
+        throw error;
+      });
+  }
+  await ensureBitableExportConfigSchemaPromise;
+}
+
+async function ensureBitableExportDailyTablesSchema(): Promise<void> {
+  if (!ensureBitableExportDailyTablesSchemaPromise) {
+    ensureBitableExportDailyTablesSchemaPromise = (async () => {
+      await pgQuery(`CREATE TABLE IF NOT EXISTS bitable_export_daily_tables (
+        id BIGSERIAL PRIMARY KEY,
+        source_type TEXT NOT NULL,
+        report_date DATE NOT NULL,
+        table_id TEXT NOT NULL DEFAULT '',
+        table_name TEXT NOT NULL DEFAULT '',
+        table_name_prefix TEXT NOT NULL DEFAULT '投放执行表',
+        last_record_count INTEGER NOT NULL DEFAULT 0,
+        last_synced_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (source_type, report_date)
+      )`);
+      await pgQuery(
+        `CREATE INDEX IF NOT EXISTS idx_bitable_export_daily_tables_lookup
+          ON bitable_export_daily_tables (source_type, report_date DESC, updated_at DESC)`
+      );
+    })()
+      .then(() => undefined)
+      .catch((error) => {
+        ensureBitableExportDailyTablesSchemaPromise = null;
+        throw error;
+      });
+  }
+  await ensureBitableExportDailyTablesSchemaPromise;
+}
 
 async function ensureBitableExportRecordRefsSchema(): Promise<void> {
   if (!ensureBitableExportRecordRefsSchemaPromise) {
-    ensureBitableExportRecordRefsSchemaPromise = pgQuery(
-      `ALTER TABLE bitable_export_record_refs
-         ADD COLUMN IF NOT EXISTS is_adopted BOOLEAN NOT NULL DEFAULT FALSE`
-    )
+    ensureBitableExportRecordRefsSchemaPromise = Promise.all([
+      pgQuery(
+        `ALTER TABLE bitable_export_record_refs
+           ADD COLUMN IF NOT EXISTS is_adopted BOOLEAN NOT NULL DEFAULT FALSE`
+      ),
+      pgQuery(
+        `ALTER TABLE bitable_export_record_refs
+           ADD COLUMN IF NOT EXISTS recommendation_type TEXT`
+      ),
+      pgQuery(
+        `ALTER TABLE bitable_export_record_refs
+           ADD COLUMN IF NOT EXISTS recommendation_id BIGINT`
+      )
+    ])
       .then(() => undefined)
       .catch((error) => {
         ensureBitableExportRecordRefsSchemaPromise = null;
@@ -173,6 +333,78 @@ async function ensureBitableExportRecordRefsSchema(): Promise<void> {
       });
   }
   await ensureBitableExportRecordRefsSchemaPromise;
+}
+
+async function ensureRecommendationExecutionFeedbacksSchema(): Promise<void> {
+  if (!ensureRecommendationExecutionFeedbacksSchemaPromise) {
+    ensureRecommendationExecutionFeedbacksSchemaPromise = (async () => {
+      await pgQuery(`CREATE TABLE IF NOT EXISTS recommendation_execution_feedbacks (
+        id BIGSERIAL PRIMARY KEY,
+        source_type TEXT NOT NULL,
+        recommendation_type TEXT NOT NULL,
+        recommendation_id BIGINT NOT NULL,
+        report_date DATE NOT NULL,
+        table_id TEXT NOT NULL DEFAULT '',
+        record_id TEXT NOT NULL DEFAULT '',
+        sync_key TEXT NOT NULL DEFAULT '',
+        execution_status TEXT,
+        is_adopted BOOLEAN NOT NULL DEFAULT FALSE,
+        validation_result TEXT,
+        raw_fields_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        bitable_last_modified_time TIMESTAMPTZ,
+        synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (source_type, recommendation_type, recommendation_id)
+      )`);
+      await pgQuery(
+        `CREATE INDEX IF NOT EXISTS idx_recommendation_execution_feedbacks_lookup
+          ON recommendation_execution_feedbacks (source_type, recommendation_type, report_date DESC, synced_at DESC)`
+      );
+    })()
+      .then(() => undefined)
+      .catch((error) => {
+        ensureRecommendationExecutionFeedbacksSchemaPromise = null;
+        throw error;
+      });
+  }
+  await ensureRecommendationExecutionFeedbacksSchemaPromise;
+}
+
+async function ensureFeedbackSkillVersionsSchema(): Promise<void> {
+  if (!ensureFeedbackSkillVersionsSchemaPromise) {
+    ensureFeedbackSkillVersionsSchemaPromise = (async () => {
+      await pgQuery(`CREATE TABLE IF NOT EXISTS feedback_skill_versions (
+        id BIGSERIAL PRIMARY KEY,
+        scope TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        from_date DATE,
+        to_date DATE,
+        dataset_row_count INTEGER NOT NULL DEFAULT 0,
+        stats_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        skills_markdown TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        prompt_hash TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await pgQuery(
+        `CREATE INDEX IF NOT EXISTS idx_feedback_skill_versions_lookup
+          ON feedback_skill_versions (scope, source_type, created_at DESC)`
+      );
+    })()
+      .then(() => undefined)
+      .catch((error) => {
+        ensureFeedbackSkillVersionsSchemaPromise = null;
+        throw error;
+      });
+  }
+  await ensureFeedbackSkillVersionsSchemaPromise;
+}
+
+export async function ensureRecommendationFeedbackStorage(): Promise<void> {
+  await ensureBitableExportRecordRefsSchema();
+  await ensureRecommendationExecutionFeedbacksSchema();
+  await ensureFeedbackSkillVersionsSchema();
 }
 
 export async function getPullContentGuard(
@@ -222,6 +454,79 @@ export async function upsertPullContentGuard(input: UpsertPullContentGuardInput)
       input.last_error ?? '',
       input.attempted_at ?? null,
       input.next_allowed_at ?? null
+    ]
+  );
+
+  return result.rows[0];
+}
+
+export async function getPullReportReadiness(
+  reportDate: string,
+  sourceReport: string
+): Promise<PullReportReadinessRecord | null> {
+  await ensurePullReportReadinessSchema();
+  const result = await pgQuery<PullReportReadinessRecord>(
+    `SELECT report_date, source_report, status, expected_targets, ok_targets, blocked_targets,
+            last_cycle_started_at, last_cycle_finished_at, last_error_summary, updated_at
+       FROM pull_report_readiness
+      WHERE report_date = $1::date
+        AND source_report = $2
+      LIMIT 1`,
+    [reportDate, sourceReport]
+  );
+
+  return result.rows[0] ?? null;
+}
+
+export async function upsertPullReportReadiness(
+  input: UpsertPullReportReadinessInput
+): Promise<PullReportReadinessRecord> {
+  await ensurePullReportReadinessSchema();
+  const result = await pgQuery<PullReportReadinessRecord>(
+    `INSERT INTO pull_report_readiness (
+      report_date,
+      source_report,
+      status,
+      expected_targets,
+      ok_targets,
+      blocked_targets,
+      last_cycle_started_at,
+      last_cycle_finished_at,
+      last_error_summary,
+      updated_at
+    ) VALUES (
+      $1::date,
+      $2,
+      $3,
+      GREATEST(0, $4::int),
+      GREATEST(0, $5::int),
+      GREATEST(0, $6::int),
+      $7::timestamptz,
+      $8::timestamptz,
+      NULLIF($9, ''),
+      NOW()
+    )
+    ON CONFLICT (report_date, source_report) DO UPDATE SET
+      status = EXCLUDED.status,
+      expected_targets = EXCLUDED.expected_targets,
+      ok_targets = EXCLUDED.ok_targets,
+      blocked_targets = EXCLUDED.blocked_targets,
+      last_cycle_started_at = EXCLUDED.last_cycle_started_at,
+      last_cycle_finished_at = EXCLUDED.last_cycle_finished_at,
+      last_error_summary = EXCLUDED.last_error_summary,
+      updated_at = NOW()
+    RETURNING report_date, source_report, status, expected_targets, ok_targets, blocked_targets,
+              last_cycle_started_at, last_cycle_finished_at, last_error_summary, updated_at`,
+    [
+      input.report_date,
+      input.source_report,
+      input.status,
+      input.expected_targets,
+      input.ok_targets,
+      input.blocked_targets,
+      input.last_cycle_started_at ?? null,
+      input.last_cycle_finished_at ?? null,
+      input.last_error_summary ?? ''
     ]
   );
 
@@ -785,6 +1090,9 @@ export interface BudgetRecommendationFilter {
   status?: BudgetRecommendationStatus;
   from?: string;
   to?: string;
+  executionStatus?: string;
+  isAdopted?: boolean;
+  hasManualReview?: boolean;
   page?: number;
   pageSize?: number;
 }
@@ -850,7 +1158,9 @@ export async function upsertBudgetRecommendation(
       updated_at = NOW()
     RETURNING id, app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
               current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, volume_tier,
-              expected_installs_delta, confidence, reason_code, llm_summary, status, created_at, updated_at`,
+              expected_installs_delta, confidence, reason_code, llm_summary, status,
+              NULL::text AS execution_status, FALSE AS is_adopted, NULL::text AS validation_result,
+              NULL::text AS feedback_synced_at, created_at, updated_at`,
     [
       input.app_key,
       input.platform,
@@ -882,6 +1192,7 @@ export async function upsertBudgetRecommendation(
 export async function queryBudgetRecommendations(
   filter: BudgetRecommendationFilter
 ): Promise<PagedResult<BudgetRecommendationRow>> {
+  await ensureRecommendationExecutionFeedbacksSchema();
   const pageSize = Math.min(100, Math.max(1, filter.pageSize ?? 20));
   const page = Math.max(1, filter.page ?? 1);
   const values: unknown[] = [];
@@ -889,29 +1200,49 @@ export async function queryBudgetRecommendations(
 
   if (filter.appKey) {
     values.push(filter.appKey);
-    clauses.push(`app_key = $${values.length}`);
+    clauses.push(`br.app_key = $${values.length}`);
   }
   if (filter.platform) {
     values.push(filter.platform);
-    clauses.push(`platform = $${values.length}`);
+    clauses.push(`br.platform = $${values.length}`);
   }
   if (filter.status) {
     values.push(filter.status);
-    clauses.push(`status = $${values.length}`);
+    clauses.push(`br.status = $${values.length}`);
   }
   if (filter.from) {
     values.push(filter.from);
-    clauses.push(`date >= $${values.length}::date`);
+    clauses.push(`br.date >= $${values.length}::date`);
   }
   if (filter.to) {
     values.push(filter.to);
-    clauses.push(`date <= $${values.length}::date`);
+    clauses.push(`br.date <= $${values.length}::date`);
+  }
+  if (filter.executionStatus) {
+    values.push(filter.executionStatus);
+    clauses.push(`COALESCE(ref.execution_status, '') = $${values.length}`);
+  }
+  if (typeof filter.isAdopted === 'boolean') {
+    values.push(filter.isAdopted);
+    clauses.push(`COALESCE(ref.is_adopted, FALSE) = $${values.length}`);
+  }
+  if (typeof filter.hasManualReview === 'boolean') {
+    clauses.push(
+      filter.hasManualReview
+        ? `NULLIF(BTRIM(COALESCE(ref.validation_result, '')), '') IS NOT NULL`
+        : `NULLIF(BTRIM(COALESCE(ref.validation_result, '')), '') IS NULL`
+    );
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const feedbackJoin = `LEFT JOIN recommendation_execution_feedbacks ref
+       ON ref.source_type = 'delivery_actions'
+      AND ref.recommendation_type = 'budget'
+      AND ref.recommendation_id = br.id`;
 
   const countResult = await pgQuery<{ total: string }>(
     `SELECT to_char(count(*), 'FM999999999999999') AS total
-       FROM budget_recommendations
+       FROM budget_recommendations br
+       ${feedbackJoin}
       ${where}`,
     values
   );
@@ -922,12 +1253,19 @@ export async function queryBudgetRecommendations(
   const listValues = [...values, pageSize, offset];
 
   const rowsResult = await pgQuery<BudgetRecommendationRow>(
-    `SELECT id, app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
-            current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, volume_tier,
-            expected_installs_delta, confidence, reason_code, llm_summary, status, created_at, updated_at
-       FROM budget_recommendations
+    `SELECT br.id, br.app_key, br.platform, br.media_source, br.keyword, br.match_type, br.date, br.action, br.change_ratio,
+            br.suggested_budget, br.current_cost, br.current_ecpi, br.target_ecpi, br.primary_metric, br.metric_mode,
+            br.current_roas, br.target_roas, br.volume_tier, br.expected_installs_delta, br.confidence, br.reason_code,
+            br.llm_summary, br.status,
+            ref.execution_status,
+            COALESCE(ref.is_adopted, FALSE) AS is_adopted,
+            ref.validation_result,
+            ref.synced_at::text AS feedback_synced_at,
+            br.created_at, br.updated_at
+       FROM budget_recommendations br
+       ${feedbackJoin}
        ${where}
-      ORDER BY date DESC, updated_at DESC, id DESC
+      ORDER BY br.date DESC, br.updated_at DESC, br.id DESC
       LIMIT $${listValues.length - 1}
       OFFSET $${listValues.length}`,
     listValues
@@ -953,7 +1291,9 @@ export async function setBudgetRecommendationStatus(
       WHERE id = $2
       RETURNING id, app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
                 current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, volume_tier,
-                expected_installs_delta, confidence, reason_code, llm_summary, status, created_at, updated_at`,
+                expected_installs_delta, confidence, reason_code, llm_summary, status,
+                NULL::text AS execution_status, FALSE AS is_adopted, NULL::text AS validation_result,
+                NULL::text AS feedback_synced_at, created_at, updated_at`,
     [status, id]
   );
   return result.rows[0] ?? null;
@@ -1104,8 +1444,9 @@ function normalizeSelectedFields(raw: unknown): string[] {
 }
 
 export async function listBitableExportConfigs(): Promise<BitableExportConfigRecord[]> {
+  await ensureBitableExportConfigSchema();
   const result = await pgQuery<BitableExportConfigRecord>(
-    `SELECT id, source_type, enabled, target_table_id, target_table_name, chat_id, selected_fields,
+    `SELECT id, source_type, enabled, target_table_id, target_table_name, table_name_prefix, chat_id, selected_fields,
             last_status, last_error, last_synced_at, last_record_count, created_at, updated_at
        FROM bitable_export_configs
       ORDER BY source_type ASC`
@@ -1119,8 +1460,9 @@ export async function listBitableExportConfigs(): Promise<BitableExportConfigRec
 export async function getBitableExportConfig(
   sourceType: BitableExportSourceType
 ): Promise<BitableExportConfigRecord | null> {
+  await ensureBitableExportConfigSchema();
   const result = await pgQuery<BitableExportConfigRecord>(
-    `SELECT id, source_type, enabled, target_table_id, target_table_name, chat_id, selected_fields,
+    `SELECT id, source_type, enabled, target_table_id, target_table_name, table_name_prefix, chat_id, selected_fields,
             last_status, last_error, last_synced_at, last_record_count, created_at, updated_at
        FROM bitable_export_configs
       WHERE source_type = $1
@@ -1142,36 +1484,40 @@ export async function upsertBitableExportConfig(input: {
   enabled?: boolean;
   target_table_id?: string | null;
   target_table_name?: string | null;
+  table_name_prefix?: string | null;
   chat_id?: string | null;
   selected_fields?: string[];
 }): Promise<BitableExportConfigRecord> {
+  await ensureBitableExportConfigSchema();
   const result = await pgQuery<BitableExportConfigRecord>(
     `INSERT INTO bitable_export_configs (
-      source_type, enabled, target_table_id, target_table_name, chat_id, selected_fields
+      source_type, enabled, target_table_id, target_table_name, table_name_prefix, chat_id, selected_fields
     ) VALUES (
-      $1, COALESCE($2, false), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6
+      $1, COALESCE($2, false), NULLIF($3, ''), NULLIF($4, ''), COALESCE(NULLIF($5, ''), '投放执行表'), NULLIF($6, ''), $7
     )
     ON CONFLICT (source_type) DO UPDATE SET
       enabled = COALESCE($2, bitable_export_configs.enabled),
       target_table_id = COALESCE(NULLIF($3, ''), bitable_export_configs.target_table_id),
       target_table_name = COALESCE(NULLIF($4, ''), bitable_export_configs.target_table_name),
+      table_name_prefix = COALESCE(NULLIF($5, ''), bitable_export_configs.table_name_prefix),
       chat_id = CASE
-        WHEN $5 IS NULL THEN bitable_export_configs.chat_id
-        ELSE NULLIF($5, '')
+        WHEN $6 IS NULL THEN bitable_export_configs.chat_id
+        ELSE NULLIF($6, '')
       END,
       selected_fields = CASE
-        WHEN $6::jsonb = '[]'::jsonb AND COALESCE(jsonb_array_length(bitable_export_configs.selected_fields), 0) > 0
+        WHEN $7::jsonb = '[]'::jsonb AND COALESCE(jsonb_array_length(bitable_export_configs.selected_fields), 0) > 0
           THEN bitable_export_configs.selected_fields
-        ELSE $6::jsonb
+        ELSE $7::jsonb
       END,
       updated_at = NOW()
-    RETURNING id, source_type, enabled, target_table_id, target_table_name, chat_id, selected_fields,
+    RETURNING id, source_type, enabled, target_table_id, target_table_name, table_name_prefix, chat_id, selected_fields,
               last_status, last_error, last_synced_at, last_record_count, created_at, updated_at`,
     [
       input.source_type,
       typeof input.enabled === 'boolean' ? input.enabled : null,
       input.target_table_id ?? '',
       input.target_table_name ?? '',
+      input.table_name_prefix ?? '',
       input.chat_id === undefined ? null : input.chat_id,
       JSON.stringify(input.selected_fields ?? [])
     ]
@@ -1186,31 +1532,35 @@ export async function updateBitableExportSyncResult(input: {
   source_type: BitableExportSourceType;
   target_table_id?: string | null;
   target_table_name?: string | null;
+  table_name_prefix?: string | null;
   last_status: 'idle' | 'success' | 'failed' | 'partial_success';
   last_error?: string | null;
   last_synced_at?: string | null;
   last_record_count?: number;
 }): Promise<BitableExportConfigRecord> {
+  await ensureBitableExportConfigSchema();
   const result = await pgQuery<BitableExportConfigRecord>(
     `INSERT INTO bitable_export_configs (
-      source_type, enabled, target_table_id, target_table_name, selected_fields, last_status, last_error, last_synced_at, last_record_count
+      source_type, enabled, target_table_id, target_table_name, table_name_prefix, selected_fields, last_status, last_error, last_synced_at, last_record_count
     ) VALUES (
-      $1, FALSE, NULLIF($2, ''), NULLIF($3, ''), '[]'::jsonb, $4, NULLIF($5, ''), $6::timestamptz, COALESCE($7, 0)
+      $1, FALSE, NULLIF($2, ''), NULLIF($3, ''), COALESCE(NULLIF($4, ''), '投放执行表'), '[]'::jsonb, $5, NULLIF($6, ''), $7::timestamptz, COALESCE($8, 0)
     )
     ON CONFLICT (source_type) DO UPDATE SET
       target_table_id = COALESCE(NULLIF($2, ''), bitable_export_configs.target_table_id),
       target_table_name = COALESCE(NULLIF($3, ''), bitable_export_configs.target_table_name),
-      last_status = $4,
-      last_error = NULLIF($5, ''),
-      last_synced_at = $6::timestamptz,
-      last_record_count = COALESCE($7, bitable_export_configs.last_record_count),
+      table_name_prefix = COALESCE(NULLIF($4, ''), bitable_export_configs.table_name_prefix),
+      last_status = $5,
+      last_error = NULLIF($6, ''),
+      last_synced_at = $7::timestamptz,
+      last_record_count = COALESCE($8, bitable_export_configs.last_record_count),
       updated_at = NOW()
-    RETURNING id, source_type, enabled, target_table_id, target_table_name, chat_id, selected_fields,
+    RETURNING id, source_type, enabled, target_table_id, target_table_name, table_name_prefix, chat_id, selected_fields,
               last_status, last_error, last_synced_at, last_record_count, created_at, updated_at`,
     [
       input.source_type,
       input.target_table_id ?? '',
       input.target_table_name ?? '',
+      input.table_name_prefix ?? '',
       input.last_status,
       input.last_error ?? '',
       input.last_synced_at ?? null,
@@ -1223,6 +1573,84 @@ export async function updateBitableExportSyncResult(input: {
   };
 }
 
+export async function getBitableExportDailyTable(
+  sourceType: BitableExportSourceType,
+  reportDate: string
+): Promise<BitableExportDailyTableRecord | null> {
+  await ensureBitableExportDailyTablesSchema();
+  const result = await pgQuery<BitableExportDailyTableRecord>(
+    `SELECT id, source_type, report_date::text AS report_date, table_id, table_name, table_name_prefix,
+            last_record_count, last_synced_at::text AS last_synced_at, created_at, updated_at
+       FROM bitable_export_daily_tables
+      WHERE source_type = $1
+        AND report_date = $2::date
+      LIMIT 1`,
+    [sourceType, reportDate]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function listBitableExportDailyTables(
+  sourceType: BitableExportSourceType,
+  limit?: number
+): Promise<BitableExportDailyTableRecord[]> {
+  await ensureBitableExportDailyTablesSchema();
+  const values: unknown[] = [sourceType];
+  const hasLimit = Number.isFinite(Number(limit)) && Number(limit) > 0;
+  const limitSql = hasLimit ? `LIMIT $2` : '';
+  if (hasLimit) {
+    values.push(Number(limit));
+  }
+  const result = await pgQuery<BitableExportDailyTableRecord>(
+    `SELECT id, source_type, report_date::text AS report_date, table_id, table_name, table_name_prefix,
+            last_record_count, last_synced_at::text AS last_synced_at, created_at, updated_at
+       FROM bitable_export_daily_tables
+      WHERE source_type = $1
+      ORDER BY report_date DESC, updated_at DESC
+      ${limitSql}`,
+    values
+  );
+  return result.rows;
+}
+
+export async function upsertBitableExportDailyTable(input: {
+  source_type: BitableExportSourceType;
+  report_date: string;
+  table_id: string;
+  table_name: string;
+  table_name_prefix: string;
+  last_record_count?: number;
+  last_synced_at?: string | null;
+}): Promise<BitableExportDailyTableRecord> {
+  await ensureBitableExportDailyTablesSchema();
+  const result = await pgQuery<BitableExportDailyTableRecord>(
+    `INSERT INTO bitable_export_daily_tables (
+      source_type, report_date, table_id, table_name, table_name_prefix, last_record_count, last_synced_at
+    ) VALUES (
+      $1, $2::date, NULLIF($3, ''), NULLIF($4, ''), COALESCE(NULLIF($5, ''), '投放执行表'), COALESCE($6, 0), $7::timestamptz
+    )
+    ON CONFLICT (source_type, report_date) DO UPDATE SET
+      table_id = EXCLUDED.table_id,
+      table_name = EXCLUDED.table_name,
+      table_name_prefix = EXCLUDED.table_name_prefix,
+      last_record_count = EXCLUDED.last_record_count,
+      last_synced_at = EXCLUDED.last_synced_at,
+      updated_at = NOW()
+    RETURNING id, source_type, report_date::text AS report_date, table_id, table_name, table_name_prefix,
+              last_record_count, last_synced_at::text AS last_synced_at, created_at, updated_at`,
+    [
+      input.source_type,
+      input.report_date,
+      input.table_id,
+      input.table_name,
+      input.table_name_prefix,
+      input.last_record_count ?? 0,
+      input.last_synced_at ?? null
+    ]
+  );
+  return result.rows[0];
+}
+
 export async function listBitableExportRecordRefs(
   sourceType: BitableExportSourceType,
   reportDate: string,
@@ -1230,14 +1658,31 @@ export async function listBitableExportRecordRefs(
 ): Promise<BitableExportRecordRefRecord[]> {
   await ensureBitableExportRecordRefsSchema();
   const result = await pgQuery<BitableExportRecordRefRecord>(
-    `SELECT id, source_type, report_date::text AS report_date, table_id, snapshot_id, sync_key, record_id, validation_result,
-            is_adopted, created_at, updated_at
+    `SELECT id, source_type, report_date::text AS report_date, table_id, snapshot_id, sync_key, record_id,
+            recommendation_type, recommendation_id, validation_result, is_adopted, created_at, updated_at
        FROM bitable_export_record_refs
       WHERE source_type = $1
         AND report_date = $2::date
         AND ($3::text IS NULL OR table_id = $3::text)
       ORDER BY created_at DESC, id DESC`,
     [sourceType, reportDate, tableId ?? null]
+  );
+  return result.rows;
+}
+
+export async function listBitableExportRecordRefsByTable(
+  sourceType: BitableExportSourceType,
+  tableId: string
+): Promise<BitableExportRecordRefRecord[]> {
+  await ensureBitableExportRecordRefsSchema();
+  const result = await pgQuery<BitableExportRecordRefRecord>(
+    `SELECT id, source_type, report_date::text AS report_date, table_id, snapshot_id, sync_key, record_id,
+            recommendation_type, recommendation_id, validation_result, is_adopted, created_at, updated_at
+       FROM bitable_export_record_refs
+      WHERE source_type = $1
+        AND table_id = $2
+      ORDER BY created_at DESC, id DESC`,
+    [sourceType, tableId]
   );
   return result.rows;
 }
@@ -1250,6 +1695,8 @@ export async function upsertBitableExportRecordRefs(
     snapshot_id: string;
     sync_key: string;
     record_id: string;
+    recommendation_type?: RecommendationType | null;
+    recommendation_id?: number | null;
     validation_result?: string | null;
     is_adopted?: boolean;
   }>
@@ -1260,7 +1707,8 @@ export async function upsertBitableExportRecordRefs(
   await ensureBitableExportRecordRefsSchema();
   await pgQuery(
     `INSERT INTO bitable_export_record_refs (
-      source_type, report_date, table_id, snapshot_id, sync_key, record_id, validation_result, is_adopted
+      source_type, report_date, table_id, snapshot_id, sync_key, record_id, recommendation_type, recommendation_id,
+      validation_result, is_adopted
     )
     SELECT
       x.source_type,
@@ -1269,6 +1717,8 @@ export async function upsertBitableExportRecordRefs(
       x.snapshot_id,
       x.sync_key,
       x.record_id,
+      NULLIF(x.recommendation_type, ''),
+      x.recommendation_id,
       NULLIF(x.validation_result, ''),
       COALESCE(x.is_adopted, FALSE)
     FROM jsonb_to_recordset($1::jsonb) AS x(
@@ -1278,6 +1728,8 @@ export async function upsertBitableExportRecordRefs(
       snapshot_id text,
       sync_key text,
       record_id text,
+      recommendation_type text,
+      recommendation_id bigint,
       validation_result text,
       is_adopted boolean
     )
@@ -1286,6 +1738,8 @@ export async function upsertBitableExportRecordRefs(
       table_id = EXCLUDED.table_id,
       snapshot_id = EXCLUDED.snapshot_id,
       sync_key = EXCLUDED.sync_key,
+      recommendation_type = EXCLUDED.recommendation_type,
+      recommendation_id = EXCLUDED.recommendation_id,
       validation_result = EXCLUDED.validation_result,
       is_adopted = EXCLUDED.is_adopted,
       updated_at = NOW()`,
@@ -1306,6 +1760,184 @@ export async function deleteBitableExportRecordRefsByRecordIds(
         AND record_id = ANY($2::text[])`,
     [sourceType, recordIds]
   );
+}
+
+export async function upsertRecommendationExecutionFeedbacks(
+  rows: Array<{
+    source_type: BitableExportSourceType;
+    recommendation_type: RecommendationType;
+    recommendation_id: number;
+    report_date: string;
+    table_id: string;
+    record_id: string;
+    sync_key: string;
+    execution_status?: string | null;
+    is_adopted?: boolean;
+    validation_result?: string | null;
+    raw_fields_json?: unknown;
+    bitable_last_modified_time?: string | null;
+    synced_at?: string | null;
+  }>
+): Promise<void> {
+  if (rows.length === 0) {
+    return;
+  }
+  await ensureRecommendationExecutionFeedbacksSchema();
+  await pgQuery(
+    `INSERT INTO recommendation_execution_feedbacks (
+      source_type, recommendation_type, recommendation_id, report_date, table_id, record_id, sync_key,
+      execution_status, is_adopted, validation_result, raw_fields_json, bitable_last_modified_time, synced_at
+    )
+    SELECT
+      x.source_type,
+      x.recommendation_type,
+      x.recommendation_id,
+      x.report_date::date,
+      x.table_id,
+      x.record_id,
+      x.sync_key,
+      NULLIF(x.execution_status, ''),
+      COALESCE(x.is_adopted, FALSE),
+      NULLIF(x.validation_result, ''),
+      COALESCE(x.raw_fields_json, '{}'::jsonb),
+      x.bitable_last_modified_time::timestamptz,
+      COALESCE(x.synced_at::timestamptz, NOW())
+    FROM jsonb_to_recordset($1::jsonb) AS x(
+      source_type text,
+      recommendation_type text,
+      recommendation_id bigint,
+      report_date text,
+      table_id text,
+      record_id text,
+      sync_key text,
+      execution_status text,
+      is_adopted boolean,
+      validation_result text,
+      raw_fields_json jsonb,
+      bitable_last_modified_time text,
+      synced_at text
+    )
+    ON CONFLICT (source_type, recommendation_type, recommendation_id) DO UPDATE SET
+      report_date = EXCLUDED.report_date,
+      table_id = EXCLUDED.table_id,
+      record_id = EXCLUDED.record_id,
+      sync_key = EXCLUDED.sync_key,
+      execution_status = EXCLUDED.execution_status,
+      is_adopted = EXCLUDED.is_adopted,
+      validation_result = EXCLUDED.validation_result,
+      raw_fields_json = EXCLUDED.raw_fields_json,
+      bitable_last_modified_time = EXCLUDED.bitable_last_modified_time,
+      synced_at = EXCLUDED.synced_at,
+      updated_at = NOW()`,
+    [JSON.stringify(rows)]
+  );
+}
+
+export async function listRecommendationExecutionFeedbacksByRecommendations(
+  sourceType: BitableExportSourceType,
+  rows: Array<{ recommendation_type: RecommendationType; recommendation_id: number }>
+): Promise<RecommendationExecutionFeedbackRecord[]> {
+  if (rows.length === 0) {
+    return [];
+  }
+  await ensureRecommendationExecutionFeedbacksSchema();
+  const result = await pgQuery<RecommendationExecutionFeedbackRecord>(
+    `SELECT ref.id, ref.source_type, ref.recommendation_type, ref.recommendation_id, ref.report_date::text AS report_date,
+            ref.table_id, ref.record_id, ref.sync_key, ref.execution_status, ref.is_adopted, ref.validation_result,
+            ref.raw_fields_json, ref.bitable_last_modified_time::text AS bitable_last_modified_time,
+            ref.synced_at::text AS synced_at, ref.created_at, ref.updated_at
+       FROM recommendation_execution_feedbacks ref
+       JOIN jsonb_to_recordset($2::jsonb) AS q(recommendation_type text, recommendation_id bigint)
+         ON ref.recommendation_type = q.recommendation_type
+        AND ref.recommendation_id = q.recommendation_id
+      WHERE ref.source_type = $1
+      ORDER BY ref.updated_at DESC, ref.id DESC`,
+    [sourceType, JSON.stringify(rows)]
+  );
+  return result.rows;
+}
+
+export async function insertFeedbackSkillVersion(input: {
+  scope: string;
+  source_type: BitableExportSourceType;
+  from_date?: string | null;
+  to_date?: string | null;
+  dataset_row_count: number;
+  stats_json?: unknown;
+  skills_markdown: string;
+  model: string;
+  prompt_hash: string;
+}): Promise<FeedbackSkillVersionRecord> {
+  await ensureFeedbackSkillVersionsSchema();
+  const result = await pgQuery<FeedbackSkillVersionRecord>(
+    `INSERT INTO feedback_skill_versions (
+      scope, source_type, from_date, to_date, dataset_row_count, stats_json, skills_markdown, model, prompt_hash
+    ) VALUES (
+      $1, $2, $3::date, $4::date, $5, $6, $7, $8, $9
+    )
+    RETURNING id, scope, source_type, from_date::text AS from_date, to_date::text AS to_date, dataset_row_count,
+              stats_json, skills_markdown, model, prompt_hash, created_at`,
+    [
+      input.scope,
+      input.source_type,
+      input.from_date ?? null,
+      input.to_date ?? null,
+      input.dataset_row_count,
+      JSON.stringify(input.stats_json ?? {}),
+      input.skills_markdown,
+      input.model,
+      input.prompt_hash
+    ]
+  );
+  return result.rows[0];
+}
+
+export async function getLatestFeedbackSkillVersion(
+  scope: string,
+  sourceType: BitableExportSourceType
+): Promise<FeedbackSkillVersionRecord | null> {
+  await ensureFeedbackSkillVersionsSchema();
+  const result = await pgQuery<FeedbackSkillVersionRecord>(
+    `SELECT id, scope, source_type, from_date::text AS from_date, to_date::text AS to_date, dataset_row_count,
+            stats_json, skills_markdown, model, prompt_hash, created_at
+       FROM feedback_skill_versions
+      WHERE scope = $1
+        AND source_type = $2
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+    [scope, sourceType]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function getLatestOperationLog(
+  filter: { source?: string; action?: string; targetKey?: string }
+): Promise<OperationLogRecord | null> {
+  const values: unknown[] = [];
+  const clauses: string[] = [];
+
+  if (filter.source) {
+    values.push(filter.source);
+    clauses.push(`source = $${values.length}`);
+  }
+  if (filter.action) {
+    values.push(filter.action);
+    clauses.push(`action = $${values.length}`);
+  }
+  if (filter.targetKey) {
+    values.push(filter.targetKey);
+    clauses.push(`target_key = $${values.length}`);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const result = await pgQuery<OperationLogRecord>(
+    `SELECT id, source, action, target_type, target_key, status, summary, detail_json, created_at
+       FROM operation_logs
+       ${where}
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+    values
+  );
+  return result.rows[0] ?? null;
 }
 
 export async function ensureRuntimeScheduleConfig(
@@ -1384,6 +2016,13 @@ export interface OperationLogFilter {
   limit?: number;
 }
 
+export interface OperationLogLookupFilter {
+  source: string;
+  action?: string;
+  target_type?: string;
+  target_key?: string;
+}
+
 export async function listOperationLogs(filter: OperationLogFilter = {}): Promise<OperationLogRecord[]> {
   const values: unknown[] = [];
   const clauses: string[] = [];
@@ -1409,6 +2048,37 @@ export async function listOperationLogs(filter: OperationLogFilter = {}): Promis
     values
   );
   return result.rows;
+}
+
+export async function getLatestOperationLogEntry(
+  filter: OperationLogLookupFilter
+): Promise<OperationLogRecord | null> {
+  const values: unknown[] = [filter.source];
+  const clauses: string[] = [`source = $${values.length}`];
+
+  if (filter.action) {
+    values.push(filter.action);
+    clauses.push(`action = $${values.length}`);
+  }
+  if (filter.target_type) {
+    values.push(filter.target_type);
+    clauses.push(`target_type = $${values.length}`);
+  }
+  if (filter.target_key) {
+    values.push(filter.target_key);
+    clauses.push(`target_key = $${values.length}`);
+  }
+
+  const result = await pgQuery<OperationLogRecord>(
+    `SELECT id, source, action, target_type, target_key, status, summary, detail_json, created_at
+       FROM operation_logs
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+    values
+  );
+
+  return result.rows[0] ?? null;
 }
 
 export async function listProductStageConfigs(): Promise<ProductStageConfigRecord[]> {

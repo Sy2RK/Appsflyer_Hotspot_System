@@ -26,8 +26,9 @@ cp .env.example .env
 # Pull / 推送时间的 env 仅作为默认值使用
 # 启动后可在 WebUI 顶部“全局调度设置”里修改
 # PULLER_REPORT_HOUR=9
-# 关键词与预算建议 worker（默认每天）
+# 关键词与预算建议 worker
 # KEYWORD_ENGINE_INTERVAL_MS=86400000
+# BUDGET_ADVISOR_INTERVAL_MS 保留兼容，但 budget-advisor 现在按 Pull 时间对齐触发
 # BUDGET_ADVISOR_INTERVAL_MS=86400000
 # 每日报告 worker（默认每小时检查一次，到指定小时后发送前一日报告）
 # DAILY_BRIEF_ENABLED=true
@@ -73,6 +74,7 @@ docker compose up -d --build
 
 Web UI 新增能力:
 - 顶部全局调度设置（统一编辑 Pull 时间 / 推送时间）
+- 自动闭环调度（Pull ready -> budget-advisor / asa-keywords -> daily-brief / asa-daily-brief -> bitable-export）
 - 规则 DSL 表单编辑（并可与 JSON 双向同步）
 - 告警详情抽屉（查看 `top_contributors` 与原始 JSON）
 - 关键词生命周期页面（筛选、分页、趋势抽屉、手动重算）
@@ -82,6 +84,12 @@ Web UI 新增能力:
 - 投放执行表推送页面（通用投放建议 + ASA 关键词建议 -> 单张 Feishu 执行表 + 群通知）
 - 操作日志页面（查看手动操作与定时任务执行记录）
 - UI 文案默认中文（专有名词保留英文），规则见 `AGENTS.md`
+
+自动调度说明：
+- `pull_time` 到达后，先由 `puller` / `budget-advisor` / `asa-keywords` 为前一报告日准备数据
+- `push_time` 到达后，`daily-brief` 与 `asa-daily-brief` 不会立刻发送，而是先检查同一 `reportDate` 的 `budget-advisor` 与 `asa-keywords` 是否已经完成
+- `bitable-export` 固定在 `push_time + 5 分钟` 检查，但同样会等待上述两个长任务完成后再导出
+- 如果长任务还在跑，日志里会看到 `*_blocked_by_downstream_gate`
 
 ---
 
@@ -360,6 +368,10 @@ curl -X POST "http://localhost:3000/api/runtime-schedule" \
 预期：
 - 返回 `pull_time / push_time / bitable_time`
 - `bitable_time` 固定为 `push_time + 5 分钟`
+- 自动链路会继续等待：
+  - `worker.budget_advisor`
+  - `worker.asa_keywords`
+  这两个 worker 对同一 `reportDate` 完成后，才会真正发送日报 / ASA 简报 / 执行表
 - 页面顶部 `全局调度设置` 会显示当前配置
 - worker 在下一轮检查时会跟随新时间，不需要手动改 `.env`
 
@@ -418,7 +430,7 @@ curl -X POST "http://localhost:3000/api/bitable-exports/run" \
 ```
 
 预期：
-- 系统在同一 Base 下创建 / 复用固定的 `投放执行表`
+- 系统在同一 Base 下创建 / 复用对应日期的执行表，例如 `投放执行表_2026-03-17`
 - 表内同时包含通用投放建议与 ASA 关键词建议
 - 不再出现 `raw_json`、`event_uid` 之类技术字段
 - 群里收到一条 Feishu 交互卡片，包含：
@@ -439,6 +451,16 @@ curl -X POST "http://localhost:3000/api/bitable-exports/run" \
 cd hotspot-system/infra
 docker compose logs -f bitable-export
 ```
+
+如果看到：
+- `daily_brief_blocked_by_downstream_gate`
+- `asa_daily_brief_blocked_by_downstream_gate`
+- `bitable_export_blocked_by_downstream_gate`
+
+说明：
+- Pull 数据已准备好
+- 但 `budget-advisor` / `asa-keywords` 还有至少一个尚未完成
+- 这是预期保护行为，用来避免“日报先发、建议后补”
 
 ---
 

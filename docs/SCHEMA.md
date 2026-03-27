@@ -241,6 +241,10 @@
 - `status` (`pending|applied|rejected|expired`)
 - `created_at`, `updated_at`
 
+说明：
+- 飞书执行表回读后的 `执行状态 / 是否采纳 / 人工批复` 不直接写回该表，而是通过 `recommendation_execution_feedbacks` 关联展示
+- WebUI 查询预算建议时会按 `recommendation_id = budget_recommendations.id` 左联反馈快照
+
 ### `product_stage_configs`
 - `app + platform` 的人工产品阶段配置
 
@@ -336,6 +340,7 @@
 - `enabled`
 - `target_table_id`
 - `target_table_name`
+- `table_name_prefix`
 - `chat_id`
 - `selected_fields` (jsonb)
 - `last_status` (`idle|success|failed|partial_success`)
@@ -346,9 +351,98 @@
 - `updated_at`
 
 说明：
-- `delivery_actions` 为当前主导出源，会创建 / 复用固定的 `投放执行表`
+- `delivery_actions` 为当前主导出源，会在同一个 Feishu Base 内按 `report_date` 创建 / 复用日期表
 - 该表只保留投放执行所需字段，不再输出原始技术明细
-- 该表只保存导出配置与同步结果，不保存实际导出数据
+- `target_table_id` / `target_table_name` 表示最近一次同步的日期表
+- `table_name_prefix` 用于生成每日日期表名，例如 `投放执行表_2026-03-27`
+- 该表只保存导出配置与最近同步结果，不保存实际导出数据
+
+### `bitable_export_daily_tables`
+- Feishu 多维表格按日期留档的表级元数据
+
+字段:
+- `id`
+- `source_type`
+- `report_date`
+- `table_id`
+- `table_name`
+- `table_name_prefix`
+- `last_record_count`
+- `last_synced_at`
+- `created_at`
+- `updated_at`
+
+说明：
+- 每个 `report_date` 对应同一个 Base 左侧导航中的一张表
+- 同一天重复导出时会复用该日期对应的表
+- 历史日期表永久保留，并继续参与执行反馈回读
+
+### `bitable_export_record_refs`
+- 飞书投放执行表 `record_id` 与本地建议记录的映射表
+
+字段:
+- `id`
+- `source_type`
+- `report_date`
+- `table_id`
+- `snapshot_id`
+- `sync_key`
+- `record_id`
+- `recommendation_type` (`budget|asa_keyword`)
+- `recommendation_id`
+- `validation_result`
+- `is_adopted`
+- `created_at`
+- `updated_at`
+
+说明：
+- 该表负责把飞书行级记录定位回本地预算建议 / ASA 建议
+- 导出时会刷新当前快照映射，回读时通过 `record_id` 找到本地建议主键
+
+### `recommendation_execution_feedbacks`
+- 飞书执行反馈的本地持久快照表
+
+字段:
+- `id`
+- `source_type`
+- `recommendation_type` (`budget|asa_keyword`)
+- `recommendation_id`
+- `report_date`
+- `table_id`
+- `record_id`
+- `sync_key`
+- `execution_status`
+- `is_adopted`
+- `validation_result`
+- `raw_fields_json`
+- `bitable_last_modified_time`
+- `synced_at`
+- `created_at`
+- `updated_at`
+
+说明：
+- 唯一键：`(source_type, recommendation_type, recommendation_id)`
+- 本地持久保存飞书里的 `执行状态 / 是否采纳 / 人工批复`，即使执行表后续被下一次快照覆盖，也能保留历史反馈
+
+### `feedback_skill_versions`
+- 基于预算建议反馈数据生成的版本化 `skills.md`
+
+字段:
+- `id`
+- `scope`
+- `source_type`
+- `from_date`
+- `to_date`
+- `dataset_row_count`
+- `stats_json`
+- `skills_markdown`
+- `model`
+- `prompt_hash`
+- `created_at`
+
+说明：
+- 当前 `scope` 先固定服务预算建议分析
+- 每次反馈回读检测到变化后，会新增一版 `skills.md`，供后续 LLM 分析追加到 prompt
 
 ### `runtime_schedule_configs`
 - 全局运行时调度配置（单行表）
@@ -364,11 +458,13 @@
 - 默认只有一行：`singleton_key = 'global'`
 - `pull_time` 控制：
   - `puller`
+  - `budget-advisor`
   - `asa-keywords`
 - `push_time` 控制：
   - `daily-brief`
   - `asa-daily-brief`
 - `bitable-export` 不单独存库，固定按 `push_time + 5 分钟` 计算
+- `daily-brief` / `asa-daily-brief` / `bitable-export` 在定时执行前，还会额外检查同一 `report_date` 的 `budget-advisor` 与 `asa-keywords` 是否已完成
 
 ### `operation_logs`
 - 统一记录 API 手动操作与 worker 定时任务执行结果
@@ -383,6 +479,11 @@
 - `summary`
 - `detail_json`
 - `created_at`
+
+说明：
+- `worker.budget_advisor` 的 `scheduled_budget_cycle` 会把 `target_key` 记录为对应 `report_date`
+- `worker.asa_keywords` 的 `scheduled_asa_keyword_cycle` 也会把 `target_key` 记录为对应 `report_date`
+- 下游自动链路会用这两类操作日志，结合 job lock，判断某个 `report_date` 的长任务是否已经真正完成
 
 ---
 

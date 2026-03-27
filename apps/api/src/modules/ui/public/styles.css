@@ -729,6 +729,69 @@ h4 {
   color: var(--danger);
 }
 
+.bitable-export-history {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid rgba(188, 216, 235, 0.72);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fcfeff 0%, #f4fbff 100%);
+}
+
+.bitable-export-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.bitable-export-history-head strong {
+  font-size: 14px;
+}
+
+.bitable-export-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.bitable-export-history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid #dbe8f3;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.bitable-export-history-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.bitable-export-history-main strong {
+  font-size: 13px;
+  color: #12395d;
+}
+
+.bitable-export-history-main span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.bitable-export-history-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .bitable-export-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1657,6 +1720,35 @@ input[aria-disabled-note='true'] {
   border-collapse: collapse;
   font-size: 13px;
   table-layout: auto;
+}
+
+.budget-table-wrap {
+  overflow-x: scroll;
+  padding-bottom: 4px;
+  scrollbar-gutter: stable both-edges;
+}
+
+.budget-data-table {
+  min-width: 2200px;
+}
+
+.budget-table-wrap::-webkit-scrollbar {
+  height: 12px;
+}
+
+.budget-table-wrap::-webkit-scrollbar-track {
+  background: #edf4fa;
+  border-radius: 999px;
+}
+
+.budget-table-wrap::-webkit-scrollbar-thumb {
+  background: #9bb7cf;
+  border-radius: 999px;
+  border: 2px solid #edf4fa;
+}
+
+.budget-table-wrap::-webkit-scrollbar-thumb:hover {
+  background: #759ab9;
 }
 
 .data-table th,
@@ -2703,6 +2795,8 @@ details summary {
   .bitable-export-card-head,
   .bitable-export-target,
   .bitable-export-field-head,
+  .bitable-export-history-head,
+  .bitable-export-history-item,
   .bitable-export-status-row {
     flex-direction: column;
     align-items: stretch;

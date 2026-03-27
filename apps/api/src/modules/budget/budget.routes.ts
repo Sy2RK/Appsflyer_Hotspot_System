@@ -1,6 +1,10 @@
 import crypto from 'crypto';
 import { Router } from 'express';
 import {
+  buildBudgetFeedbackNdjson,
+  getLatestBudgetFeedbackSkill
+} from '@shared/utils/recommendationFeedback.js';
+import {
   queryBudgetRecommendations,
   releaseJobLock,
   setBudgetRecommendationStatus,
@@ -46,6 +50,23 @@ function parsePage(raw: unknown): number {
   return Math.floor(n);
 }
 
+function parseBooleanFlag(raw: unknown): boolean | undefined {
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes') {
+    return true;
+  }
+  if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+    return false;
+  }
+  return undefined;
+}
+
 router.get('/api/budget/recommendations', async (req, res, next) => {
   try {
     const appKey = typeof req.query.appKey === 'string' ? req.query.appKey.trim() : '';
@@ -53,6 +74,10 @@ router.get('/api/budget/recommendations', async (req, res, next) => {
     const statusRaw = typeof req.query.status === 'string' ? req.query.status.trim() : '';
     const from = typeof req.query.from === 'string' ? req.query.from.trim() : '';
     const to = typeof req.query.to === 'string' ? req.query.to.trim() : '';
+    const executionStatus =
+      typeof req.query.executionStatus === 'string' ? req.query.executionStatus.trim() : '';
+    const isAdopted = parseBooleanFlag(req.query.isAdopted);
+    const hasManualReview = parseBooleanFlag(req.query.hasManualReview);
     const page = parsePage(req.query.page);
 
     if (from && !isDate(from)) {
@@ -75,6 +100,9 @@ router.get('/api/budget/recommendations', async (req, res, next) => {
       status,
       from: from || undefined,
       to: to || undefined,
+      executionStatus: executionStatus || undefined,
+      isAdopted,
+      hasManualReview,
       page,
       pageSize: 20
     });
@@ -89,6 +117,86 @@ router.get('/api/budget/recommendations', async (req, res, next) => {
         totalPages: result.totalPages
       }
     });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get('/api/budget/recommendations/feedback-export', async (req, res, next) => {
+  try {
+    const appKey = typeof req.query.appKey === 'string' ? req.query.appKey.trim() : '';
+    const platform = typeof req.query.platform === 'string' ? req.query.platform.trim().toLowerCase() : '';
+    const status = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+    const from = typeof req.query.from === 'string' ? req.query.from.trim() : '';
+    const to = typeof req.query.to === 'string' ? req.query.to.trim() : '';
+    const executionStatus =
+      typeof req.query.executionStatus === 'string' ? req.query.executionStatus.trim() : '';
+    const isAdopted = parseBooleanFlag(req.query.isAdopted);
+    const hasManualReview = parseBooleanFlag(req.query.hasManualReview);
+
+    if (from && !isDate(from)) {
+      return res.status(400).json({ ok: false, error: 'invalid_from_date' });
+    }
+    if (to && !isDate(to)) {
+      return res.status(400).json({ ok: false, error: 'invalid_to_date' });
+    }
+    if (from && to && from > to) {
+      return res.status(400).json({ ok: false, error: 'from_gt_to' });
+    }
+
+    const dataset = await buildBudgetFeedbackNdjson({
+      appKey: appKey || undefined,
+      platform: platform || undefined,
+      status: status || undefined,
+      from: from || undefined,
+      to: to || undefined,
+      executionStatus: executionStatus || undefined,
+      isAdopted,
+      hasManualReview
+    });
+    const dateSuffix = [from || 'all', to || 'all'].join('_');
+    res.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('content-disposition', `attachment; filename="budget-feedback-${dateSuffix}.ndjson"`);
+    return res.send(dataset.content);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get('/api/budget/recommendations/skills/latest', async (_req, res, next) => {
+  try {
+    const latest = await getLatestBudgetFeedbackSkill();
+    return res.json({
+      ok: true,
+      data: latest
+        ? {
+            id: latest.id,
+            scope: latest.scope,
+            source_type: latest.source_type,
+            from_date: latest.from_date,
+            to_date: latest.to_date,
+            dataset_row_count: latest.dataset_row_count,
+            model: latest.model,
+            prompt_hash: latest.prompt_hash,
+            created_at: latest.created_at,
+            skills_markdown: latest.skills_markdown
+          }
+        : null
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get('/api/budget/recommendations/skills/latest/download', async (_req, res, next) => {
+  try {
+    const latest = await getLatestBudgetFeedbackSkill();
+    if (!latest) {
+      return res.status(404).json({ ok: false, error: 'feedback_skill_not_found' });
+    }
+    res.setHeader('content-type', 'text/markdown; charset=utf-8');
+    res.setHeader('content-disposition', 'attachment; filename="budget-feedback-skills.md"');
+    return res.send(latest.skills_markdown);
   } catch (error) {
     return next(error);
   }

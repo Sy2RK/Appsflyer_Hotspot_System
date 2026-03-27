@@ -3,6 +3,7 @@ import { env } from '@shared/config/env.js';
 import { logger } from '@api/common/logger/logger.js';
 import { runKeywordEngineCycle } from '@shared/utils/keywordEngine.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import { getDefaultPullReadinessReportDate, isPullReportReadyForDownstream } from '@shared/utils/pullReadiness.js';
 import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 
 let running = false;
@@ -22,6 +23,33 @@ async function tick(): Promise<void> {
     ? env.keywordEngineInitialBackfillDays
     : env.keywordEngineRollingBackfillDays;
   try {
+    const reportDate = getDefaultPullReadinessReportDate();
+    const readiness = await isPullReportReadyForDownstream(reportDate);
+    if (!readiness.ready) {
+      logger.info('keyword_engine_blocked_by_pull_gate', {
+        report_date: reportDate,
+        gate_status: readiness.status,
+        reason: readiness.reason
+      });
+      await writeOperationLog(
+        {
+          source: 'worker.keyword_engine',
+          action: 'scheduled_keyword_cycle',
+          target_type: 'keyword_cycle',
+          target_key: String(backfillDays),
+          status: 'skipped',
+          summary: `关键词生命周期等待 Pull 完成 ${reportDate}`,
+          detail_json: {
+            report_date: reportDate,
+            gate_status: readiness.status,
+            reason: readiness.reason
+          }
+        },
+        logger
+      );
+      return;
+    }
+
     lockOwnerId = crypto.randomUUID();
     const lockAcquired = await tryAcquireJobLock(KEYWORD_ENGINE_JOB_LOCK, lockOwnerId, KEYWORD_ENGINE_JOB_LOCK_TTL_MS);
     if (!lockAcquired) {

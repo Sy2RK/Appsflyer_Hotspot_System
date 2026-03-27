@@ -3,6 +3,11 @@ import { env } from '@shared/config/env.js';
 import { logger } from '@api/common/logger/logger.js';
 import { runScheduledAsaKeywordBrief } from '@shared/utils/asaKeywords.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import {
+  getDefaultPullReadinessReportDate,
+  isDownstreamReadyForAutomation,
+  isPullReportReadyForDownstream
+} from '@shared/utils/pullReadiness.js';
 import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { getTzParts, hasReachedDailyTime, nextDailyTimeLocalString } from '@shared/utils/schedule.js';
 import { getPushScheduleTarget } from '@shared/utils/runtimeSchedule.js';
@@ -92,8 +97,28 @@ async function bootstrap(): Promise<void> {
       }
 
       if (hasReachedDailyTime(target.hour, target.minute, env.timezone, now) && lastRunMarker !== runMarker) {
-        lastRunMarker = runMarker;
-        await tick();
+        const reportDate = getDefaultPullReadinessReportDate(now, env.timezone);
+        const readiness = await isPullReportReadyForDownstream(reportDate);
+        if (!readiness.ready) {
+          logger.info('asa_daily_brief_blocked_by_pull_gate', {
+            report_date: reportDate,
+            gate_status: readiness.status,
+            reason: readiness.reason
+          });
+        } else {
+          const downstreamGate = await isDownstreamReadyForAutomation(reportDate);
+          if (!downstreamGate.ready) {
+            logger.info('asa_daily_brief_blocked_by_downstream_gate', {
+              report_date: reportDate,
+              reason: downstreamGate.reason,
+              budget_advisor: downstreamGate.budget_advisor,
+              asa_keywords: downstreamGate.asa_keywords
+            });
+          } else {
+            lastRunMarker = runMarker;
+            await tick();
+          }
+        }
       }
     } finally {
       setTimeout(() => {

@@ -171,10 +171,15 @@ const el = {
   budgetFromInput: document.getElementById('budgetFromInput'),
   budgetToInput: document.getElementById('budgetToInput'),
   budgetStatusSelect: document.getElementById('budgetStatusSelect'),
+  budgetExecutionStatusInput: document.getElementById('budgetExecutionStatusInput'),
+  budgetAdoptedSelect: document.getElementById('budgetAdoptedSelect'),
+  budgetManualReviewSelect: document.getElementById('budgetManualReviewSelect'),
   budgetTableBody: document.getElementById('budgetTableBody'),
   budgetPrevPageBtn: document.getElementById('budgetPrevPageBtn'),
   budgetNextPageBtn: document.getElementById('budgetNextPageBtn'),
   budgetPaginationInfo: document.getElementById('budgetPaginationInfo'),
+  budgetExportFeedbackBtn: document.getElementById('budgetExportFeedbackBtn'),
+  budgetDownloadSkillsBtn: document.getElementById('budgetDownloadSkillsBtn'),
   budgetRecomputeBtn: document.getElementById('budgetRecomputeBtn'),
   budgetRecomputeProgress: document.getElementById('budgetRecomputeProgress'),
   budgetRecomputeProgressBar: document.getElementById('budgetRecomputeProgressBar'),
@@ -252,6 +257,10 @@ const el = {
   budgetDetailCurrentCost: document.getElementById('budgetDetailCurrentCost'),
   budgetDetailSuggestedBudget: document.getElementById('budgetDetailSuggestedBudget'),
   budgetDetailChangeRatio: document.getElementById('budgetDetailChangeRatio'),
+  budgetDetailExecutionStatus: document.getElementById('budgetDetailExecutionStatus'),
+  budgetDetailIsAdopted: document.getElementById('budgetDetailIsAdopted'),
+  budgetDetailFeedbackSyncedAt: document.getElementById('budgetDetailFeedbackSyncedAt'),
+  budgetDetailValidationResult: document.getElementById('budgetDetailValidationResult'),
   budgetDetailRisk: document.getElementById('budgetDetailRisk'),
   budgetDetailChecklist: document.getElementById('budgetDetailChecklist'),
   budgetDetailPoints: document.getElementById('budgetDetailPoints'),
@@ -596,7 +605,9 @@ function operationSourceLabel(source) {
     'worker.keyword_engine': '关键词分析任务',
     'worker.budget_advisor': '预算建议任务',
     'worker.daily_brief': '每日报告任务',
-    'worker.bitable_export': '执行表同步任务'
+    'worker.bitable_export': '执行表同步任务',
+    'worker.bitable_feedback_sync': '执行反馈回读任务',
+    'system.bitable_export_seed': '执行表导出补种'
   };
   return mapping[source] || source || '-';
 }
@@ -2204,11 +2215,17 @@ function renderBitableExportCards() {
     .map((source) => {
       const config = source.config || {};
       const selected = Array.isArray(config.selected_fields) ? config.selected_fields : [];
-      const targetTableName = String(config.target_table_name || source.label || '-').trim();
+      const tableNamePrefix = String(config.table_name_prefix || source.label || '').trim();
+      const recentTables = Array.isArray(source.recent_tables) ? source.recent_tables : [];
+      const latestTable = recentTables[0] || null;
+      const targetTableName = String(config.target_table_name || latestTable?.table_name || '').trim();
       const targetTableId = String(config.target_table_id || '').trim();
-      const tableUrl = String(source.table_url || '').trim();
+      const tableUrl = String(source.latest_table_url || source.table_url || latestTable?.table_url || '').trim();
       const lastStatus = String(config.last_status || 'idle');
       const lastError = String(config.last_error || '').trim();
+      const feedbackSync = source.feedback_sync || {};
+      const feedbackStatus = String(feedbackSync.last_status || 'idle');
+      const feedbackError = String(feedbackSync.last_error || '').trim();
       const chatId = String(config.chat_id || '').trim();
       const isEnabled = config.enabled === true;
       const fieldLabels = Array.isArray(source.fields) ? source.fields.map((field) => String(field.label || '').trim()).filter(Boolean) : [];
@@ -2230,11 +2247,11 @@ function renderBitableExportCards() {
 
           <div class="bitable-export-target">
             <div class="bitable-export-target-main">
-              <span class="bitable-export-target-label">目标表</span>
-              <strong>${escapeHtml(targetTableName || '-')}</strong>
+              <span class="bitable-export-target-label">最近同步表</span>
+              <strong>${escapeHtml(targetTableName || '尚未生成日期表')}</strong>
             </div>
             <div class="bitable-export-target-meta">
-              <span class="table-cell-mono">${escapeHtml(targetTableId || '首次执行时自动确认')}</span>
+              <span class="table-cell-mono">${escapeHtml(targetTableId || '首次执行时按日期创建')}</span>
               ${
                 tableUrl
                   ? `<a class="btn btn-ghost btn-compact" href="${escapeHtml(tableUrl)}" target="_blank" rel="noreferrer">打开表格</a>`
@@ -2244,6 +2261,10 @@ function renderBitableExportCards() {
           </div>
 
           <div class="bitable-export-config-grid">
+            <label class="filter-field">
+              <span class="field-label">表名前缀</span>
+              <input type="text" data-role="table-name-prefix" value="${escapeHtml(tableNamePrefix || '')}" placeholder="例如 投放执行表" />
+            </label>
             <label class="filter-field">
               <span class="field-label">飞书群 ID</span>
               <input type="text" data-role="chat-id" value="${escapeHtml(chatId)}" placeholder="例如 oc_xxx" />
@@ -2287,10 +2308,67 @@ function renderBitableExportCards() {
               <span>最近错误</span>
               <strong class="${lastError ? 'bitable-error-text' : ''}">${escapeHtml(lastError || '无')}</strong>
             </div>
+            <div class="bitable-export-status-row">
+              <span>反馈回读</span>
+              <strong><span class="badge ${bitableExportStatusBadgeClass(feedbackStatus)}">${escapeHtml(
+                bitableExportStatusLabel(feedbackStatus)
+              )}</span></strong>
+            </div>
+            <div class="bitable-export-status-row">
+              <span>最近回读时间</span>
+              <strong>${escapeHtml(fmtTime(feedbackSync.last_synced_at))}</strong>
+            </div>
+            <div class="bitable-export-status-row">
+              <span>最近回读记录数</span>
+              <strong>${escapeHtml(String(feedbackSync.last_record_count || 0))}</strong>
+            </div>
+            <div class="bitable-export-status-row">
+              <span>最近回读错误</span>
+              <strong class="${feedbackError ? 'bitable-error-text' : ''}">${escapeHtml(feedbackError || '无')}</strong>
+            </div>
+            <div class="bitable-export-status-row">
+              <span>最新 skills</span>
+              <strong>${escapeHtml(fmtTime(feedbackSync.latest_skill_updated_at))}</strong>
+            </div>
+          </div>
+
+          <div class="bitable-export-history">
+            <div class="bitable-export-history-head">
+              <strong>最近历史表</strong>
+              <span class="hint">默认展示最近 7 天归档</span>
+            </div>
+            ${
+              recentTables.length
+                ? `<div class="bitable-export-history-list">
+                    ${recentTables
+                      .map(
+                        (item) => `
+                          <div class="bitable-export-history-item">
+                            <div class="bitable-export-history-main">
+                              <strong>${escapeHtml(String(item.report_date || '-'))}</strong>
+                              <span>${escapeHtml(String(item.table_name || '-'))}</span>
+                            </div>
+                            <div class="bitable-export-history-meta">
+                              <span>${escapeHtml(`记录 ${Number(item.last_record_count || 0)}`)}</span>
+                              <span>${escapeHtml(fmtTime(item.last_synced_at))}</span>
+                              ${
+                                item.table_url
+                                  ? `<a class="btn btn-ghost btn-compact" href="${escapeHtml(String(item.table_url || ''))}" target="_blank" rel="noreferrer">打开</a>`
+                                  : ''
+                              }
+                            </div>
+                          </div>
+                        `
+                      )
+                      .join('')}
+                  </div>`
+                : '<div class="hint">尚未生成按日期留档的执行表。</div>'
+            }
           </div>
 
           <div class="bitable-export-actions">
             <button class="btn btn-secondary" type="button" data-role="save-config">保存配置</button>
+            <button class="btn btn-secondary" type="button" data-role="sync-feedback">立即回读反馈</button>
             <button class="btn btn-primary" type="button" data-role="run-export">立即更新并推送</button>
           </div>
         </article>
@@ -2311,10 +2389,13 @@ function collectBitableExportCardPayload(sourceType) {
 
   const enabledInput = card.querySelector('[data-role="enabled"]');
   const chatIdInput = card.querySelector('[data-role="chat-id"]');
+  const tableNamePrefixInput = card.querySelector('[data-role="table-name-prefix"]');
 
   return {
     enabled: enabledInput instanceof HTMLInputElement ? enabledInput.checked : false,
-    chatId: chatIdInput instanceof HTMLInputElement ? String(chatIdInput.value || '').trim() : ''
+    chatId: chatIdInput instanceof HTMLInputElement ? String(chatIdInput.value || '').trim() : '',
+    tableNamePrefix:
+      tableNamePrefixInput instanceof HTMLInputElement ? String(tableNamePrefixInput.value || '').trim() : ''
   };
 }
 
@@ -2370,8 +2451,11 @@ async function runBitableExportCard(sourceType) {
       body: JSON.stringify({ sourceType, reportDate })
     });
     const result = body.data || {};
-    await loadBitableExportConfigs();
-    await loadOperationLogs();
+    await Promise.all([
+      loadBitableExportConfigs(),
+      loadOperationLogs(),
+      loadBudgetRecommendations(undefined, state.budgetPage || 1)
+    ]);
     showToast(
       result.export_status === 'partial_success'
         ? `${result.label || '投放执行表'} 已刷新 ${result.record_count || 0} 条执行项，但旧快照清理不完整`
@@ -2383,6 +2467,58 @@ async function runBitableExportCard(sourceType) {
       button.textContent = originalText;
     }
   }
+}
+
+async function syncBitableFeedbackCard(sourceType) {
+  const button = findBitableExportCard(sourceType)?.querySelector('[data-role="sync-feedback"]');
+  const originalText = button instanceof HTMLButtonElement ? button.textContent || '立即回读反馈' : '';
+  if (button instanceof HTMLButtonElement) {
+    button.disabled = true;
+    button.textContent = '回读中...';
+  }
+
+  try {
+    const body = await api('/api/bitable-exports/feedback-sync', {
+      method: 'POST',
+      body: JSON.stringify({ sourceType })
+    });
+    const result = body.data || {};
+    await Promise.all([loadBitableExportConfigs(), loadBudgetRecommendations(undefined, state.budgetPage || 1)]);
+    showToast(
+      `执行反馈已回读 ${Number(result.synced_count || 0)} 条，忽略 ${Number(result.skipped_count || 0)} 条无映射记录`
+    );
+  } finally {
+    if (button instanceof HTMLButtonElement) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
+function currentExecutionTableUrl() {
+  const source = (state.bitableExportSources || []).find((item) => item.source_type === 'delivery_actions');
+  return String(source?.table_url || '').trim();
+}
+
+async function exportBudgetFeedbackData() {
+  const form = new FormData(el.budgetFilter);
+  const params = new URLSearchParams();
+  ['appKey', 'platform', 'from', 'to', 'status', 'executionStatus', 'isAdopted', 'hasManualReview'].forEach((key) => {
+    const value = String(form.get(key) || '').trim();
+    if (value) {
+      params.set(key, value);
+    }
+  });
+  window.open(`/api/budget/recommendations/feedback-export?${params.toString()}`, '_blank', 'noopener');
+}
+
+async function downloadLatestBudgetSkills() {
+  const body = await api('/api/budget/recommendations/skills/latest');
+  const latest = body.data || null;
+  if (!latest) {
+    throw new Error('当前还没有可下载的 skills.md');
+  }
+  window.open('/api/budget/recommendations/skills/latest/download', '_blank', 'noopener');
 }
 
 async function loadPullRecords(event, pageOverride) {
@@ -2671,13 +2807,14 @@ function renderBudgetTable() {
   const rows = state.budgetRows || [];
   if (rows.length === 0) {
     el.budgetTableBody.innerHTML =
-      '<tr><td class="table-empty" colspan="15">当前筛选条件下暂无预算建议</td></tr>';
+      '<tr><td class="table-empty" colspan="18">当前筛选条件下暂无预算建议</td></tr>';
     return;
   }
 
   el.budgetTableBody.innerHTML = rows
     .map((row) => {
-      const canOperate = row.status === 'pending';
+      const manualReview = String(row.validation_result || '').trim();
+      const executionTableUrl = currentExecutionTableUrl();
       return `
       <tr>
         <td>${escapeHtml(row.date)}</td>
@@ -2694,11 +2831,17 @@ function renderBudgetTable() {
         <td>${(Number(row.change_ratio || 0) * 100).toFixed(1)}%</td>
         <td>${(Number(row.confidence || 0) * 100).toFixed(1)}%</td>
         <td><span class="badge badge-${escapeHtml(row.status)}">${budgetStatusLabel(row.status)}</span></td>
+        <td>${escapeHtml(String(row.execution_status || '未填写'))}</td>
+        <td>${row.is_adopted ? '已采纳' : '未采纳 / 未勾选'}</td>
+        <td class="table-cell-wrap">${escapeHtml(manualReview ? `${manualReview.slice(0, 36)}${manualReview.length > 36 ? '...' : ''}` : '-')}</td>
         <td>
           <div class="table-actions">
             <button class="btn btn-ghost btn-compact" type="button" data-budget-view-id="${row.id}">查看说明</button>
-            ${canOperate ? `<button class="btn btn-ghost btn-compact" type="button" data-budget-apply-id="${row.id}">标记已执行</button>` : ''}
-            ${canOperate ? `<button class="btn btn-ghost btn-compact" type="button" data-budget-reject-id="${row.id}">标记不执行</button>` : ''}
+            ${
+              executionTableUrl
+                ? `<a class="btn btn-ghost btn-compact" href="${escapeHtml(executionTableUrl)}" target="_blank" rel="noreferrer">前往执行表</a>`
+                : ''
+            }
           </div>
         </td>
       </tr>
@@ -2723,6 +2866,9 @@ async function loadBudgetRecommendations(event, pageOverride) {
   const from = String(form.get('from') || '').trim();
   const to = String(form.get('to') || '').trim();
   const status = String(form.get('status') || '').trim();
+  const executionStatus = String(form.get('executionStatus') || '').trim();
+  const isAdopted = String(form.get('isAdopted') || '').trim();
+  const hasManualReview = String(form.get('hasManualReview') || '').trim();
   const page = Number.isFinite(Number(pageOverride)) ? Number(pageOverride) : state.budgetPage || 1;
   if (from && to && from > to) {
     throw new Error('预算查询起始日期不能晚于结束日期');
@@ -2736,6 +2882,9 @@ async function loadBudgetRecommendations(event, pageOverride) {
   if (from) params.set('from', from);
   if (to) params.set('to', to);
   if (status) params.set('status', status);
+  if (executionStatus) params.set('executionStatus', executionStatus);
+  if (isAdopted) params.set('isAdopted', isAdopted);
+  if (hasManualReview) params.set('hasManualReview', hasManualReview);
 
   const body = await api(`/api/budget/recommendations?${params.toString()}`);
   state.budgetRows = Array.isArray(body.data) ? body.data : [];
@@ -2775,6 +2924,10 @@ function openBudgetDetail(row) {
   el.budgetDetailCurrentCost.textContent = toFixed2(row.current_cost);
   el.budgetDetailSuggestedBudget.textContent = toFixed2(row.suggested_budget);
   el.budgetDetailChangeRatio.textContent = `${(Number(row.change_ratio || 0) * 100).toFixed(1)}%`;
+  el.budgetDetailExecutionStatus.textContent = String(row.execution_status || '未填写');
+  el.budgetDetailIsAdopted.textContent = row.is_adopted ? '已采纳' : '未采纳 / 未勾选';
+  el.budgetDetailFeedbackSyncedAt.textContent = fmtTime(row.feedback_synced_at);
+  el.budgetDetailValidationResult.textContent = String(row.validation_result || '-');
   el.budgetDetailRisk.textContent = String(llmSummary.risk_level || '-');
   el.budgetDetailChecklist.innerHTML = checklist.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('');
   el.budgetDetailPoints.innerHTML = points.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('');
@@ -2782,36 +2935,16 @@ function openBudgetDetail(row) {
   setBudgetDetailModalOpen(true);
 }
 
-async function updateBudgetStatus(id, mode) {
-  const endpoint =
-    mode === 'apply'
-      ? `/api/budget/recommendations/${id}/mark-applied`
-      : `/api/budget/recommendations/${id}/reject`;
-  await api(endpoint, { method: 'POST' });
-  showToast(mode === 'apply' ? '预算建议已标记为已执行' : '预算建议已标记为不执行');
-  await loadBudgetRecommendations(undefined, state.budgetPage);
-}
-
 async function handleBudgetTableClick(event) {
   const target = event.target;
   if (!(target instanceof HTMLButtonElement)) return;
   const viewId = Number(target.dataset.budgetViewId || 0);
-  const applyId = Number(target.dataset.budgetApplyId || 0);
-  const rejectId = Number(target.dataset.budgetRejectId || 0);
 
   if (viewId) {
     const row = state.budgetRows.find((item) => Number(item.id) === viewId);
     if (row) {
       openBudgetDetail(row);
     }
-    return;
-  }
-  if (applyId) {
-    await updateBudgetStatus(applyId, 'apply');
-    return;
-  }
-  if (rejectId) {
-    await updateBudgetStatus(rejectId, 'reject');
   }
 }
 
@@ -3634,6 +3767,12 @@ el.budgetPrevPageBtn.addEventListener('click', () =>
 el.budgetNextPageBtn.addEventListener('click', () =>
   changeBudgetPage(1).catch((err) => showToast(err.message || '预算建议翻页失败', true))
 );
+el.budgetExportFeedbackBtn.addEventListener('click', () =>
+  exportBudgetFeedbackData().catch((err) => showToast(err.message || '预算反馈导出失败', true))
+);
+el.budgetDownloadSkillsBtn.addEventListener('click', () =>
+  downloadLatestBudgetSkills().catch((err) => showToast(err.message || 'skills 下载失败', true))
+);
 el.budgetRecomputeBtn.addEventListener('click', () =>
   triggerBudgetRecompute().catch((err) => showToast(err.message || '预算建议生成失败', true))
 );
@@ -3716,6 +3855,10 @@ el.bitableExportCards?.addEventListener('click', (event) => {
   }
   if (target.dataset.role === 'run-export') {
     runBitableExportCard(sourceType).catch((err) => showToast(err.message || '导出执行失败', true));
+    return;
+  }
+  if (target.dataset.role === 'sync-feedback') {
+    syncBitableFeedbackCard(sourceType).catch((err) => showToast(err.message || '执行反馈回读失败', true));
   }
 });
 el.bitableExportCards?.addEventListener('change', (event) => {

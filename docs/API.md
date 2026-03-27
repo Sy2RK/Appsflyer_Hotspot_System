@@ -336,7 +336,7 @@ Request:
 ### `POST /api/asa-keywords/brief/send`
 发送 ASA 专项简报到 Feishu。建议操作会随简报一并发送。
 
-### `GET /api/budget/recommendations?appKey=&platform=&status=&from=&to=&page=`
+### `GET /api/budget/recommendations?appKey=&platform=&status=&from=&to=&executionStatus=&isAdopted=&hasManualReview=&page=`
 查询预算建议（分页）。
 
 参数说明:
@@ -344,7 +344,16 @@ Request:
 - `platform` 可选：`ios|android|unknown`
 - `status` 可选：`pending|applied|rejected|expired`
 - `from` / `to` 可选，格式 `YYYY-MM-DD`
+- `executionStatus` 可选：按飞书回读后的执行状态过滤
+- `isAdopted` 可选：`true|false`
+- `hasManualReview` 可选：`true|false`
 - `page` 默认 `1`
+
+返回新增字段：
+- `execution_status`
+- `is_adopted`
+- `validation_result`
+- `feedback_synced_at`
 
 ### `POST /api/budget/recommendations/:id/mark-applied`
 将建议标记为已执行（`status=applied`）。
@@ -376,6 +385,38 @@ Request:
 - `medium`: 最近 3 天激活 `15-30`
 - `high`: 最近 3 天激活 `> 30`
 - 单次建议幅度固定 `20%`
+
+### `GET /api/budget/recommendations/feedback-export`
+导出预算建议 + 飞书执行反馈数据集，格式固定为 `NDJSON`。
+
+支持参数：
+- `appKey`
+- `platform`
+- `status`
+- `from`
+- `to`
+- `executionStatus`
+- `isAdopted`
+- `hasManualReview`
+
+返回说明：
+- `content-type: application/x-ndjson`
+- 每行固定包含 `identity / recommendation / context / feedback / meta`
+
+### `GET /api/budget/recommendations/skills/latest`
+查询最新一版预算反馈 `skills.md`。
+
+返回重点字段：
+- `skills_markdown`
+- `dataset_row_count`
+- `from_date`
+- `to_date`
+- `model`
+- `prompt_hash`
+- `created_at`
+
+### `GET /api/budget/recommendations/skills/latest/download`
+下载最新 `skills.md` 文件。
 
 ### `GET /api/daily-brief/preview?reportDate=YYYY-MM-DD`
 生成每日报告预览，不发送。
@@ -439,11 +480,16 @@ Request:
 说明：
 - `pull_time` 控制：
   - `puller`
+  - `budget-advisor`
   - `asa-keywords`
 - `push_time` 控制：
   - `daily-brief`
   - `asa-daily-brief`
 - `bitable_time` 不单独存库，固定按 `push_time + 5 分钟` 计算
+- 自动闭环 gate：
+  - `daily-brief` / `asa-daily-brief` / `bitable-export` 除了等待 `pull_report_readiness=ready`
+  - 还会额外等待 `budget-advisor` 与 `asa-keywords` 针对同一 `reportDate` 的长任务真正完成
+  - 未完成时 worker 会持续输出 `*_blocked_by_downstream_gate` 日志而不是提前发送
 
 ### `POST /api/runtime-schedule`
 保存全局调度配置。
@@ -473,10 +519,12 @@ Request:
 - `fields`
 - `config`
 - `table_url`
+- `latest_table_url`
+- `recent_tables`
 - `target_table_hint`
 
 说明：
-- `delivery_actions` 会在同一 Base 下创建 / 复用固定的 `投放执行表`
+- `delivery_actions` 会在同一 Base 下按 `reportDate` 创建 / 复用日期表，例如 `投放执行表_2026-03-27`
 - 表内只保留可执行信息，不再导出 Pull 明细 / ASA Raw / `raw_json`
 - 第一版不开放 Base / Table ID 前端编辑
 
@@ -490,14 +538,17 @@ Request:
 ```json
 {
   "enabled": true,
-  "chatId": "oc_xxx"
+  "chatId": "oc_xxx",
+  "tableNamePrefix": "投放执行表"
 }
 ```
 
 说明：
 - `enabled=true` 且 `chatId` 非空时，才会被每日 `bitable_time` 定时任务纳入执行
+- `tableNamePrefix` 决定每日日期表名，最终格式为 `前缀_YYYY-MM-DD`
 - 字段列为系统固定输出，接口传入的 `selectedFields` 会被忽略
 - `bitable_time` 固定按全局 `push_time + 5 分钟` 计算
+- 自动定时导出除了依赖 Pull 完成，也会等待 `budget-advisor` 与 `asa-keywords` 针对该 `reportDate` 完成，避免导出中间态建议
 
 ### `POST /api/bitable-exports/run`
 手动执行一次投放执行表导出到 Feishu 多维表格，并向指定群聊发送结果通知。
@@ -515,22 +566,42 @@ Request:
 - `report_date`
 - `table_id`
 - `table_name`
+- `table_name_prefix`
 - `table_url`
 - `selected_fields`
 - `deleted_count`
-- `record_count`
-- `breakdown`
-- `notify`
+
+### `POST /api/bitable-exports/feedback-sync`
+手动执行一次飞书投放执行表反馈回读。
+
+Request:
+```json
+{
+  "sourceType": "delivery_actions"
+}
+```
+
+返回重点字段：
+- `source_type`
+- `table_id`
+- `table_count`
+- `synced_table_ids`
+- `synced_count`
+- `skipped_count`
+- `feedback_changed`
+- `synced_at`
+- `latest_skill_updated_at`
 
 说明：
-- 每次都按 `reportDate` 快照替换，保证表内始终保留最新执行清单
+- 每次都只刷新对应 `reportDate` 的日期表，不会删除其他日期归档表
+- 历史日期表的人工反馈修改也会继续回读
 - 群通知使用与现有日报相同的 Feishu bot
 - `delivery_actions`：
   - 仅导出当前仍待处理的建议项（`pending`）
   - 通用投放部分来自 `budget_recommendations + keyword_lifecycle_states`
   - ASA 部分来自 `asa_keyword_recommendations + asa_keyword_states`
   - 表内使用 `执行状态`（单选）+ `是否采纳`（复选框）+ `人工批复` 字段；同一天重导时会尽量保留已有填写结果
-  - 目标表会在同一 Base 下自动创建 / 复用 `投放执行表`
+  - 目标表会在同一 Base 下自动创建 / 复用 `投放执行表_YYYY-MM-DD`
 
 ### `GET /api/operation-logs?source=&status=&limit=`
 查询系统操作日志。
