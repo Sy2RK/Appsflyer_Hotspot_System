@@ -109,6 +109,21 @@ export interface PullReportReadinessRecord {
   updated_at: string;
 }
 
+export type ScheduledWorkerRunStatus = 'running' | 'failed' | 'completed';
+
+export interface ScheduledWorkerRunRecord {
+  worker_name: string;
+  run_marker: string;
+  status: ScheduledWorkerRunStatus;
+  attempt_count: number;
+  last_attempt_at: string | null;
+  next_allowed_at: string | null;
+  completed_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface UpsertPullContentGuardInput {
   app_key: string;
   platform: string;
@@ -212,6 +227,7 @@ let ensureBitableExportDailyTablesSchemaPromise: Promise<void> | null = null;
 let ensureRecommendationExecutionFeedbacksSchemaPromise: Promise<void> | null = null;
 let ensureFeedbackSkillVersionsSchemaPromise: Promise<void> | null = null;
 let ensurePullReportReadinessSchemaPromise: Promise<void> | null = null;
+let ensureScheduledWorkerRunsSchemaPromise: Promise<void> | null = null;
 
 async function ensurePullReportReadinessSchema(): Promise<void> {
   if (!ensurePullReportReadinessSchemaPromise) {
@@ -241,6 +257,36 @@ async function ensurePullReportReadinessSchema(): Promise<void> {
       });
   }
   await ensurePullReportReadinessSchemaPromise;
+}
+
+async function ensureScheduledWorkerRunsSchema(): Promise<void> {
+  if (!ensureScheduledWorkerRunsSchemaPromise) {
+    ensureScheduledWorkerRunsSchemaPromise = (async () => {
+      await pgQuery(`CREATE TABLE IF NOT EXISTS scheduled_worker_runs (
+        worker_name TEXT NOT NULL,
+        run_marker TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'failed', 'completed')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at TIMESTAMPTZ,
+        next_allowed_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        last_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (worker_name, run_marker)
+      )`);
+      await pgQuery(
+        `CREATE INDEX IF NOT EXISTS idx_scheduled_worker_runs_lookup
+          ON scheduled_worker_runs (worker_name, completed_at, next_allowed_at, updated_at DESC)`
+      );
+    })()
+      .then(() => undefined)
+      .catch((error) => {
+        ensureScheduledWorkerRunsSchemaPromise = null;
+        throw error;
+      });
+  }
+  await ensureScheduledWorkerRunsSchemaPromise;
 }
 
 async function ensureBitableExportConfigSchema(): Promise<void> {
@@ -476,6 +522,95 @@ export async function getPullReportReadiness(
   );
 
   return result.rows[0] ?? null;
+}
+
+export async function getScheduledWorkerRun(
+  workerName: string,
+  runMarker: string
+): Promise<ScheduledWorkerRunRecord | null> {
+  await ensureScheduledWorkerRunsSchema();
+  const result = await pgQuery<ScheduledWorkerRunRecord>(
+    `SELECT worker_name, run_marker, status, attempt_count,
+            last_attempt_at::text AS last_attempt_at,
+            next_allowed_at::text AS next_allowed_at,
+            completed_at::text AS completed_at,
+            last_error, created_at, updated_at
+       FROM scheduled_worker_runs
+      WHERE worker_name = $1
+        AND run_marker = $2
+      LIMIT 1`,
+    [workerName, runMarker]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function tryStartScheduledWorkerRunAttempt(
+  workerName: string,
+  runMarker: string,
+  maxAttempts: number,
+  retryCooldownMs: number
+): Promise<ScheduledWorkerRunRecord | null> {
+  await ensureScheduledWorkerRunsSchema();
+  const result = await pgQuery<ScheduledWorkerRunRecord>(
+    `WITH claimed AS (
+       INSERT INTO scheduled_worker_runs (
+         worker_name, run_marker, status, attempt_count, last_attempt_at, next_allowed_at, completed_at, last_error
+       ) VALUES (
+         $1, $2, 'running', 1, NOW(), NOW() + ($3 * INTERVAL '1 millisecond'), NULL, NULL
+       )
+       ON CONFLICT (worker_name, run_marker) DO UPDATE SET
+         status = 'running',
+         attempt_count = scheduled_worker_runs.attempt_count + 1,
+         last_attempt_at = NOW(),
+         next_allowed_at = NOW() + ($3 * INTERVAL '1 millisecond'),
+         last_error = NULL,
+         updated_at = NOW()
+       WHERE scheduled_worker_runs.completed_at IS NULL
+         AND scheduled_worker_runs.attempt_count < $4
+         AND (scheduled_worker_runs.next_allowed_at IS NULL OR scheduled_worker_runs.next_allowed_at <= NOW())
+       RETURNING worker_name, run_marker, status, attempt_count,
+                 last_attempt_at::text AS last_attempt_at,
+                 next_allowed_at::text AS next_allowed_at,
+                 completed_at::text AS completed_at,
+                 last_error, created_at, updated_at
+     )
+     SELECT worker_name, run_marker, status, attempt_count, last_attempt_at, next_allowed_at, completed_at, last_error, created_at, updated_at
+       FROM claimed`,
+    [workerName, runMarker, Math.max(1000, Math.floor(retryCooldownMs)), Math.max(1, Math.floor(maxAttempts))]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function markScheduledWorkerRunCompleted(workerName: string, runMarker: string): Promise<void> {
+  await ensureScheduledWorkerRunsSchema();
+  await pgQuery(
+    `UPDATE scheduled_worker_runs
+        SET status = 'completed',
+            completed_at = NOW(),
+            next_allowed_at = NULL,
+            last_error = NULL,
+            updated_at = NOW()
+      WHERE worker_name = $1
+        AND run_marker = $2`,
+    [workerName, runMarker]
+  );
+}
+
+export async function markScheduledWorkerRunFailed(
+  workerName: string,
+  runMarker: string,
+  lastError?: string | null
+): Promise<void> {
+  await ensureScheduledWorkerRunsSchema();
+  await pgQuery(
+    `UPDATE scheduled_worker_runs
+        SET status = 'failed',
+            last_error = NULLIF($3, ''),
+            updated_at = NOW()
+      WHERE worker_name = $1
+        AND run_marker = $2`,
+    [workerName, runMarker, lastError ?? '']
+  );
 }
 
 export async function upsertPullReportReadiness(

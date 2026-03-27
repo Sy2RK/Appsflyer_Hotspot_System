@@ -6,22 +6,36 @@ import { writeOperationLog } from '@shared/utils/operationLog.js';
 import { getDefaultPullReadinessReportDate, isPullReportReadyForDownstream } from '@shared/utils/pullReadiness.js';
 import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { getTzParts, hasReachedDailyTime, nextDailyTimeLocalString } from '@shared/utils/schedule.js';
+import {
+  completeScheduledWorkerRun,
+  failScheduledWorkerRun,
+  getScheduledWorkerRunDecision,
+  tryClaimScheduledWorkerRunAttempt
+} from '@shared/utils/scheduledWorkerRun.js';
 import { getPullScheduleTarget } from '@shared/utils/runtimeSchedule.js';
 
 let running = false;
-let lastRunMarker = '';
 let lastScheduleMarker = '';
+let lastRetryBlockMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
+const BUDGET_ADVISOR_WORKER_NAME = 'worker.budget_advisor';
 const BUDGET_ADVISOR_JOB_LOCK = 'worker:budget_advisor:cycle';
 const BUDGET_ADVISOR_JOB_LOCK_TTL_MS = 2 * 60 * 60 * 1000;
+const MAX_DAILY_RETRY_ATTEMPTS = 3;
+const RETRY_COOLDOWN_MS = 15 * 60 * 1000;
+const RETRY_POLICY = {
+  max_attempts: MAX_DAILY_RETRY_ATTEMPTS,
+  retry_cooldown_ms: RETRY_COOLDOWN_MS
+} as const;
 
-async function tick(reportDate: string): Promise<boolean> {
+async function tick(reportDate: string, runMarker: string): Promise<boolean> {
   if (running) {
     logger.warn('budget_advisor_skip_overlap');
     return false;
   }
   running = true;
   let lockOwnerId = '';
+  let attemptClaimed = false;
   try {
     const readiness = await isPullReportReadyForDownstream(reportDate);
     if (!readiness.ready) {
@@ -55,6 +69,22 @@ async function tick(reportDate: string): Promise<boolean> {
       logger.warn('budget_advisor_skip_distributed_overlap');
       return false;
     }
+    const claimDecision = await tryClaimScheduledWorkerRunAttempt(
+      BUDGET_ADVISOR_WORKER_NAME,
+      runMarker,
+      RETRY_POLICY
+    );
+    if (!claimDecision.allowed) {
+      logger.info('budget_advisor_attempt_claim_skipped', {
+        report_date: reportDate,
+        run_marker: runMarker,
+        reason: claimDecision.reason,
+        remaining_attempts: claimDecision.remaining_attempts,
+        next_allowed_at: claimDecision.next_allowed_at
+      });
+      return false;
+    }
+    attemptClaimed = true;
     const result = await runBudgetAdvisorCycle(env.budgetAdvisorLookbackDays, logger);
     logger.info('budget_advisor_cycle_result', {
       report_date: reportDate,
@@ -64,6 +94,7 @@ async function tick(reportDate: string): Promise<boolean> {
       skipped_count: result.skipped_count,
       duration_ms: result.duration_ms
     });
+    await completeScheduledWorkerRun(BUDGET_ADVISOR_WORKER_NAME, runMarker);
     await writeOperationLog(
       {
         source: 'worker.budget_advisor',
@@ -81,6 +112,13 @@ async function tick(reportDate: string): Promise<boolean> {
     );
     return true;
   } catch (error) {
+    if (attemptClaimed) {
+      await failScheduledWorkerRun(
+        BUDGET_ADVISOR_WORKER_NAME,
+        runMarker,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
     logger.error('budget_advisor_cycle_failed', {
       report_date: reportDate,
       error: error instanceof Error ? error.message : String(error)
@@ -128,12 +166,25 @@ async function bootstrap(): Promise<void> {
         });
       }
 
-      if (hasReachedDailyTime(target.hour, target.minute, env.timezone, now) && lastRunMarker !== runMarker) {
+      if (hasReachedDailyTime(target.hour, target.minute, env.timezone, now)) {
         const reportDate = getDefaultPullReadinessReportDate(now, env.timezone);
-        const didRun = await tick(reportDate);
-        if (didRun) {
-          lastRunMarker = runMarker;
+        const decision = await getScheduledWorkerRunDecision(BUDGET_ADVISOR_WORKER_NAME, runMarker, RETRY_POLICY, now);
+        if (!decision.allowed) {
+          const blockMarker = `${runMarker}|${decision.reason}|${decision.next_allowed_at || 'none'}`;
+          if (lastRetryBlockMarker !== blockMarker) {
+            lastRetryBlockMarker = blockMarker;
+            logger.warn('budget_advisor_run_suppressed', {
+              report_date: reportDate,
+              run_marker: runMarker,
+              reason: decision.reason,
+              remaining_attempts: decision.remaining_attempts,
+              next_allowed_at: decision.next_allowed_at
+            });
+          }
+          return;
         }
+        lastRetryBlockMarker = '';
+        await tick(reportDate, runMarker);
       }
     } finally {
       setTimeout(() => {

@@ -1,15 +1,32 @@
+import crypto from 'crypto';
 import { env } from '@shared/config/env.js';
 import { runPullCycle } from '@shared/utils/puller.js';
 import { logger } from '@api/common/logger/logger.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { getTzParts, hasReachedDailyTime, nextDailyTimeLocalString } from '@shared/utils/schedule.js';
+import {
+  completeScheduledWorkerRun,
+  failScheduledWorkerRun,
+  getScheduledWorkerRunDecision,
+  tryClaimScheduledWorkerRunAttempt
+} from '@shared/utils/scheduledWorkerRun.js';
 import { getPullScheduleTarget } from '@shared/utils/runtimeSchedule.js';
 
 let running = false;
 let firstCycle = true;
-let lastRunMarker = '';
 let lastScheduleMarker = '';
+let lastRetryBlockMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
+const PULLER_WORKER_NAME = 'worker.puller';
+const PULLER_JOB_LOCK = 'worker:puller:tick';
+const PULLER_JOB_LOCK_TTL_MS = 2 * 60 * 60 * 1000;
+const MAX_DAILY_RETRY_ATTEMPTS = 3;
+const RETRY_COOLDOWN_MS = 15 * 60 * 1000;
+const RETRY_POLICY = {
+  max_attempts: MAX_DAILY_RETRY_ATTEMPTS,
+  retry_cooldown_ms: RETRY_COOLDOWN_MS
+} as const;
 
 function summarizePullCycleStatus(result: { success_count: number; failed_count: number; skipped_count: number }): 'success' | 'failed' | 'info' | 'skipped' {
   if (result.success_count > 0 && result.failed_count === 0 && result.skipped_count === 0) {
@@ -24,17 +41,47 @@ function summarizePullCycleStatus(result: { success_count: number; failed_count:
   return 'info';
 }
 
-async function tick(): Promise<void> {
+function didPullCycleComplete(result: { failed_count: number }): boolean {
+  return Number(result.failed_count) === 0;
+}
+
+async function tick(runMarker: string): Promise<boolean> {
   if (running) {
     logger.warn('puller_skip_overlap');
-    return;
+    return false;
   }
 
   running = true;
   const backfillDays = firstCycle ? env.pullerBackfillDays : 1;
+  let lockOwnerId = '';
+  let attemptClaimed = false;
+  let completed = false;
 
   try {
+    lockOwnerId = crypto.randomUUID();
+    const lockAcquired = await tryAcquireJobLock(PULLER_JOB_LOCK, lockOwnerId, PULLER_JOB_LOCK_TTL_MS);
+    if (!lockAcquired) {
+      logger.warn('puller_skip_distributed_overlap');
+      return false;
+    }
+    const claimDecision = await tryClaimScheduledWorkerRunAttempt(PULLER_WORKER_NAME, runMarker, RETRY_POLICY);
+    if (!claimDecision.allowed) {
+      logger.info('puller_attempt_claim_skipped', {
+        run_marker: runMarker,
+        reason: claimDecision.reason,
+        remaining_attempts: claimDecision.remaining_attempts,
+        next_allowed_at: claimDecision.next_allowed_at
+      });
+      return false;
+    }
+    attemptClaimed = true;
     const result = await runPullCycle(backfillDays, logger);
+    completed = didPullCycleComplete(result);
+    if (completed) {
+      await completeScheduledWorkerRun(PULLER_WORKER_NAME, runMarker);
+    } else {
+      await failScheduledWorkerRun(PULLER_WORKER_NAME, runMarker, `pull_cycle_failed_count=${result.failed_count}`);
+    }
     await writeOperationLog(
       {
         source: 'worker.puller',
@@ -43,11 +90,21 @@ async function tick(): Promise<void> {
         target_key: String(backfillDays),
         status: summarizePullCycleStatus(result),
         summary: `定时 Pull 完成，回填 ${backfillDays} 天`,
-        detail_json: result
+        detail_json: {
+          ...result,
+          completed
+        }
       },
       logger
     );
   } catch (error) {
+    if (attemptClaimed) {
+      await failScheduledWorkerRun(
+        PULLER_WORKER_NAME,
+        runMarker,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
     logger.error('puller_cycle_failed', {
       backfill_days: backfillDays,
       error: error instanceof Error ? error.message : String(error)
@@ -68,17 +125,27 @@ async function tick(): Promise<void> {
       logger
     );
   } finally {
+    if (lockOwnerId) {
+      await releaseJobLock(PULLER_JOB_LOCK, lockOwnerId);
+    }
     firstCycle = false;
     running = false;
   }
+
+  return completed;
 }
 
 async function bootstrap(): Promise<void> {
   if (env.pullerRunOnBoot) {
-    await tick();
     const target = await getPullScheduleTarget();
-    const parts = getTzParts(new Date(), env.timezone);
-    lastRunMarker = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}|${target.time}`;
+    const now = new Date();
+    const parts = getTzParts(now, env.timezone);
+    const runMarker = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}|${target.time}`;
+    const decision = await getScheduledWorkerRunDecision(PULLER_WORKER_NAME, runMarker, RETRY_POLICY, now);
+    if (decision.allowed) {
+      lastRetryBlockMarker = '';
+      await tick(runMarker);
+    }
   }
 
   const scheduleLoop = async (): Promise<void> => {
@@ -99,9 +166,23 @@ async function bootstrap(): Promise<void> {
         });
       }
 
-      if (hasReachedDailyTime(target.hour, target.minute, env.timezone, now) && lastRunMarker !== runMarker) {
-        lastRunMarker = runMarker;
-        await tick();
+      if (hasReachedDailyTime(target.hour, target.minute, env.timezone, now)) {
+        const decision = await getScheduledWorkerRunDecision(PULLER_WORKER_NAME, runMarker, RETRY_POLICY, now);
+        if (!decision.allowed) {
+          const blockMarker = `${runMarker}|${decision.reason}|${decision.next_allowed_at || 'none'}`;
+          if (lastRetryBlockMarker !== blockMarker) {
+            lastRetryBlockMarker = blockMarker;
+            logger.warn('puller_run_suppressed', {
+              run_marker: runMarker,
+              reason: decision.reason,
+              remaining_attempts: decision.remaining_attempts,
+              next_allowed_at: decision.next_allowed_at
+            });
+          }
+          return;
+        }
+        lastRetryBlockMarker = '';
+        await tick(runMarker);
       }
     } finally {
       setTimeout(() => {

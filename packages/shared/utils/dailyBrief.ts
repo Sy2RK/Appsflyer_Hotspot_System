@@ -139,6 +139,14 @@ export interface DailyBriefSendResult {
   dispatch?: Awaited<ReturnType<typeof upsertDailyBriefDispatch>>;
 }
 
+export interface ScheduledDailyBriefRunSummary {
+  completed: boolean;
+  report_date: string | null;
+  sent_count: number;
+  failed_count: number;
+  skipped_count: number;
+}
+
 const DAILY_BRIEF_BUDGET_MAX_ITEMS = 30;
 const DAILY_BRIEF_SEND_LOCK_PREFIX = 'daily_brief:send';
 const DAILY_BRIEF_SEND_LOCK_TTL_MS = 30 * 60 * 1000;
@@ -1083,10 +1091,16 @@ function buildRouteFilters(route: DailyBriefRouteRecord): DailyBriefFilters {
   };
 }
 
-export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> {
+export async function runScheduledDailyBrief(logger: LoggerLike): Promise<ScheduledDailyBriefRunSummary> {
   if (!env.dailyBriefEnabled) {
     logger.info('daily_brief_disabled');
-    return;
+    return {
+      completed: true,
+      report_date: null,
+      sent_count: 0,
+      failed_count: 0,
+      skipped_count: 1
+    };
   }
 
   const schedule = await getPushScheduleTarget();
@@ -1101,11 +1115,20 @@ export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> 
       current_minute: currentParts.minute,
       report_time: schedule.time
     });
-    return;
+    return {
+      completed: true,
+      report_date: null,
+      sent_count: 0,
+      failed_count: 0,
+      skipped_count: 1
+    };
   }
 
   const reportDate = getDailyBriefDefaultReportDate(new Date(), env.timezone);
   const routes = await listEnabledDailyBriefRoutes();
+  let sentCount = 0;
+  let failedCount = 0;
+  let skippedCount = 0;
 
   if (routes.length === 0) {
     const preview = await buildDailyBriefPreview(reportDate);
@@ -1114,7 +1137,13 @@ export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> 
         report_date: reportDate,
         route_key: 'all'
       });
-      return;
+      return {
+        completed: true,
+        report_date: reportDate,
+        sent_count: 0,
+        failed_count: 0,
+        skipped_count: 1
+      };
     }
 
     const existing = await getDailyBriefDispatch(reportDate, 'ops_daily', 'feishu', 'all');
@@ -1124,7 +1153,13 @@ export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> 
         route_key: 'all',
         sent_at: existing.sent_at
       });
-      return;
+      return {
+        completed: true,
+        report_date: reportDate,
+        sent_count: 0,
+        failed_count: 0,
+        skipped_count: 1
+      };
     }
 
     const result = await sendDailyBrief(reportDate, {
@@ -1138,14 +1173,26 @@ export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> 
         route_key: 'all',
         render_mode: result.notify.render_mode || result.report.render_mode
       });
-      return;
+      return {
+        completed: true,
+        report_date: reportDate,
+        sent_count: 1,
+        failed_count: 0,
+        skipped_count: 0
+      };
     }
     logger.error('daily_brief_send_failed', {
       report_date: reportDate,
       route_key: 'all',
       error: result.notify.error ?? `status_${String(result.notify.status ?? 'unknown')}`
     });
-    return;
+    return {
+      completed: false,
+      report_date: reportDate,
+      sent_count: 0,
+      failed_count: 1,
+      skipped_count: 0
+    };
   }
 
   for (const route of routes) {
@@ -1158,6 +1205,7 @@ export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> 
         route_key: routeKey,
         route_name: route.route_name
       });
+      skippedCount += 1;
       continue;
     }
 
@@ -1168,6 +1216,7 @@ export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> 
         route_key: routeKey,
         route_name: route.route_name
       });
+      skippedCount += 1;
       continue;
     }
 
@@ -1184,6 +1233,7 @@ export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> 
     });
 
     if (result.ok) {
+      sentCount += 1;
       logger.info('daily_brief_route_sent', {
         report_date: reportDate,
         route_key: routeKey,
@@ -1191,6 +1241,7 @@ export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> 
         media_sources: route.media_sources
       });
     } else {
+      failedCount += 1;
       logger.error('daily_brief_route_send_failed', {
         report_date: reportDate,
         route_key: routeKey,
@@ -1199,4 +1250,12 @@ export async function runScheduledDailyBrief(logger: LoggerLike): Promise<void> 
       });
     }
   }
+
+  return {
+    completed: failedCount === 0,
+    report_date: reportDate,
+    sent_count: sentCount,
+    failed_count: failedCount,
+    skipped_count: skippedCount
+  };
 }

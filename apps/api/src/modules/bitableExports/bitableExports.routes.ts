@@ -3,6 +3,7 @@ import { Router } from 'express';
 import {
   getBitableExportConfigsSnapshot,
   runBitableExport,
+  resolveManualBitableExportHttpResult,
   saveBitableExportConfig
 } from '@shared/utils/bitableExport.js';
 import { runBitableFeedbackSync } from '@shared/utils/recommendationFeedback.js';
@@ -121,8 +122,13 @@ router.post('/api/bitable-exports/run', async (req, res, next) => {
       logger
     );
 
-    if (!result.notify.ok) {
-      return res.status(502).json({ ok: false, error: 'bitable_export_notify_failed', data: result });
+    const httpResult = resolveManualBitableExportHttpResult(result);
+    if (!httpResult.ok) {
+      return res.status(httpResult.http_status).json({
+        ok: false,
+        error: httpResult.error,
+        data: result
+      });
     }
 
     return res.json({ ok: true, data: result });

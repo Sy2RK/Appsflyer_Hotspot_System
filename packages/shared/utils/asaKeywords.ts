@@ -199,6 +199,14 @@ export interface AsaCycleResult {
   app_targets: number;
 }
 
+export interface ScheduledAsaKeywordBriefRunSummary {
+  completed: boolean;
+  report_date: string | null;
+  sent_count: number;
+  failed_count: number;
+  skipped_count: number;
+}
+
 const RAW_MEDIA_SOURCE = 'apple search ads';
 const MASTER_MEDIA_SOURCE = 'apple search ads';
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -1714,10 +1722,16 @@ export async function sendAsaKeywordBrief(
   }
 }
 
-export async function runScheduledAsaKeywordBrief(logger: LoggerLike): Promise<void> {
+export async function runScheduledAsaKeywordBrief(logger: LoggerLike): Promise<ScheduledAsaKeywordBriefRunSummary> {
   if (!env.asaDailyBriefEnabled) {
     logger.info?.('asa_daily_brief_disabled');
-    return;
+    return {
+      completed: true,
+      report_date: null,
+      sent_count: 0,
+      failed_count: 0,
+      skipped_count: 1
+    };
   }
 
   const schedule = await getPushScheduleTarget();
@@ -1731,11 +1745,20 @@ export async function runScheduledAsaKeywordBrief(logger: LoggerLike): Promise<v
       current_minute: currentMinute,
       report_time: schedule.time
     });
-    return;
+    return {
+      completed: true,
+      report_date: null,
+      sent_count: 0,
+      failed_count: 0,
+      skipped_count: 1
+    };
   }
 
   const reportDate = getDailyBriefDefaultReportDate(new Date(), env.timezone);
   const routes = await listEnabledAsaKeywordRoutes();
+  let sentCount = 0;
+  let failedCount = 0;
+  let skippedCount = 0;
 
   if (routes.length === 0) {
     const briefResult = await sendAsaKeywordBrief(reportDate, {
@@ -1744,13 +1767,24 @@ export async function runScheduledAsaKeywordBrief(logger: LoggerLike): Promise<v
       routeKey: 'all'
     });
     if (briefResult.ok && !briefResult.skipped) {
+      sentCount += 1;
       logger.info?.('asa_daily_brief_sent', {
         report_date: reportDate,
         route_key: 'all',
         render_mode: briefResult.notify.render_mode || 'interactive'
       });
+    } else if (briefResult.skipped) {
+      skippedCount += 1;
+    } else {
+      failedCount += 1;
     }
-    return;
+    return {
+      completed: failedCount === 0,
+      report_date: reportDate,
+      sent_count: sentCount,
+      failed_count: failedCount,
+      skipped_count: skippedCount
+    };
   }
 
   for (const route of routes) {
@@ -1768,11 +1802,24 @@ export async function runScheduledAsaKeywordBrief(logger: LoggerLike): Promise<v
       channelOverride: override
     });
     if (briefResult.ok && !briefResult.skipped) {
+      sentCount += 1;
       logger.info?.('asa_daily_brief_route_sent', {
         report_date: reportDate,
         route_key: `route:${route.id}`,
         route_name: route.route_name
       });
+    } else if (briefResult.skipped) {
+      skippedCount += 1;
+    } else {
+      failedCount += 1;
     }
   }
+
+  return {
+    completed: failedCount === 0,
+    report_date: reportDate,
+    sent_count: sentCount,
+    failed_count: failedCount,
+    skipped_count: skippedCount
+  };
 }

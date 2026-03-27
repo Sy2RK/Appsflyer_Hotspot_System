@@ -25,9 +25,11 @@
   - 通用简报
   - ASA 专项简报
   - 自动发送前会校验下游建议链路是否完成，避免“日报先发、建议后补”
+  - 每日调度状态持久化到数据库，避免多实例部署时重复发送
 - Feishu 多维表格投放执行表推送
-  - 通用投放建议 + ASA 关键词建议合并到单张执行表
+  - 通用投放建议 + ASA 关键词建议合并到同一个 Base 内的按日归档执行表
   - 仅保留投放同学可直接使用的字段
+  - 支持执行反馈回读、本地沉淀与 `七天后数据` 自动补列
   - 导入完成后自动向指定群聊发通知
 
 ## 主要模块
@@ -47,6 +49,8 @@
   - ASA 简报定时发送（等待预算建议 + ASA 关键词链路完成）
 - `workers/bitable-export`
   - Feishu 多维表格定时导出（等待预算建议 + ASA 关键词链路完成）
+- `workers/bitable-feedback-sync`
+  - Feishu 执行反馈回读与 `七天后数据` 补列
 - `infra`
   - Docker Compose、ClickHouse、Postgres 初始化脚本
 
@@ -98,5 +102,6 @@ docker compose up -d --build
 - 顶部全局调度配置（Pull / Push 时间统一管理）
 - WebUI 全局 Gemini 悬浮舱入口
 - ASA keyword 成本切换到 AppsFlyer Master API
-- Feishu 多维表格原始数据推送模块
+- Feishu 多维表格按日期留档、反馈回读与 `七天后数据` 自动补列
+- 每日 worker 改为数据库持久化运行状态，避免多实例串行重复跑
 - 默认 `09:00 / 10:00 / 10:05 (Asia/Shanghai)` 调度，可在页面顶部修改

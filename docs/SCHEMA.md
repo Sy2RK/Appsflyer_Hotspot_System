@@ -423,6 +423,7 @@
 说明：
 - 唯一键：`(source_type, recommendation_type, recommendation_id)`
 - 本地持久保存飞书里的 `执行状态 / 是否采纳 / 人工批复`，即使执行表后续被下一次快照覆盖，也能保留历史反馈
+- `bitable_last_modified_time` 仅用于记录飞书侧最近修改时间，不单独作为“人工反馈已变化”的判定依据
 
 ### `feedback_skill_versions`
 - 基于预算建议反馈数据生成的版本化 `skills.md`
@@ -443,6 +444,7 @@
 说明：
 - 当前 `scope` 先固定服务预算建议分析
 - 每次反馈回读检测到变化后，会新增一版 `skills.md`，供后续 LLM 分析追加到 prompt
+- 系统自动补写 `七天后数据` 不会触发这里的新版本生成
 
 ### `runtime_schedule_configs`
 - 全局运行时调度配置（单行表）
@@ -466,6 +468,27 @@
 - `bitable-export` 不单独存库，固定按 `push_time + 5 分钟` 计算
 - `daily-brief` / `asa-daily-brief` / `bitable-export` 在定时执行前，还会额外检查同一 `report_date` 的 `budget-advisor` 与 `asa-keywords` 是否已完成
 
+### `scheduled_worker_runs`
+- 每日 worker 的持久化运行状态表
+
+字段:
+- `worker_name`
+- `run_marker`
+- `status` (`running|failed|completed`)
+- `attempt_count`
+- `last_attempt_at`
+- `next_allowed_at`
+- `completed_at`
+- `last_error`
+- `created_at`
+- `updated_at`
+
+说明：
+- 主键：`(worker_name, run_marker)`
+- 用于 `puller / budget-advisor / asa-keywords / daily-brief / asa-daily-brief / bitable-export`
+- 负责跨实例判断“同一天是否已完成 / 是否还允许重试”，不再只依赖单进程内存
+- `next_allowed_at` 用于每日失败后的冷却重试控制
+
 ### `operation_logs`
 - 统一记录 API 手动操作与 worker 定时任务执行结果
 
@@ -484,6 +507,7 @@
 - `worker.budget_advisor` 的 `scheduled_budget_cycle` 会把 `target_key` 记录为对应 `report_date`
 - `worker.asa_keywords` 的 `scheduled_asa_keyword_cycle` 也会把 `target_key` 记录为对应 `report_date`
 - 下游自动链路会用这两类操作日志，结合 job lock，判断某个 `report_date` 的长任务是否已经真正完成
+- `operation_logs` 继续承担审计与门控查询；“每日只跑一次”的最终去重状态由 `scheduled_worker_runs` 承担
 
 ---
 

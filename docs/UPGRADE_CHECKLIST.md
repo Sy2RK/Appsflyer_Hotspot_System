@@ -24,6 +24,8 @@
 4. ASA 切片改为 `snapshot_id` + `asa_slice_snapshots` 快照切换
 5. Feishu 推送成功判定更严格
 6. 路由日报开始支持真正的 `app + platform` 告警过滤
+7. 多维表格执行表改为同一 Base 内按日期归档，并增加反馈回读 / `七天后数据`
+8. 每日 worker 改为数据库持久化运行状态（`scheduled_worker_runs`），避免多实例串行重复跑
 
 结论：
 
@@ -154,6 +156,17 @@ docker exec hotspot-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\d a
 
 - 存在字段 `platform`
 
+检查每日 worker 运行状态表：
+
+```bash
+docker exec hotspot-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\d scheduled_worker_runs"
+```
+
+预期：
+
+- 存在表 `scheduled_worker_runs`
+- 至少包含 `worker_name / run_marker / status / attempt_count / next_allowed_at`
+
 如果你想把历史告警全部标记成全局平台，可补一次：
 
 ```bash
@@ -224,7 +237,7 @@ docker exec hotspot-clickhouse clickhouse-client --query "SHOW USERS"
 ```bash
 cd /path/to/hotspot-system/infra
 
-docker compose up -d --build api aggregator detector puller keyword-engine budget-advisor asa-keywords daily-brief asa-daily-brief bitable-export
+docker compose up -d --build api aggregator detector puller keyword-engine budget-advisor asa-keywords daily-brief asa-daily-brief bitable-export bitable-feedback-sync
 ```
 
 ---

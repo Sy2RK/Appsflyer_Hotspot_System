@@ -3,7 +3,6 @@ import { env } from '../config/env.js';
 import type {
   BitableExportSourceType,
   FeedbackSkillVersionRecord,
-  OperationLogRecord,
   RecommendationExecutionFeedbackRecord,
   RecommendationType
 } from '../types/models.js';
@@ -11,6 +10,11 @@ import { md5Hex } from './hash.js';
 import { getFeishuTenantAccessToken } from './notifier.js';
 import { writeOperationLog } from './operationLog.js';
 import { pgQuery } from './postgres.js';
+import {
+  loadSevenDayLaterLookupRowsForRecommendations,
+  querySevenDayLaterDataForLookupRows,
+  SEVEN_DAY_LATER_FIELD_LABEL
+} from './sevenDayLaterData.js';
 import {
   ensureRecommendationFeedbackStorage,
   getBitableExportConfig,
@@ -35,6 +39,12 @@ interface BitableRecordItem {
   record_id: string;
   fields: Record<string, unknown>;
   last_modified_time: number | null;
+}
+
+interface BitableFieldRecord {
+  field_id: string;
+  field_name: string;
+  type: number;
 }
 
 interface BudgetFeedbackDatasetRow {
@@ -91,9 +101,12 @@ export interface BitableFeedbackSyncResult {
   source_type: BitableExportSourceType;
   table_id: string;
   table_count: number;
+  scanned_table_count: number;
   synced_table_ids: string[];
+  scanned_record_count: number;
   synced_count: number;
   skipped_count: number;
+  seven_day_data_updated_count: number;
   feedback_changed: boolean;
   synced_at: string;
   latest_skill_updated_at: string | null;
@@ -115,6 +128,9 @@ const ADOPTED_FIELD_LABEL = '是否采纳';
 const MANUAL_REVIEW_FIELD_LABEL = '人工批复';
 const BITABLE_IO_LOCK_TTL_MS = 30 * 60 * 1000;
 const BITABLE_IO_LOCK_PREFIX = 'bitable:source_io';
+const BITABLE_BACKFILL_LOCK_TTL_MS = 30 * 60 * 1000;
+const BITABLE_BACKFILL_LOCK_PREFIX = 'bitable:feedback_backfill';
+const FEISHU_TEXT_FIELD_TYPE = 1;
 const SUCCESS_STATUSES = new Set(['已完成-效果符合预期']);
 const RISK_STATUSES = new Set(['已完成-效果不及预期', '不执行', '无法执行', '已回滚', '暂缓执行']);
 const SKILL_PROMPT_CACHE_TTL_MS = 60 * 1000;
@@ -127,6 +143,10 @@ let latestSkillPromptCache: {
 
 function bitableSourceIOLockName(sourceType: BitableExportSourceType): string {
   return `${BITABLE_IO_LOCK_PREFIX}:${sourceType}`;
+}
+
+function bitableFeedbackBackfillLockName(sourceType: BitableExportSourceType): string {
+  return `${BITABLE_BACKFILL_LOCK_PREFIX}:${sourceType}`;
 }
 
 export async function withBitableSourceIOLock<T>(
@@ -143,6 +163,67 @@ export async function withBitableSourceIOLock<T>(
   } finally {
     await releaseJobLock(bitableSourceIOLockName(sourceType), ownerId);
   }
+}
+
+async function applySevenDayLaterBackfill(
+  sourceType: BitableExportSourceType,
+  appToken: string,
+  pendingUpdates: Map<string, Array<{ record_id: string; value: string }>>,
+  logger?: LoggerLike
+): Promise<number> {
+  if (pendingUpdates.size === 0) {
+    return 0;
+  }
+
+  const ownerId = crypto.randomUUID();
+  const acquired = await tryAcquireJobLock(
+    bitableFeedbackBackfillLockName(sourceType),
+    ownerId,
+    BITABLE_BACKFILL_LOCK_TTL_MS
+  );
+  if (!acquired) {
+    logger?.warn?.('bitable_feedback_backfill_skip_locked', {
+      source_type: sourceType,
+      table_count: pendingUpdates.size
+    });
+    return 0;
+  }
+
+  let updatedCount = 0;
+  try {
+    for (const [tableId, updates] of pendingUpdates.entries()) {
+      try {
+        await ensureSevenDayLaterFieldForFeedbackTable(appToken, tableId);
+      } catch (error) {
+        logger?.warn?.('bitable_feedback_backfill_field_failed', {
+          source_type: sourceType,
+          table_id: tableId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        continue;
+      }
+
+      for (const update of updates) {
+        try {
+          await updateBitableRecordFieldsForFeedback(appToken, tableId, update.record_id, {
+            [SEVEN_DAY_LATER_FIELD_LABEL]: update.value
+          });
+          updatedCount += 1;
+        } catch (error) {
+          logger?.warn?.('bitable_feedback_backfill_record_failed', {
+            source_type: sourceType,
+            table_id: tableId,
+            record_id: update.record_id,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+    }
+  } finally {
+    await releaseJobLock(bitableFeedbackBackfillLockName(sourceType), ownerId);
+  }
+
+  return updatedCount;
 }
 
 function parseSingleSelectValue(value: unknown): string {
@@ -171,6 +252,25 @@ function parseCheckboxValue(value: unknown): boolean {
     return false;
   }
   return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+}
+
+export function shouldUpsertFeedbackRow(
+  row: {
+    recommendation_type: RecommendationType;
+    recommendation_id: number;
+    execution_status: string | null;
+    is_adopted: boolean;
+    validation_result: string | null;
+    record_id: string;
+    table_id: string;
+    sync_key: string;
+    report_date: string;
+    raw_fields_json: unknown;
+    bitable_last_modified_time: string | null;
+  },
+  existing: RecommendationExecutionFeedbackRecord | undefined
+): boolean {
+  return feedbackChangedComparedWithExisting(row, existing);
 }
 
 async function feishuJsonRequest<T>(
@@ -226,7 +326,12 @@ async function listBitableRecordsForFeedback(appToken: string, tableId: string):
       page_size: 500,
       page_token: pageToken || undefined,
       automatic_fields: true,
-      field_names: JSON.stringify([EXECUTION_STATUS_FIELD_LABEL, ADOPTED_FIELD_LABEL, MANUAL_REVIEW_FIELD_LABEL])
+      field_names: JSON.stringify([
+        EXECUTION_STATUS_FIELD_LABEL,
+        ADOPTED_FIELD_LABEL,
+        MANUAL_REVIEW_FIELD_LABEL,
+        SEVEN_DAY_LATER_FIELD_LABEL
+      ])
     });
     for (const item of data.items || []) {
       if (!item.record_id) {
@@ -247,6 +352,69 @@ async function listBitableRecordsForFeedback(appToken: string, tableId: string):
     }
   }
   return items;
+}
+
+async function listBitableFieldsForFeedback(appToken: string, tableId: string): Promise<BitableFieldRecord[]> {
+  const items: BitableFieldRecord[] = [];
+  let pageToken = '';
+  let hasMore = true;
+  while (hasMore) {
+    const data = await feishuJsonRequest<{
+      items?: Array<{ field_id?: string; field_name?: string; type?: number }>;
+      has_more?: boolean;
+      page_token?: string;
+    }>('GET', `/bitable/v1/apps/${appToken}/tables/${tableId}/fields`, undefined, {
+      page_size: 500,
+      page_token: pageToken || undefined
+    });
+    for (const item of data.items || []) {
+      if (!item.field_id || !item.field_name) {
+        continue;
+      }
+      items.push({
+        field_id: item.field_id,
+        field_name: item.field_name,
+        type: Number(item.type || 0)
+      });
+    }
+    hasMore = data.has_more === true;
+    pageToken = String(data.page_token || '');
+    if (!pageToken) {
+      break;
+    }
+  }
+  return items;
+}
+
+async function ensureSevenDayLaterFieldForFeedbackTable(appToken: string, tableId: string): Promise<void> {
+  const fields = await listBitableFieldsForFeedback(appToken, tableId);
+  const existing = fields.find((field) => field.field_name === SEVEN_DAY_LATER_FIELD_LABEL);
+  if (existing) {
+    return;
+  }
+  await feishuJsonRequest(
+    'POST',
+    `/bitable/v1/apps/${appToken}/tables/${tableId}/fields`,
+    {
+      field_name: SEVEN_DAY_LATER_FIELD_LABEL,
+      type: FEISHU_TEXT_FIELD_TYPE
+    }
+  );
+}
+
+async function updateBitableRecordFieldsForFeedback(
+  appToken: string,
+  tableId: string,
+  recordId: string,
+  fields: Record<string, unknown>
+): Promise<void> {
+  await feishuJsonRequest(
+    'PUT',
+    `/bitable/v1/apps/${appToken}/tables/${tableId}/records/${recordId}`,
+    {
+      fields
+    }
+  );
 }
 
 function normalizeBudgetDatasetFilter(filter: BudgetFeedbackQueryFilter = {}): Required<BudgetFeedbackQueryFilter> {
@@ -750,8 +918,7 @@ function feedbackChangedComparedWithExisting(
     String(existing.execution_status || '') !== String(incoming.execution_status || '') ||
     existing.is_adopted !== incoming.is_adopted ||
     String(existing.validation_result || '') !== String(incoming.validation_result || '') ||
-    String(existing.record_id || '') !== String(incoming.record_id || '') ||
-    String(existing.bitable_last_modified_time || '') !== String(incoming.bitable_last_modified_time || '')
+    String(existing.record_id || '') !== String(incoming.record_id || '')
   );
 }
 
@@ -780,19 +947,25 @@ export async function runBitableFeedbackSync(
         report_date: row.report_date
       });
     }
-    const tableTargets = Array.from(tableTargetMap.values());
+    const allTableTargets = Array.from(tableTargetMap.values()).sort((left, right) => {
+      const byDate = String(right.report_date || '').localeCompare(String(left.report_date || ''));
+      if (byDate !== 0) {
+        return byDate;
+      }
+      return String(left.table_id || '').localeCompare(String(right.table_id || ''));
+    });
 
-    if (tableTargets.length === 0) {
+    if (allTableTargets.length === 0) {
       const legacyTableId = String(config?.target_table_id || '').trim();
       if (legacyTableId) {
-        tableTargets.push({
+        allTableTargets.push({
           table_id: legacyTableId,
           report_date: String(config?.last_synced_at || '').slice(0, 10) || ''
         });
       }
     }
 
-    if (tableTargets.length === 0) {
+    if (allTableTargets.length === 0) {
       throw new Error('bitable_target_table_not_ready');
     }
     const appToken = String(env.feishuBitableAppToken || '').trim();
@@ -800,7 +973,9 @@ export async function runBitableFeedbackSync(
       throw new Error('feishu_bitable_app_token_missing');
     }
 
-    const result = await withBitableSourceIOLock(sourceType, async () => {
+    const tableTargets = allTableTargets;
+
+    const readPhase = await withBitableSourceIOLock(sourceType, async () => {
       const refsByTableId = new Map<string, Awaited<ReturnType<typeof listBitableExportRecordRefsByTable>>>();
       const candidateKeyMap = new Map<string, { recommendation_type: RecommendationType; recommendation_id: number }>();
 
@@ -821,6 +996,8 @@ export async function runBitableFeedbackSync(
       }
 
       const candidateKeys = Array.from(candidateKeyMap.values());
+      const sevenDayLaterLookupRows = await loadSevenDayLaterLookupRowsForRecommendations(candidateKeys);
+      const sevenDayLaterMap = await querySevenDayLaterDataForLookupRows(sevenDayLaterLookupRows);
       const existingFeedbacks = await listRecommendationExecutionFeedbacksByRecommendations(sourceType, candidateKeys);
       const existingMap = new Map(
         existingFeedbacks.map((row) => [`${row.recommendation_type}:${row.recommendation_id}`, row])
@@ -841,7 +1018,9 @@ export async function runBitableFeedbackSync(
         bitable_last_modified_time: string | null;
         synced_at: string;
       }> = [];
+      const pendingSevenDayUpdates = new Map<string, Array<{ record_id: string; value: string }>>();
       let skippedCount = 0;
+      let scannedRecordCount = 0;
       let feedbackChanged = false;
 
       for (const tableTarget of tableTargets) {
@@ -850,6 +1029,7 @@ export async function runBitableFeedbackSync(
         const records = await listBitableRecordsForFeedback(appToken, tableTarget.table_id);
 
         for (const record of records) {
+          scannedRecordCount += 1;
           const ref = refsByRecordId.get(record.record_id);
           if (!ref?.recommendation_type || !Number.isFinite(Number(ref.recommendation_id))) {
             skippedCount += 1;
@@ -858,6 +1038,17 @@ export async function runBitableFeedbackSync(
           const executionStatus = parseSingleSelectValue(record.fields[EXECUTION_STATUS_FIELD_LABEL]) || null;
           const validationResult = String(record.fields[MANUAL_REVIEW_FIELD_LABEL] ?? '').trim() || null;
           const isAdopted = parseCheckboxValue(record.fields[ADOPTED_FIELD_LABEL]);
+          const sevenDayLaterData =
+            sevenDayLaterMap.get(`${ref.recommendation_type}:${Number(ref.recommendation_id)}`) || '';
+          const currentSevenDayLaterData = String(record.fields[SEVEN_DAY_LATER_FIELD_LABEL] ?? '').trim();
+          if (sevenDayLaterData && sevenDayLaterData !== currentSevenDayLaterData) {
+            const updates = pendingSevenDayUpdates.get(tableTarget.table_id) || [];
+            updates.push({
+              record_id: record.record_id,
+              value: sevenDayLaterData
+            });
+            pendingSevenDayUpdates.set(tableTarget.table_id, updates);
+          }
           const bitableLastModifiedTime =
             record.last_modified_time && Number.isFinite(record.last_modified_time)
               ? new Date(record.last_modified_time).toISOString()
@@ -882,34 +1073,58 @@ export async function runBitableFeedbackSync(
             synced_at: syncedAt
           };
           const existing = existingMap.get(`${row.recommendation_type}:${row.recommendation_id}`);
-          if (feedbackChangedComparedWithExisting(row, existing)) {
-            feedbackChanged = true;
+          if (!shouldUpsertFeedbackRow(row, existing)) {
+            continue;
           }
+          feedbackChanged = true;
           upsertRows.push(row);
         }
       }
 
-      await upsertRecommendationExecutionFeedbacks(upsertRows);
-      let latestSkill: FeedbackSkillVersionRecord | null = null;
-      if (feedbackChanged && upsertRows.some((row) => row.recommendation_type === 'budget')) {
-        latestSkill = await refreshBudgetFeedbackSkills(logger);
-      } else {
-        latestSkill = await getLatestFeedbackSkillVersion(BUDGET_SCOPE, SOURCE_TYPE);
-      }
-
       return {
-        source_type: sourceType,
-        table_id: tableTargets[0]?.table_id || '',
-        table_count: tableTargets.length,
+        table_count: allTableTargets.length,
+        scanned_table_count: tableTargets.length,
         synced_table_ids: tableTargets.map((row) => row.table_id),
-        synced_count: upsertRows.length,
+        scanned_record_count: scannedRecordCount,
         skipped_count: skippedCount,
         feedback_changed: feedbackChanged,
-        synced_at: syncedAt,
-        latest_skill_updated_at: latestSkill?.created_at ?? null,
-        latest_skill_dataset_row_count: latestSkill?.dataset_row_count ?? 0
-      } satisfies BitableFeedbackSyncResult;
+        upsert_rows: upsertRows,
+        pending_seven_day_updates: pendingSevenDayUpdates
+      };
     });
+
+    if (readPhase.upsert_rows.length > 0) {
+      await upsertRecommendationExecutionFeedbacks(readPhase.upsert_rows);
+    }
+    const sevenDayDataUpdatedCount = await applySevenDayLaterBackfill(
+      sourceType,
+      appToken,
+      readPhase.pending_seven_day_updates,
+      logger
+    );
+
+    let latestSkill: FeedbackSkillVersionRecord | null = null;
+    if (readPhase.feedback_changed && readPhase.upsert_rows.some((row) => row.recommendation_type === 'budget')) {
+      latestSkill = await refreshBudgetFeedbackSkills(logger);
+    } else {
+      latestSkill = await getLatestFeedbackSkillVersion(BUDGET_SCOPE, SOURCE_TYPE);
+    }
+
+    const result = {
+      source_type: sourceType,
+      table_id: allTableTargets[0]?.table_id || '',
+      table_count: readPhase.table_count,
+      scanned_table_count: readPhase.scanned_table_count,
+      synced_table_ids: readPhase.synced_table_ids,
+      scanned_record_count: readPhase.scanned_record_count,
+      synced_count: readPhase.upsert_rows.length,
+      skipped_count: readPhase.skipped_count,
+      seven_day_data_updated_count: sevenDayDataUpdatedCount,
+      feedback_changed: readPhase.feedback_changed,
+      synced_at: syncedAt,
+      latest_skill_updated_at: latestSkill?.created_at ?? null,
+      latest_skill_dataset_row_count: latestSkill?.dataset_row_count ?? 0
+    } satisfies BitableFeedbackSyncResult;
 
     await writeOperationLog(
       {

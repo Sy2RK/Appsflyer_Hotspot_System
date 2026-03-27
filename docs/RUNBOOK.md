@@ -81,7 +81,7 @@ Web UI 新增能力:
 - 预算建议页面（筛选、分页、详情弹窗、状态流转、手动生成、eCPI 分级规则说明）
 - ASA 关键词管理页面（真实 ASA keyword、阶段配置、专项简报 / 建议发送）
 - 每日报告页面（结构化预览、飞书 `interactive` 卡片发送、阈值说明）
-- 投放执行表推送页面（通用投放建议 + ASA 关键词建议 -> 单张 Feishu 执行表 + 群通知）
+- 投放执行表推送页面（通用投放建议 + ASA 关键词建议 -> 同一 Base 内按日期归档执行表 + 群通知）
 - 操作日志页面（查看手动操作与定时任务执行记录）
 - UI 文案默认中文（专有名词保留英文），规则见 `AGENTS.md`
 
@@ -89,7 +89,13 @@ Web UI 新增能力:
 - `pull_time` 到达后，先由 `puller` / `budget-advisor` / `asa-keywords` 为前一报告日准备数据
 - `push_time` 到达后，`daily-brief` 与 `asa-daily-brief` 不会立刻发送，而是先检查同一 `reportDate` 的 `budget-advisor` 与 `asa-keywords` 是否已经完成
 - `bitable-export` 固定在 `push_time + 5 分钟` 检查，但同样会等待上述两个长任务完成后再导出
+- 每日 worker 的“是否已跑过 / 是否还能重试”由 Postgres `scheduled_worker_runs` 持久化控制，避免多实例部署时串行重复跑
 - 如果长任务还在跑，日志里会看到 `*_blocked_by_downstream_gate`
+
+多维表格反馈说明：
+- `bitable-feedback-sync` 会回读 `执行状态 / 是否采纳 / 人工批复`
+- `七天后数据` 由系统自动补列，但不会被当作“人工反馈变化”触发 `skills.md` 刷新
+- feedback sync 的 D+7 补写使用独立 backfill lock，不再长时间占用导出主链的 `bitable:source_io:*`
 
 ---
 

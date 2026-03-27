@@ -26,6 +26,10 @@ import {
   runBitableFeedbackSync,
   withBitableSourceIOLock
 } from './recommendationFeedback.js';
+import {
+  querySevenDayLaterDataForLookupRows,
+  SEVEN_DAY_LATER_FIELD_LABEL
+} from './sevenDayLaterData.js';
 
 interface LoggerLike {
   info?: (message: string, meta?: Record<string, unknown>) => void;
@@ -109,8 +113,10 @@ interface BitableSourceSnapshot {
 interface DeliveryActionRow {
   recommendation_type: RecommendationType;
   recommendation_id: number;
+  app_key: string;
   serial_no: number;
   report_date: string;
+  platform_raw: string;
   product_name: string;
   platform: string;
   media_source: string;
@@ -118,12 +124,14 @@ interface DeliveryActionRow {
   item_name: string;
   campaign: string;
   adset: string;
+  match_type: string;
   stage: string;
   primary_metric: string;
   current_value: string;
   target_value: string;
   cost_reference: number;
   volume_reference: string;
+  seven_day_later_data: string;
   action: string;
   execution_status: string;
   validation_result: string;
@@ -160,6 +168,16 @@ export interface BitableExportRunOptions {
   includeAllStatuses?: boolean;
   notify?: boolean;
   seedFeedbackSync?: boolean;
+}
+
+export interface ScheduledBitableExportRunSummary {
+  completed: boolean;
+  skipped: boolean;
+  success_count: number;
+  partial_success_count: number;
+  failed_count: number;
+  results: BitableExportRunResult[];
+  error?: string;
 }
 
 export interface BitableHistoricalBackfillResult {
@@ -234,6 +252,7 @@ const ACTION_FIELDS: BitableFieldDefinition[] = [
   { key: 'target_value', label: '目标表现', value_type: 'text', default_selected: true },
   { key: 'cost_reference', label: '成本参考', value_type: 'number', default_selected: true },
   { key: 'volume_reference', label: '量级参考', value_type: 'text', default_selected: true },
+  { key: 'seven_day_later_data', label: SEVEN_DAY_LATER_FIELD_LABEL, value_type: 'text', default_selected: true },
   { key: 'action', label: '建议动作', value_type: 'text', default_selected: true },
   {
     key: 'execution_status',
@@ -248,6 +267,7 @@ const ACTION_FIELDS: BitableFieldDefinition[] = [
 ];
 
 const TRAILING_ACTION_FIELD_SEQUENCE = [
+  SEVEN_DAY_LATER_FIELD_LABEL,
   '建议动作',
   '建议理由',
   EXECUTION_STATUS_FIELD_LABEL,
@@ -873,6 +893,7 @@ async function queryBudgetActionRows(reportDate: string, options: BitableExportR
   const result = await pgQuery<Record<string, unknown>>(
     `SELECT
         br.id AS recommendation_id,
+        br.app_key,
         br.date::text AS report_date,
         COALESCE(
           NULLIF(CASE WHEN br.platform = 'ios' THEN a.ios_display_name WHEN br.platform = 'android' THEN a.android_display_name ELSE '' END, ''),
@@ -882,6 +903,7 @@ async function queryBudgetActionRows(reportDate: string, options: BitableExportR
         br.platform,
         br.media_source,
         br.keyword AS item_name,
+        br.match_type,
         '' AS campaign,
         '' AS adset,
         COALESCE(ks.current_stage, '待观察') AS stage,
@@ -917,8 +939,10 @@ async function queryBudgetActionRows(reportDate: string, options: BitableExportR
   return result.rows.map((row) => ({
     recommendation_type: 'budget',
     recommendation_id: Number(row.recommendation_id || 0),
+    app_key: String(row.app_key || ''),
     serial_no: 0,
     report_date: String(row.report_date || reportDate),
+    platform_raw: String(row.platform || 'unknown').trim().toLowerCase(),
     product_name: String(row.product_name || row.app_key || ''),
     platform: platformLabel(String(row.platform || 'unknown')),
     media_source: String(row.media_source || '未知媒体'),
@@ -926,12 +950,14 @@ async function queryBudgetActionRows(reportDate: string, options: BitableExportR
     item_name: String(row.item_name || ''),
     campaign: String(row.campaign || ''),
     adset: '',
+    match_type: String(row.match_type || '').trim(),
     stage: formatLifecycleStage(String(row.stage || '待观察')),
     primary_metric: budgetMetricLabel(String(row.primary_metric || ''), String(row.metric_mode || '')),
     current_value: formatBudgetCurrentValue(row),
     target_value: formatBudgetTargetValue(row),
     cost_reference: Number(row.current_cost || 0),
     volume_reference: formatBudgetVolumeReference(row),
+    seven_day_later_data: '',
     action: formatActionSummary(String(row.action || 'hold'), row.change_ratio),
     execution_status: EXECUTION_STATUS_DEFAULT,
     validation_result: '',
@@ -945,6 +971,7 @@ async function queryAsaActionRows(reportDate: string, options: BitableExportRunO
   const result = await pgQuery<Record<string, unknown>>(
     `SELECT
         ar.id AS recommendation_id,
+        ar.app_key,
         ar.date::text AS report_date,
         COALESCE(
           NULLIF(CASE WHEN ar.platform = 'ios' THEN a.ios_display_name WHEN ar.platform = 'android' THEN a.android_display_name ELSE '' END, ''),
@@ -991,8 +1018,10 @@ async function queryAsaActionRows(reportDate: string, options: BitableExportRunO
   return result.rows.map((row) => ({
     recommendation_type: 'asa_keyword',
     recommendation_id: Number(row.recommendation_id || 0),
+    app_key: String(row.app_key || ''),
     serial_no: 0,
     report_date: String(row.report_date || reportDate),
+    platform_raw: String(row.platform || 'unknown').trim().toLowerCase(),
     product_name: String(row.product_name || row.app_key || ''),
     platform: platformLabel(String(row.platform || 'unknown')),
     media_source: 'Apple Search Ads',
@@ -1000,12 +1029,14 @@ async function queryAsaActionRows(reportDate: string, options: BitableExportRunO
     item_name: String(row.item_name || ''),
     campaign: String(row.campaign || ''),
     adset: String(row.adset || ''),
+    match_type: '',
     stage: formatLifecycleStage(String(row.stage || '待观察')),
     primary_metric: formatAsaMetricLabel(String(row.primary_metric || 'ecpi')),
     current_value: formatAsaCurrentValue(row),
     target_value: formatAsaTargetValue(row),
     cost_reference: Number(row.total_cost_7d || 0),
     volume_reference: formatAsaVolumeReference(row),
+    seven_day_later_data: '',
     action: formatActionSummary(String(row.action || 'hold'), row.change_ratio),
     execution_status: EXECUTION_STATUS_DEFAULT,
     validation_result: '',
@@ -1607,6 +1638,20 @@ export async function runBitableExport(
     const existingTableRecordIds = existingTableRecords.map((record) => record.record_id);
 
     const { rows, breakdown } = await queryDeliveryActionRows(reportDate, options);
+    const sevenDayLaterMap = await querySevenDayLaterDataForLookupRows(
+      rows.map((row) => ({
+        recommendation_type: row.recommendation_type,
+        recommendation_id: row.recommendation_id,
+        report_date: row.report_date,
+        app_key: row.app_key,
+        platform_raw: row.platform_raw,
+        media_source: row.media_source,
+        item_name: row.item_name,
+        match_type: row.match_type,
+        campaign: row.campaign,
+        adset: row.adset
+      }))
+    );
     const persistedFeedback = await buildPersistedFeedbackMap(rows);
     const oldRecords = await loadExistingRecordRefs(reportDate, table.table_id);
     const liveFeedback = await buildManualFeedbackMap(appToken, table.table_id, oldRecords, logger);
@@ -1632,7 +1677,11 @@ export async function runBitableExport(
             ? liveFeedback.adoptedMap.get(syncKey) === true
             : persistedFeedback.adoptedMap.has(syncKey)
               ? persistedFeedback.adoptedMap.get(syncKey) === true
-              : row.is_adopted === true
+              : row.is_adopted === true,
+          seven_day_later_data:
+            sevenDayLaterMap.get(`${row.recommendation_type}:${row.recommendation_id}`) ||
+            row.seven_day_later_data ||
+            ''
         };
       })
       .map((row, index) => ({
@@ -1818,34 +1867,99 @@ export async function runHistoricalBitableExportBackfill(
   };
 }
 
-export async function runScheduledBitableExports(logger?: LoggerLike): Promise<BitableExportRunResult[]> {
+export function resolveManualBitableExportHttpResult(result: BitableExportRunResult): {
+  http_status: number;
+  ok: boolean;
+  error: string | null;
+} {
+  if (!result.notify.ok) {
+    return {
+      http_status: 502,
+      ok: false,
+      error: 'bitable_export_notify_failed'
+    };
+  }
+  if (result.export_status === 'partial_success') {
+    return {
+      http_status: 207,
+      ok: false,
+      error: 'bitable_export_partial_success'
+    };
+  }
+  if (result.export_status === 'failed') {
+    return {
+      http_status: 500,
+      ok: false,
+      error: 'bitable_export_failed'
+    };
+  }
+  return {
+    http_status: 200,
+    ok: true,
+    error: null
+  };
+}
+
+export async function runScheduledBitableExports(logger?: LoggerLike): Promise<ScheduledBitableExportRunSummary> {
   if (!env.feishuBitableEnabled) {
     logger?.info?.('bitable_exports_disabled');
-    return [];
+    return {
+      completed: true,
+      skipped: true,
+      success_count: 0,
+      partial_success_count: 0,
+      failed_count: 0,
+      results: []
+    };
   }
   await ensureDefaultConfigs();
   const reportDate = getPreviousDateString(1);
   const config = mergeConfig(await getBitableExportConfig(SOURCE_TYPE));
   if (!config.enabled || !String(config.chat_id || '').trim()) {
-    return [];
+    return {
+      completed: true,
+      skipped: true,
+      success_count: 0,
+      partial_success_count: 0,
+      failed_count: 0,
+      results: []
+    };
   }
   try {
-    return [await runBitableExport(SOURCE_TYPE, reportDate, logger)];
+    const result = await runBitableExport(SOURCE_TYPE, reportDate, logger);
+    const httpResult = resolveManualBitableExportHttpResult(result);
+    return {
+      completed: httpResult.ok,
+      skipped: false,
+      success_count: result.export_status === 'success' && result.notify.ok ? 1 : 0,
+      partial_success_count: result.export_status === 'partial_success' ? 1 : 0,
+      failed_count: httpResult.ok ? 0 : 1,
+      results: [result]
+    };
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     await updateBitableExportSyncResult({
       source_type: SOURCE_TYPE,
       target_table_id: config.target_table_id,
       target_table_name: config.target_table_name,
       table_name_prefix: config.table_name_prefix,
       last_status: 'failed',
-      last_error: error instanceof Error ? error.message : String(error),
+      last_error: message,
       last_synced_at: new Date().toISOString(),
       last_record_count: 0
     });
     logger?.error?.('scheduled_bitable_export_failed', {
       source_type: SOURCE_TYPE,
-      error: error instanceof Error ? error.message : String(error)
+      error: message
     });
-    return [];
+    return {
+      completed: false,
+      skipped: false,
+      success_count: 0,
+      partial_success_count: 0,
+      failed_count: 1,
+      results: [],
+      error: message
+    };
   }
 }

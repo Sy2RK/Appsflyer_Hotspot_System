@@ -8,7 +8,7 @@ import {
   upsertPullContentGuard,
   upsertPullReportReadiness
 } from './repositories.js';
-import { chExec, chInsertJSON } from './clickhouse.js';
+import { chExec, chInsertJSON, chQuery } from './clickhouse.js';
 import { md5Hex } from './hash.js';
 import { buildPreviousDateList, getPreviousDateString } from './businessDate.js';
 
@@ -337,7 +337,28 @@ async function replacePullDailySlice(
     source_report: PULL_SOURCE_REPORT
   };
 
-  await chExec(
+  const existingPullRows = await chQuery<PullAggregateDailyRow>(
+    `SELECT date, app_key, platform, media_source, country, campaign, agency_pmd, impressions, clicks, ctr,
+            installs, conversion_rate, sessions, loyal_users, loyal_users_installs_ratio, total_cost,
+            average_ecpi, source_report, pull_window_from, pull_window_to, revenue, events, raw_json, ingest_time
+       FROM pull_aggregate_daily
+      WHERE date = toDate({date:String})
+        AND app_key = {app_key:String}
+        AND lowerUTF8(platform) = {platform:String}
+        AND source_report = {source_report:String}`,
+    mutationParams
+  );
+  const existingMetricRows = await chQuery<DailyMetricRow>(
+    `SELECT date, app_key, metric, value, platform, media_source, campaign, country, source, version
+       FROM metrics_daily
+      WHERE date = toDate({date:String})
+        AND app_key = {app_key:String}
+        AND lowerUTF8(platform) = {platform:String}
+        AND source = {source_report:String}`,
+    mutationParams
+  );
+
+  const deletePullSlice = async (): Promise<void> => chExec(
     `ALTER TABLE pull_aggregate_daily
       DELETE WHERE date = toDate({date:String})
         AND app_key = {app_key:String}
@@ -347,7 +368,7 @@ async function replacePullDailySlice(
     mutationParams
   );
 
-  await chExec(
+  const deleteMetricSlice = async (): Promise<void> => chExec(
     `ALTER TABLE metrics_daily
       DELETE WHERE date = toDate({date:String})
         AND app_key = {app_key:String}
@@ -357,11 +378,47 @@ async function replacePullDailySlice(
     mutationParams
   );
 
-  if (pullRows.length > 0) {
-    await chInsertJSON('pull_aggregate_daily', pullRows);
-  }
-  if (metricRows.length > 0) {
-    await chInsertJSON('metrics_daily', metricRows);
+  let replacementStarted = false;
+
+  try {
+    await deletePullSlice();
+    await deleteMetricSlice();
+    replacementStarted = true;
+
+    if (pullRows.length > 0) {
+      await chInsertJSON('pull_aggregate_daily', pullRows);
+    }
+    if (metricRows.length > 0) {
+      await chInsertJSON('metrics_daily', metricRows);
+    }
+  } catch (error) {
+    if (replacementStarted) {
+      const rollbackErrors: string[] = [];
+      try {
+        await deletePullSlice();
+        if (existingPullRows.length > 0) {
+          await chInsertJSON('pull_aggregate_daily', existingPullRows);
+        }
+      } catch (rollbackError) {
+        rollbackErrors.push(`pull=${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+      }
+      try {
+        await deleteMetricSlice();
+        if (existingMetricRows.length > 0) {
+          await chInsertJSON('metrics_daily', existingMetricRows);
+        }
+      } catch (rollbackError) {
+        rollbackErrors.push(`metrics=${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+      }
+      if (rollbackErrors.length > 0) {
+        throw new Error(
+          `replace_pull_daily_slice_failed:${
+            error instanceof Error ? error.message : String(error)
+          }; rollback_failed:${rollbackErrors.join(' | ')}`
+        );
+      }
+    }
+    throw error;
   }
 }
 

@@ -440,6 +440,23 @@ CREATE TABLE IF NOT EXISTS pull_report_readiness (
 CREATE INDEX IF NOT EXISTS idx_pull_report_readiness_status
   ON pull_report_readiness (status, report_date DESC);
 
+CREATE TABLE IF NOT EXISTS scheduled_worker_runs (
+  worker_name TEXT NOT NULL,
+  run_marker TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'failed', 'completed')),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at TIMESTAMPTZ,
+  next_allowed_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (worker_name, run_marker)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_worker_runs_lookup
+  ON scheduled_worker_runs (worker_name, completed_at, next_allowed_at, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS product_stage_configs (
   id BIGSERIAL PRIMARY KEY,
   app_key TEXT NOT NULL REFERENCES apps(app_key) ON DELETE CASCADE,
@@ -643,6 +660,12 @@ EXECUTE FUNCTION set_updated_at();
 DROP TRIGGER IF EXISTS trg_pull_content_guards_updated_at ON pull_content_guards;
 CREATE TRIGGER trg_pull_content_guards_updated_at
 BEFORE UPDATE ON pull_content_guards
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_scheduled_worker_runs_updated_at ON scheduled_worker_runs;
+CREATE TRIGGER trg_scheduled_worker_runs_updated_at
+BEFORE UPDATE ON scheduled_worker_runs
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 

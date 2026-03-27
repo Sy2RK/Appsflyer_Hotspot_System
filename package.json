@@ -29,6 +29,7 @@
     "backfill:bitable-history": "tsx scripts/backfill-bitable-history.ts",
     "token:gen": "tsx scripts/generate-push-token.ts",
     "check:roas-readiness": "tsx scripts/check-roas-readiness.ts",
+    "test:review-regressions": "tsx scripts/review-regression-smoke.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },

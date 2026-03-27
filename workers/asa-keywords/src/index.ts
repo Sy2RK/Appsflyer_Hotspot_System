@@ -6,22 +6,36 @@ import { writeOperationLog } from '@shared/utils/operationLog.js';
 import { getDefaultPullReadinessReportDate, isPullReportReadyForDownstream } from '@shared/utils/pullReadiness.js';
 import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { getTzParts, hasReachedDailyTime, nextDailyTimeLocalString } from '@shared/utils/schedule.js';
+import {
+  completeScheduledWorkerRun,
+  failScheduledWorkerRun,
+  getScheduledWorkerRunDecision,
+  tryClaimScheduledWorkerRunAttempt
+} from '@shared/utils/scheduledWorkerRun.js';
 import { getPullScheduleTarget } from '@shared/utils/runtimeSchedule.js';
 
 let running = false;
-let lastRunMarker = '';
 let lastScheduleMarker = '';
+let lastRetryBlockMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
+const ASA_KEYWORD_WORKER_NAME = 'worker.asa_keywords';
 const ASA_KEYWORD_JOB_LOCK = 'worker:asa_keywords:cycle';
 const ASA_KEYWORD_JOB_LOCK_TTL_MS = 3 * 60 * 60 * 1000;
+const MAX_DAILY_RETRY_ATTEMPTS = 3;
+const RETRY_COOLDOWN_MS = 15 * 60 * 1000;
+const RETRY_POLICY = {
+  max_attempts: MAX_DAILY_RETRY_ATTEMPTS,
+  retry_cooldown_ms: RETRY_COOLDOWN_MS
+} as const;
 
-async function tick(reportDate: string): Promise<boolean> {
+async function tick(reportDate: string, runMarker: string): Promise<boolean> {
   if (running) {
     logger.warn('asa_keyword_cycle_skip_overlap');
     return false;
   }
   running = true;
   let lockOwnerId = '';
+  let attemptClaimed = false;
   try {
     lockOwnerId = crypto.randomUUID();
     const lockAcquired = await tryAcquireJobLock(ASA_KEYWORD_JOB_LOCK, lockOwnerId, ASA_KEYWORD_JOB_LOCK_TTL_MS);
@@ -29,8 +43,21 @@ async function tick(reportDate: string): Promise<boolean> {
       logger.warn('asa_keyword_cycle_skip_distributed_overlap');
       return false;
     }
+    const claimDecision = await tryClaimScheduledWorkerRunAttempt(ASA_KEYWORD_WORKER_NAME, runMarker, RETRY_POLICY);
+    if (!claimDecision.allowed) {
+      logger.info('asa_keyword_attempt_claim_skipped', {
+        report_date: reportDate,
+        run_marker: runMarker,
+        reason: claimDecision.reason,
+        remaining_attempts: claimDecision.remaining_attempts,
+        next_allowed_at: claimDecision.next_allowed_at
+      });
+      return false;
+    }
+    attemptClaimed = true;
     const result = await runAsaKeywordCycle(env.asaKeywordBackfillDays, logger);
     logger.info('asa_keyword_cycle_result', { report_date: reportDate, ...result });
+    await completeScheduledWorkerRun(ASA_KEYWORD_WORKER_NAME, runMarker);
     await writeOperationLog(
       {
         source: 'worker.asa_keywords',
@@ -48,6 +75,13 @@ async function tick(reportDate: string): Promise<boolean> {
     );
     return true;
   } catch (error) {
+    if (attemptClaimed) {
+      await failScheduledWorkerRun(
+        ASA_KEYWORD_WORKER_NAME,
+        runMarker,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
     logger.error('asa_keyword_cycle_failed', {
       report_date: reportDate,
       error: error instanceof Error ? error.message : String(error)
@@ -80,6 +114,9 @@ async function bootstrap(): Promise<void> {
   if (env.asaKeywordRunOnBoot) {
     const now = new Date();
     const reportDate = getDefaultPullReadinessReportDate(now, env.timezone);
+    const target = await getPullScheduleTarget();
+    const parts = getTzParts(now, env.timezone);
+    const runMarker = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}|${target.time}`;
     const readiness = await isPullReportReadyForDownstream(reportDate);
     if (!readiness.ready) {
       logger.info('asa_keyword_cycle_blocked_by_pull_gate', {
@@ -88,11 +125,10 @@ async function bootstrap(): Promise<void> {
         reason: readiness.reason
       });
     } else {
-      const didRun = await tick(reportDate);
-      const target = await getPullScheduleTarget();
-      const parts = getTzParts(now, env.timezone);
-      if (didRun) {
-        lastRunMarker = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}|${target.time}`;
+      const decision = await getScheduledWorkerRunDecision(ASA_KEYWORD_WORKER_NAME, runMarker, RETRY_POLICY, now);
+      if (decision.allowed) {
+        lastRetryBlockMarker = '';
+        await tick(reportDate, runMarker);
       }
     }
   }
@@ -115,7 +151,7 @@ async function bootstrap(): Promise<void> {
         });
       }
 
-      if (hasReachedDailyTime(target.hour, target.minute, env.timezone, now) && lastRunMarker !== runMarker) {
+      if (hasReachedDailyTime(target.hour, target.minute, env.timezone, now)) {
         const reportDate = getDefaultPullReadinessReportDate(now, env.timezone);
         const readiness = await isPullReportReadyForDownstream(reportDate);
         if (!readiness.ready) {
@@ -125,10 +161,23 @@ async function bootstrap(): Promise<void> {
             reason: readiness.reason
           });
         } else {
-          const didRun = await tick(reportDate);
-          if (didRun) {
-            lastRunMarker = runMarker;
+          const decision = await getScheduledWorkerRunDecision(ASA_KEYWORD_WORKER_NAME, runMarker, RETRY_POLICY, now);
+          if (!decision.allowed) {
+            const blockMarker = `${runMarker}|${decision.reason}|${decision.next_allowed_at || 'none'}`;
+            if (lastRetryBlockMarker !== blockMarker) {
+              lastRetryBlockMarker = blockMarker;
+              logger.warn('asa_keyword_run_suppressed', {
+                report_date: reportDate,
+                run_marker: runMarker,
+                reason: decision.reason,
+                remaining_attempts: decision.remaining_attempts,
+                next_allowed_at: decision.next_allowed_at
+              });
+            }
+            return;
           }
+          lastRetryBlockMarker = '';
+          await tick(reportDate, runMarker);
         }
       }
     } finally {

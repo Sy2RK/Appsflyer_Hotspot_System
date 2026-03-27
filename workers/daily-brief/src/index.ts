@@ -10,44 +10,83 @@ import {
 } from '@shared/utils/pullReadiness.js';
 import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { getTzParts, hasReachedDailyTime, nextDailyTimeLocalString } from '@shared/utils/schedule.js';
+import {
+  completeScheduledWorkerRun,
+  failScheduledWorkerRun,
+  getScheduledWorkerRunDecision,
+  tryClaimScheduledWorkerRunAttempt
+} from '@shared/utils/scheduledWorkerRun.js';
 import { getPushScheduleTarget } from '@shared/utils/runtimeSchedule.js';
 
 let running = false;
-let lastRunMarker = '';
 let lastScheduleMarker = '';
+let lastRetryBlockMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
+const DAILY_BRIEF_WORKER_NAME = 'worker.daily_brief';
 const DAILY_BRIEF_JOB_LOCK = 'worker:daily_brief:tick';
 const DAILY_BRIEF_JOB_LOCK_TTL_MS = 60 * 60 * 1000;
+const MAX_DAILY_RETRY_ATTEMPTS = 3;
+const RETRY_COOLDOWN_MS = 15 * 60 * 1000;
+const RETRY_POLICY = {
+  max_attempts: MAX_DAILY_RETRY_ATTEMPTS,
+  retry_cooldown_ms: RETRY_COOLDOWN_MS
+} as const;
 
-async function tick(): Promise<void> {
+async function tick(runMarker: string): Promise<boolean> {
   if (running) {
     logger.warn('daily_brief_skip_overlap');
-    return;
+    return false;
   }
 
   running = true;
   let lockOwnerId = '';
+  let attemptClaimed = false;
+  let completed = false;
   try {
     lockOwnerId = crypto.randomUUID();
     const lockAcquired = await tryAcquireJobLock(DAILY_BRIEF_JOB_LOCK, lockOwnerId, DAILY_BRIEF_JOB_LOCK_TTL_MS);
     if (!lockAcquired) {
       logger.warn('daily_brief_skip_distributed_overlap');
-      return;
+      return false;
     }
-    await runScheduledDailyBrief(logger);
+    const claimDecision = await tryClaimScheduledWorkerRunAttempt(DAILY_BRIEF_WORKER_NAME, runMarker, RETRY_POLICY);
+    if (!claimDecision.allowed) {
+      logger.info('daily_brief_attempt_claim_skipped', {
+        run_marker: runMarker,
+        reason: claimDecision.reason,
+        remaining_attempts: claimDecision.remaining_attempts,
+        next_allowed_at: claimDecision.next_allowed_at
+      });
+      return false;
+    }
+    attemptClaimed = true;
+    const result = await runScheduledDailyBrief(logger);
+    completed = result.completed;
+    if (completed) {
+      await completeScheduledWorkerRun(DAILY_BRIEF_WORKER_NAME, runMarker);
+    } else {
+      await failScheduledWorkerRun(DAILY_BRIEF_WORKER_NAME, runMarker, `daily_brief_failed_count=${result.failed_count}`);
+    }
     await writeOperationLog(
       {
         source: 'worker.daily_brief',
         action: 'scheduled_daily_brief_tick',
         target_type: 'daily_brief',
         target_key: 'runtime_push_time',
-        status: 'success',
-        summary: '定时每日报告检查完成',
-        detail_json: {}
+        status: completed ? 'success' : 'failed',
+        summary: completed ? '定时每日报告检查完成' : '定时每日报告检查未完成',
+        detail_json: result
       },
       logger
     );
   } catch (error) {
+    if (attemptClaimed) {
+      await failScheduledWorkerRun(
+        DAILY_BRIEF_WORKER_NAME,
+        runMarker,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
     logger.error('daily_brief_cycle_failed', {
       error: error instanceof Error ? error.message : String(error)
     });
@@ -71,6 +110,8 @@ async function tick(): Promise<void> {
     }
     running = false;
   }
+
+  return completed;
 }
 
 async function bootstrap(): Promise<void> {
@@ -92,7 +133,7 @@ async function bootstrap(): Promise<void> {
         });
       }
 
-      if (hasReachedDailyTime(target.hour, target.minute, env.timezone, now) && lastRunMarker !== runMarker) {
+      if (hasReachedDailyTime(target.hour, target.minute, env.timezone, now)) {
         const reportDate = getDefaultPullReadinessReportDate(now, env.timezone);
         const readiness = await isPullReportReadyForDownstream(reportDate);
         if (!readiness.ready) {
@@ -111,8 +152,23 @@ async function bootstrap(): Promise<void> {
               asa_keywords: downstreamGate.asa_keywords
             });
           } else {
-            lastRunMarker = runMarker;
-            await tick();
+            const decision = await getScheduledWorkerRunDecision(DAILY_BRIEF_WORKER_NAME, runMarker, RETRY_POLICY, now);
+            if (!decision.allowed) {
+              const blockMarker = `${runMarker}|${decision.reason}|${decision.next_allowed_at || 'none'}`;
+              if (lastRetryBlockMarker !== blockMarker) {
+                lastRetryBlockMarker = blockMarker;
+                logger.warn('daily_brief_run_suppressed', {
+                  report_date: reportDate,
+                  run_marker: runMarker,
+                  reason: decision.reason,
+                  remaining_attempts: decision.remaining_attempts,
+                  next_allowed_at: decision.next_allowed_at
+                });
+              }
+              return;
+            }
+            lastRetryBlockMarker = '';
+            await tick(runMarker);
           }
         }
       }
