@@ -10,6 +10,7 @@
 
 关键字段:
 - `event_time`, `ingest_time`, `app_key`, `dataset`
+- `install_time`（用于 D7 cohort / 价值回收口径，未提供时默认回退 `event_time`）
 - `event_name`, `event_type`, `attribution`
 - `media_source`, `campaign`, `country`, `platform`
 - `revenue`, `currency`
@@ -76,6 +77,25 @@
 - `source_report`
 - `version`
 
+### `keyword_value_daily_metrics`
+- 通用预算建议的价值回收事实表（按安装 cohort 聚合）
+- 引擎: `ReplacingMergeTree(version)`
+- 分区: `toYYYYMM(install_date)`
+- 排序: `(app_key, platform, install_date, media_source, country, campaign, keyword, match_type)`
+
+字段:
+- `install_date`, `app_key`, `platform`
+- `media_source`, `country`, `campaign`
+- `keyword`, `match_type`
+- `installs`, `total_cost`
+- `purchase_count`, `revenue_d7`
+- `ctr`, `cvr`, `cpi`, `cpp`, `d7_roas`
+- `version`
+
+说明：
+- 供 `budget-advisor` 的 `d7_roas_cpp` / `relative_compare` evaluator 使用
+- 使用 `install_time` 作为 cohort 起点，回收窗口固定按安装后 7 天聚合
+
 ### `asa_raw_installs`
 - ASA Raw Data 安装明细（仅 `Apple Search Ads`）
 - 引擎: `MergeTree`
@@ -121,7 +141,25 @@
 - `installs`, `total_cost`, `purchase_count`
 - `revenue_d0`, `revenue_d7`
 - `ecpi`, `average_ecpi`, `cpp`, `d7_roas`
+- `snapshot_id`
 - `version`
+
+### `asa_keyword_country_daily_metrics`
+- ASA keyword 国家切片日级事实表
+- 引擎: `ReplacingMergeTree(version)`
+- 分区: `toYYYYMM(date)`
+- 排序: `(app_key, platform, date, country, keyword, campaign, adset)`
+
+字段:
+- `date`, `app_key`, `platform`
+- `country`, `keyword`, `campaign`, `adset`
+- `installs`, `total_cost`, `ecpi`
+- `snapshot_id`
+- `version`
+
+说明：
+- 用于 ASA 应用级规则中的 `country_targets`
+- 与 `asa_keyword_daily_metrics_v2` 共享同一批 `snapshot_id`
 
 ---
 
@@ -244,6 +282,25 @@
 说明：
 - 飞书执行表回读后的 `执行状态 / 是否采纳 / 人工批复` 不直接写回该表，而是通过 `recommendation_execution_feedbacks` 关联展示
 - WebUI 查询预算建议时会按 `recommendation_id = budget_recommendations.id` 左联反馈快照
+
+### `recommendation_policy_configs`
+- 应用级预算 / ASA 规则配置表
+
+字段:
+- `id`
+- `app_key` (fk -> apps.app_key)
+- `platform`
+- `engine` (`budget|asa`)
+- `enabled`
+- `rule_json` (jsonb)
+- `manual_prompt_markdown`
+- `created_at`, `updated_at`
+
+说明：
+- 唯一键：`(app_key, platform, engine)`
+- `rule_json` 保存结构化规则，包含 `metric_family / decision_mode / traffic_scope / maturity_window / targets / spend_policy / relative_compare`
+- `manual_prompt_markdown` 用于补充特殊投放经验或例外处理规则
+- WebUI 的“应用级规则配置”向导与 `/api/recommendation-policies` 直接读写该表
 
 ### `product_stage_configs`
 - `app + platform` 的人工产品阶段配置
@@ -442,7 +499,7 @@
 - `created_at`
 
 说明：
-- 当前 `scope` 先固定服务预算建议分析
+- 当前 `scope` 已支持 `budget` 与 `asa`
 - 每次反馈回读检测到变化后，会新增一版 `skills.md`，供后续 LLM 分析追加到 prompt
 - 系统自动补写 `七天后数据` 不会触发这里的新版本生成
 
@@ -460,6 +517,7 @@
 - 默认只有一行：`singleton_key = 'global'`
 - `pull_time` 控制：
   - `puller`
+  - `keyword-engine`
   - `budget-advisor`
   - `asa-keywords`
 - `push_time` 控制：
@@ -485,9 +543,10 @@
 
 说明：
 - 主键：`(worker_name, run_marker)`
-- 用于 `puller / budget-advisor / asa-keywords / daily-brief / asa-daily-brief / bitable-export`
+- 用于 `puller / keyword-engine / budget-advisor / asa-keywords / daily-brief / asa-daily-brief / bitable-export`
 - 负责跨实例判断“同一天是否已完成 / 是否还允许重试”，不再只依赖单进程内存
 - `next_allowed_at` 用于每日失败后的冷却重试控制
+- `attempt_count` 主要消耗在“仍值得自动重试”的瞬时失败；认证、404、错误参数这类确定性失败会尽量在业务层提前归类，避免盲目耗尽每日预算
 
 ### `operation_logs`
 - 统一记录 API 手动操作与 worker 定时任务执行结果
@@ -508,6 +567,7 @@
 - `worker.asa_keywords` 的 `scheduled_asa_keyword_cycle` 也会把 `target_key` 记录为对应 `report_date`
 - 下游自动链路会用这两类操作日志，结合 job lock，判断某个 `report_date` 的长任务是否已经真正完成
 - `operation_logs` 继续承担审计与门控查询；“每日只跑一次”的最终去重状态由 `scheduled_worker_runs` 承担
+- Pull / ASA 网络抖动相关日志会在 `detail_json` 中补充失败分类与恢复信息，例如 `failure_kind`、`retryable_failed_count`、`recovered_slice_count`
 
 ---
 

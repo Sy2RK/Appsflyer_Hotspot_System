@@ -26,6 +26,10 @@
 6. 路由日报开始支持真正的 `app + platform` 告警过滤
 7. 多维表格执行表改为同一 Base 内按日期归档，并增加反馈回读 / `七天后数据`
 8. 每日 worker 改为数据库持久化运行状态（`scheduled_worker_runs`），避免多实例串行重复跑
+9. AppsFlyer Pull / ASA 请求新增请求级超时、错误分类与网络抖动自愈
+10. `keyword-engine` 已改为按 `Pull 时间 + scheduled_worker_runs` 调度，不再依赖固定间隔轮询
+11. 新增应用级预算 / ASA 规则配置表 `recommendation_policy_configs`
+12. 新增价值与国家切片事实表：`keyword_value_daily_metrics`、`asa_keyword_country_daily_metrics`
 
 结论：
 
@@ -93,6 +97,10 @@ POSTGRES_DB=
 CLICKHOUSE_USER=
 CLICKHOUSE_PASSWORD=
 CLICKHOUSE_API_PASSWORD=
+# 可选但建议显式配置，避免网络抖动时长时间卡死：
+PULLER_REQUEST_TIMEOUT_MS=20000
+ASA_KEYWORD_REQUEST_TIMEOUT_MS=20000
+ASA_MASTER_API_TIMEOUT_MS=20000
 ```
 
 ### 3.1 必须满足的要求
@@ -100,11 +108,12 @@ CLICKHOUSE_API_PASSWORD=
 - 以上值都必须非空
 - 不允许继续依赖旧版仓库内的默认弱口令
 - `CLICKHOUSE_API_PASSWORD` 用于初始化 / 更新 `hotspot_api` 用户
+- `PULLER_REQUEST_TIMEOUT_MS / ASA_*_TIMEOUT_MS` 虽然不是必填，但生产环境建议显式配置，避免外部网络卡住时长期占住单次 attempt
 
 ### 3.2 快速检查
 
 ```bash
-grep -E '^(ADMIN_BASIC_AUTH_USER|ADMIN_BASIC_AUTH_PASSWORD|POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|CLICKHOUSE_USER|CLICKHOUSE_PASSWORD|CLICKHOUSE_API_PASSWORD)=' .env
+grep -E '^(ADMIN_BASIC_AUTH_USER|ADMIN_BASIC_AUTH_PASSWORD|POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|CLICKHOUSE_USER|CLICKHOUSE_PASSWORD|CLICKHOUSE_API_PASSWORD|PULLER_REQUEST_TIMEOUT_MS|ASA_KEYWORD_REQUEST_TIMEOUT_MS|ASA_MASTER_API_TIMEOUT_MS)=' .env
 ```
 
 如果任何一项为空：
@@ -121,7 +130,7 @@ grep -E '^(ADMIN_BASIC_AUTH_USER|ADMIN_BASIC_AUTH_PASSWORD|POSTGRES_USER|POSTGRE
 ```bash
 cd infra
 
-docker compose stop api aggregator detector puller keyword-engine budget-advisor asa-keywords daily-brief asa-daily-brief bitable-export
+docker compose stop api aggregator detector puller keyword-engine budget-advisor asa-keywords daily-brief asa-daily-brief bitable-export bitable-feedback-sync
 ```
 
 保留数据库：
@@ -167,6 +176,17 @@ docker exec hotspot-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\d s
 - 存在表 `scheduled_worker_runs`
 - 至少包含 `worker_name / run_marker / status / attempt_count / next_allowed_at`
 
+检查应用级规则配置表：
+
+```bash
+docker exec hotspot-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\d recommendation_policy_configs"
+```
+
+预期：
+
+- 存在表 `recommendation_policy_configs`
+- 至少包含 `app_key / platform / engine / enabled / rule_json / manual_prompt_markdown`
+
 如果你想把历史告警全部标记成全局平台，可补一次：
 
 ```bash
@@ -186,6 +206,7 @@ docker exec -i hotspot-clickhouse clickhouse-client -n < infra/clickhouse/init.s
 检查新增列：
 
 ```bash
+docker exec hotspot-clickhouse clickhouse-client --query "DESCRIBE TABLE hotspot.raw_events"
 docker exec hotspot-clickhouse clickhouse-client --query "DESCRIBE TABLE hotspot.asa_raw_installs"
 docker exec hotspot-clickhouse clickhouse-client --query "DESCRIBE TABLE hotspot.asa_raw_in_app_events"
 docker exec hotspot-clickhouse clickhouse-client --query "DESCRIBE TABLE hotspot.asa_keyword_daily_metrics_v2"
@@ -193,7 +214,19 @@ docker exec hotspot-clickhouse clickhouse-client --query "DESCRIBE TABLE hotspot
 
 预期：
 
+- `hotspot.raw_events` 存在 `install_time`
 - 三张表都存在 `snapshot_id`
+
+检查新增事实表：
+
+```bash
+docker exec hotspot-clickhouse clickhouse-client --query "EXISTS hotspot.keyword_value_daily_metrics"
+docker exec hotspot-clickhouse clickhouse-client --query "EXISTS hotspot.asa_keyword_country_daily_metrics"
+```
+
+预期：
+
+- 两条命令都返回 `1`
 
 检查快照表：
 
@@ -347,6 +380,50 @@ docker compose logs --tail=200 api daily-brief asa-daily-brief bitable-export
 - Feishu 空 body / 非 JSON body 不再被记为成功
 - bitable `partial_success` 会在消息里明确显示“部分成功”
 
+### 8.8 应用级规则配置检查
+
+查询当前规则：
+
+```bash
+curl -G "http://localhost:3000/api/recommendation-policies" \
+  --data-urlencode "appKey=ai-seek" \
+  --data-urlencode "platform=ios" \
+  --data-urlencode "engine=budget"
+```
+
+保存一条测试规则：
+
+```bash
+curl -X POST "http://localhost:3000/api/recommendation-policies" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "appKey":"ai-seek",
+    "platform":"ios",
+    "engine":"budget",
+    "enabled":true,
+    "ruleJson":{
+      "metric_family":"ecpi",
+      "decision_mode":"deterministic",
+      "traffic_scope":"all",
+      "maturity_window":{
+        "exclude_recent_days":7,
+        "decision_window_days":14,
+        "context_window_days":[7,14,21]
+      },
+      "targets":{
+        "global_targets":{"ecpi_max":3}
+      }
+    }
+  }'
+```
+
+预期：
+
+- 返回 `ok=true`
+- 同一 `app + platform + engine` 重复保存时会更新原记录
+- 不支持的平台组合会返回 `app_platform_not_supported`
+- 非法配置会返回可读 `4xx`，并带 `message`
+
 ---
 
 ## 9. 若升级后出现问题，优先排查顺序
@@ -404,12 +481,15 @@ docker compose logs --tail=200 api
 1. API / WebUI 正常启动
 2. `/ui` 已启用登录页
 3. Postgres `alerts` 表存在 `platform`
-4. ClickHouse ASA 三张表存在 `snapshot_id`
-5. `hotspot.asa_slice_snapshots` 已存在
-6. detector 不会被单条坏规则打断
-7. 保存非法 DSL 会返回 `400`
-8. ASA 重算后可见 `ready` 快照
-9. Feishu 与 bitable 推送状态文案与真实结果一致
+4. Postgres 存在 `recommendation_policy_configs`
+5. ClickHouse `raw_events` 存在 `install_time`
+6. ClickHouse ASA 三张表存在 `snapshot_id`
+7. `hotspot.keyword_value_daily_metrics` 与 `hotspot.asa_keyword_country_daily_metrics` 已存在
+8. `hotspot.asa_slice_snapshots` 已存在
+9. detector 不会被单条坏规则打断
+10. 保存非法 DSL / 非法应用级规则都会返回可读 `4xx`
+11. ASA 重算后可见 `ready` 快照
+12. Feishu 与 bitable 推送状态文案与真实结果一致
 
 ---
 
@@ -437,7 +517,7 @@ git pull --ff-only
 
 # 3. 停业务服务
 cd infra
-docker compose stop api aggregator detector puller keyword-engine budget-advisor asa-keywords daily-brief asa-daily-brief bitable-export
+docker compose stop api aggregator detector puller keyword-engine budget-advisor asa-keywords daily-brief asa-daily-brief bitable-export bitable-feedback-sync
 
 # 4. 跑 schema 升级
 cd /path/to/hotspot-system
@@ -447,7 +527,7 @@ CLICKHOUSE_PASSWORD="$CLICKHOUSE_PASSWORD" CLICKHOUSE_API_PASSWORD="$CLICKHOUSE_
 
 # 5. 重建业务服务
 cd infra
-docker compose up -d --build api aggregator detector puller keyword-engine budget-advisor asa-keywords daily-brief asa-daily-brief bitable-export
+docker compose up -d --build api aggregator detector puller keyword-engine budget-advisor asa-keywords daily-brief asa-daily-brief bitable-export bitable-feedback-sync
 
 # 6. 验证
 curl http://localhost:3000/health

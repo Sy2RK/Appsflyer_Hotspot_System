@@ -23,13 +23,19 @@ cp .env.example .env
 # 或 ALERT_WEBHOOK_URL（二选一或同时配置）
 # Pull 回填天数（默认 3）
 # PULLER_BACKFILL_DAYS=3
+# Pull 单次请求超时（默认 20000ms）
+# PULLER_REQUEST_TIMEOUT_MS=20000
 # Pull / 推送时间的 env 仅作为默认值使用
 # 启动后可在 WebUI 顶部“全局调度设置”里修改
 # PULLER_REPORT_HOUR=9
 # 关键词与预算建议 worker
+# KEYWORD_ENGINE_INTERVAL_MS 保留兼容，但 keyword-engine 现在按 Pull 时间对齐触发
 # KEYWORD_ENGINE_INTERVAL_MS=86400000
 # BUDGET_ADVISOR_INTERVAL_MS 保留兼容，但 budget-advisor 现在按 Pull 时间对齐触发
 # BUDGET_ADVISOR_INTERVAL_MS=86400000
+# ASA Raw / Master API 单次请求超时（默认 20000ms）
+# ASA_KEYWORD_REQUEST_TIMEOUT_MS=20000
+# ASA_MASTER_API_TIMEOUT_MS=20000
 # 每日报告 worker（默认每小时检查一次，到指定小时后发送前一日报告）
 # DAILY_BRIEF_ENABLED=true
 # DAILY_BRIEF_INTERVAL_MS=3600000
@@ -79,6 +85,9 @@ Web UI 新增能力:
 - 告警详情抽屉（查看 `top_contributors` 与原始 JSON）
 - 关键词生命周期页面（筛选、分页、趋势抽屉、手动重算）
 - 预算建议页面（筛选、分页、详情弹窗、状态流转、手动生成、eCPI 分级规则说明）
+  - 内置“应用级规则配置”向导：`平台 -> 应用 -> 建议类型 -> 填写规则 -> 确认保存`
+  - 不支持的平台组合不会出现在应用选择里；接口层也会兜底拦截
+  - 切换核心指标时，不再适用的隐藏阈值会自动清理，避免“界面看不到但规则仍生效”
 - ASA 关键词管理页面（真实 ASA keyword、阶段配置、专项简报 / 建议发送）
 - 每日报告页面（结构化预览、飞书 `interactive` 卡片发送、阈值说明）
 - 投放执行表推送页面（通用投放建议 + ASA 关键词建议 -> 同一 Base 内按日期归档执行表 + 群通知）
@@ -86,10 +95,15 @@ Web UI 新增能力:
 - UI 文案默认中文（专有名词保留英文），规则见 `AGENTS.md`
 
 自动调度说明：
-- `pull_time` 到达后，先由 `puller` / `budget-advisor` / `asa-keywords` 为前一报告日准备数据
+- `pull_time` 到达后，先由 `puller` / `keyword-engine` / `budget-advisor` / `asa-keywords` 为前一报告日准备数据
 - `push_time` 到达后，`daily-brief` 与 `asa-daily-brief` 不会立刻发送，而是先检查同一 `reportDate` 的 `budget-advisor` 与 `asa-keywords` 是否已经完成
 - `bitable-export` 固定在 `push_time + 5 分钟` 检查，但同样会等待上述两个长任务完成后再导出
 - 每日 worker 的“是否已跑过 / 是否还能重试”由 Postgres `scheduled_worker_runs` 持久化控制，避免多实例部署时串行重复跑
+  - 当前已接入：`puller`、`keyword-engine`、`budget-advisor`、`asa-keywords`、`daily-brief`、`asa-daily-brief`、`bitable-export`
+- `puller` 对 AppsFlyer 请求启用请求级超时与错误分类：
+  - `timeout / network / 5xx` 会先做一次 30 秒后的本地复核，再决定是否消耗当天 worker 重试额度
+  - `401 / 404 / invalid request` 这类确定性错误不会盲目进入同一条复核链路
+- `asa-keywords` 对每个 `app + platform + date` 切片也会先做一次 30 秒本地复核，只有仍然属于可调度重试的失败，才会上抛给 worker 级冷却重试
 - 如果长任务还在跑，日志里会看到 `*_blocked_by_downstream_gate`
 
 多维表格反馈说明：
@@ -238,6 +252,12 @@ curl -X POST "http://localhost:3000/api/pull-records/trigger" \
   -d '{"backfillDays":1}'
 ```
 
+返回结果补充：
+- `retryable_failed_count`：仍值得由 worker 冷却重试的失败数
+- `terminal_failed_count`：认证、404、错误参数等确定性失败数
+- `details[*].failure_kind`：失败分类，常见值有 `timeout / network / rate_limit / auth / not_found / invalid_request / server`
+- `details[*].recovered_by_retry=true`：表示该 app/date 已在 30 秒复核中自动恢复
+
 WebUI 手动触发：
 - 在 `Pull明细` 区块点击 `手动读取`
 - 读取完成后会弹出“读取详情”弹窗
@@ -290,6 +310,14 @@ curl -G "http://localhost:3000/api/keywords/Novix_iTunes_us_1226_broad_BR_br/tre
 
 ## 5.5 验证预算建议链路（含 Qwen 文案增强）
 
+如需先维护应用级规则配置，可直接使用 WebUI：
+
+- 进入 `预算建议 -> 应用级规则配置`
+- 按 `平台 -> 应用 -> 建议类型` 明确选择目标组合
+- 若当前组合没有已保存规则，页面会提示“已载入推荐模板”或“当前为空白模板”
+- 保存前会显示影响摘要，只影响当前选择的 `app + platform + engine`
+- `同类对比判断` 至少需要保留 1 个比较指标，否则前端会阻止保存
+
 手动生成建议：
 
 ```bash
@@ -308,6 +336,9 @@ WebUI 行为：
 - 预算建议模块会显示进度条
 - 进度文案格式为：`已生成建议 / 总建议`
 - 生成中会额外显示当前应用处理进度
+- 应用级规则配置向导不会默认选中应用或建议类型
+- 切换 `平台 / 应用 / 建议类型` 组合时，如当前草稿未保存，会弹出确认
+- `国家目标 / 媒体目标 / 上下文窗口` 均使用结构化输入，不再要求直接填写 JSON 或逗号字符串
 
 查询建议列表：
 
@@ -330,6 +361,49 @@ curl -X POST "http://localhost:3000/api/budget/recommendations/1/reject"
 - 按最近 3 天激活量分为 `low / medium / high`
 - 单次调价动作固定为 `+20% / -20%`
 - 仅在极端低效且进入 `pause_candidate` 时给出暂停建议
+
+应用级规则配置补充验证：
+
+```bash
+curl -G "http://localhost:3000/api/recommendation-policies" \
+  --data-urlencode "appKey=ai-seek" \
+  --data-urlencode "platform=ios" \
+  --data-urlencode "engine=budget"
+```
+
+手动保存一条规则：
+
+```bash
+curl -X POST "http://localhost:3000/api/recommendation-policies" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "appKey":"ai-seek",
+    "platform":"ios",
+    "engine":"budget",
+    "enabled":true,
+    "ruleJson":{
+      "metric_family":"ecpi",
+      "decision_mode":"deterministic",
+      "traffic_scope":"all",
+      "maturity_window":{
+        "exclude_recent_days":7,
+        "decision_window_days":14,
+        "context_window_days":[7,14,21]
+      },
+      "targets":{
+        "global_targets":{"ecpi_max":3}
+      }
+    },
+    "manualPromptMarkdown":"低量级优先关注跑量能力。"
+  }'
+```
+
+预期：
+
+- 同一组合重复保存会更新原记录，不会新增多条
+- 不支持的平台组合会返回 `app_platform_not_supported`
+- `traffic_scope=media_sources` 但未填写媒体源时，会返回中文 `message`
+- `metric_family=relative_compare` 且未勾选任何指标时，会返回中文 `message`
 
 ---
 
@@ -488,6 +562,12 @@ curl -X POST "http://localhost:3000/api/asa-keywords/recompute" \
   -d '{"backfillDays":1}'
 ```
 
+返回结果补充：
+- `failed_slice_count`：`app + platform + date` 切片总失败数
+- `retryable_failed_slice_count`：仍值得继续由 worker 冷却重试的失败切片数
+- `terminal_failed_slice_count`：确定性失败切片数
+- `recovered_slice_count`：在 30 秒本地复核里自动恢复的切片数
+
 验证 Master API 关键词成本直连：
 
 ```bash
@@ -629,7 +709,14 @@ docker compose logs -f daily-brief
 - `metrics_hourly 为空`: 检查 `raw_events` 是否有数据，以及 aggregator 日志
 - `日报预览为空`: 检查报告日期是否晚于最新 Pull 日期
 - `每日卡片发送失败`: 检查 `.env` 或 app 级 Feishu 配置，并查看 `operation_logs`
-- `Pull 连续失败`: 区分 AppsFlyer 限流（`403 Limit reached`）与网络层 `fetch failed`
+- `Pull 连续失败`:
+  - `failure_kind=timeout|network|server`：优先看网络抖动、出口质量、AppsFlyer 短时可用性
+  - `failure_kind=rate_limit`：说明命中 AppsFlyer 限流，优先拉开重试窗口
+  - `failure_kind=auth|not_found|invalid_request`：优先检查 token、app_id、接口参数，这类不会靠继续重试自愈
+- `ASA 连续失败`:
+  - 先看 `asa_keyword_slice_retry_scheduled / asa_keyword_slice_retry_recovered / asa_keyword_slice_failed` 日志
+  - 如果大量切片停留在 `timeout|network|server`，优先排查出口网络和 AppsFlyer 波动
+  - 如果集中在 `auth|invalid_request`，优先检查 `RAW_DATA_TOKEN / MASTER_API_TOKEN / app_id`
 
 生成高强度 push token（推荐 48 bytes）:
 ```bash

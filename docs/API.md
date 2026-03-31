@@ -199,6 +199,13 @@ Request:
 }
 ```
 
+返回结果补充：
+- `retryable_failed_count`：仍会消耗 worker 冷却重试预算的失败数
+- `terminal_failed_count`：不会继续调度重试的确定性失败数
+- `details[*].failure_kind`：失败分类，常见值有 `timeout / network / rate_limit / auth / not_found / invalid_request / server`
+- `details[*].retryable`：该失败是否仍值得后续调度重试
+- `details[*].attempts` / `details[*].recovered_by_retry`：30 秒本地复核次数与是否已自动恢复
+
 ### `DELETE /api/pull-records`
 按明细记录主维度删除 Pull 数据，并同步删除对应 `metrics_daily` 指标。
 
@@ -329,12 +336,107 @@ Request:
 说明：
 - Raw Data 只负责 keyword / 收入 / 安装事件
 - Master API 负责 keyword 级 `cost / installs / average_ecpi`
+- 每个 `app + platform + date` 切片会先做一次 30 秒本地复核，再决定是否进入 worker 级冷却重试
+
+返回结果补充：
+- `failed_slice_count`
+- `retryable_failed_slice_count`
+- `terminal_failed_slice_count`
+- `recovered_slice_count`
 
 ### `GET /api/asa-keywords/brief/preview?reportDate=&appKey=&platform=`
 预览 ASA 专项简报。建议操作已并入简报正文。
 
 ### `POST /api/asa-keywords/brief/send`
 发送 ASA 专项简报到 Feishu。建议操作会随简报一并发送。
+
+### `GET /api/recommendation-policies?appKey=&platform=&engine=&enabled=`
+查询应用级规则配置列表。
+
+参数说明：
+- `appKey` 可选
+- `platform` 可选：`ios|android|unknown`
+- `engine` 可选：`budget|asa`
+- `enabled` 可选：`true|false`
+
+返回重点字段：
+- `app_key`, `platform`, `engine`
+- `enabled`
+- `rule_json`
+- `manual_prompt_markdown`
+- `effective_support`
+
+说明：
+- 唯一键为 `app_key + platform + engine`
+- WebUI 的“应用级规则配置”向导也使用这组接口
+
+### `POST /api/recommendation-policies`
+创建或更新应用级规则配置。
+
+Request:
+```json
+{
+  "appKey": "ai-seek",
+  "platform": "ios",
+  "engine": "budget",
+  "enabled": true,
+  "ruleJson": {
+    "metric_family": "ecpi",
+    "decision_mode": "deterministic",
+    "traffic_scope": "all",
+    "media_sources": [],
+    "maturity_window": {
+      "exclude_recent_days": 7,
+      "decision_window_days": 14,
+      "context_window_days": [7, 14, 21]
+    },
+    "targets": {
+      "global_targets": {
+        "ecpi_max": 3
+      }
+    },
+    "spend_policy": {
+      "low_spend_threshold_usd": 10,
+      "high_spend_threshold_usd": 100,
+      "trend_lookback_days": 7,
+      "uptrend_min_ratio": 0.15
+    }
+  },
+  "manualPromptMarkdown": "低量级先看跑量能力，不要只看短期回收。"
+}
+```
+
+校验补充：
+- `appKey + platform + engine` 必填
+- `platform` 必须是 `ios|android|unknown`
+- 应用必须真实存在，且必须支持当前平台
+  - `ios` 依赖 `ios_pull_app_id`
+  - `android` 依赖 `android_pull_app_id`
+  - `unknown` 依赖兼容字段 `pull_app_id`
+- `traffic_scope=media_sources` 时，必须提供至少 1 个媒体源
+- `metric_family=relative_compare` 时，必须至少提供 1 个比较指标
+
+常见错误返回：
+- `appKey_platform_engine_required`
+- `invalid_platform`
+- `app_not_found`
+- `app_platform_not_supported`
+- `invalid_metric_family`
+- `invalid_decision_mode`
+- `invalid_traffic_scope`
+- `invalid_media_sources`
+- `invalid_window`
+- `invalid_rule_json`
+- `invalid_relative_compare`
+
+返回格式：
+```json
+{
+  "ok": false,
+  "error": "invalid_media_sources",
+  "message": "已选择指定媒体源，但媒体源列表为空，请至少添加一个媒体源。"
+}
+```
 
 ### `GET /api/budget/recommendations?appKey=&platform=&status=&from=&to=&executionStatus=&isAdopted=&hasManualReview=&page=`
 查询预算建议（分页）。

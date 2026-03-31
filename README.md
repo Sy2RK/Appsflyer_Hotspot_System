@@ -6,6 +6,7 @@
 
 - AppsFlyer Push Callback 入库与小时级聚合
 - AppsFlyer Pull `daily_report_v5` 日级拉取与指标趋势
+  - 请求级超时、错误分类与瞬时网络故障自动复核
 - WebUI 顶部全局调度配置
   - 统一编辑 `Pull 时间` 与 `推送时间`
   - `budget-advisor` 与 `asa-keywords` 自动使用 `Pull 时间`
@@ -17,9 +18,13 @@
   - 后续可继续扩展诊断助手、投放 Copilot 等功能
 - 通用投放项 / 广告系列监控与预算建议
   - 手动生成预算建议时支持进度条与 `已生成建议 / 总建议` 实时展示
+  - 内置“应用级规则配置”向导，按 `app + platform + 建议类型` 单独维护规则
+  - 国家 / 媒体阈值、上下文窗口、补充说明都支持结构化编辑
+  - 保存前会显示影响摘要，并拦截不支持的平台组合 / 无效同类对比配置
 - ASA 关键词专项管理
   - Raw Data 获取关键词与收入
   - Master API 获取关键词级 cost / installs / average eCPI
+  - Raw / Master API 请求级超时与 30 秒本地复核，缓解网络抖动
   - 独立 ASA 简报与飞书推送
 - 每日简报
   - 通用简报
@@ -104,4 +109,6 @@ docker compose up -d --build
 - ASA keyword 成本切换到 AppsFlyer Master API
 - Feishu 多维表格按日期留档、反馈回读与 `七天后数据` 自动补列
 - 每日 worker 改为数据库持久化运行状态，避免多实例串行重复跑
+- AppsFlyer Pull / ASA 链路新增请求级 timeout、错误分类与瞬时故障自愈
+- 应用级预算 / ASA 规则配置改为向导式交互，并补平台支持与隐藏字段校验
 - 默认 `09:00 / 10:00 / 10:05 (Asia/Shanghai)` 调度，可在页面顶部修改
