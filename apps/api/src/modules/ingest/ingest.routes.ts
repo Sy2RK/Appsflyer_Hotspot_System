@@ -85,6 +85,7 @@ router.post('/appsflyer/api/v1/event/:appKey/:dataset/callback', async (req, res
       normalizedRows.push({
         event_date: normalized.event_time.toISOString().slice(0, 10),
         event_time: normalized.event_time.toISOString().slice(0, 19).replace('T', ' '),
+        install_time: normalized.install_time.toISOString().slice(0, 19).replace('T', ' '),
         ingest_time: normalized.ingest_time.toISOString().slice(0, 19).replace('T', ' '),
         app_key: normalized.app_key,
         dataset: normalized.dataset,

@@ -181,6 +181,22 @@ CREATE INDEX IF NOT EXISTS idx_budget_recommendations_lookup
 CREATE UNIQUE INDEX IF NOT EXISTS uq_budget_recommendations_platform_media_key
   ON budget_recommendations (app_key, platform, media_source, keyword, match_type, date);
 
+CREATE TABLE IF NOT EXISTS recommendation_policy_configs (
+  id BIGSERIAL PRIMARY KEY,
+  app_key TEXT NOT NULL REFERENCES apps(app_key) ON DELETE CASCADE,
+  platform TEXT NOT NULL DEFAULT 'unknown',
+  engine TEXT NOT NULL CHECK (engine IN ('budget', 'asa')),
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  rule_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  manual_prompt_markdown TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (app_key, platform, engine)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recommendation_policy_configs_lookup
+  ON recommendation_policy_configs (engine, enabled, app_key, platform, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS llm_audit_logs (
   id BIGSERIAL PRIMARY KEY,
   biz_type TEXT NOT NULL,

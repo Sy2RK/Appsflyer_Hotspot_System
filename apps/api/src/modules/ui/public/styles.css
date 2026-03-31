@@ -1807,6 +1807,10 @@ input[aria-disabled-note='true'] {
   width: min(100%, var(--filter-max, 220px));
 }
 
+.inline-form .filter-field-wide {
+  width: min(100%, 520px);
+}
+
 .pull-json-row td {
   background: #f8fbff;
   padding: 0;

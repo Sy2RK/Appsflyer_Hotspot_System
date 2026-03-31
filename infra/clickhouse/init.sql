@@ -3,6 +3,7 @@ CREATE DATABASE IF NOT EXISTS hotspot;
 CREATE TABLE IF NOT EXISTS hotspot.raw_events (
   event_date Date,
   event_time DateTime,
+  install_time DateTime,
   ingest_time DateTime,
   app_key String,
   dataset String,
@@ -46,6 +47,7 @@ PARTITION BY toYYYYMM(hour)
 ORDER BY (app_key, platform, hour, metric, event_name, attribution, event_type, media_source, country, campaign);
 
 ALTER TABLE hotspot.metrics_hourly ADD COLUMN IF NOT EXISTS platform LowCardinality(String);
+ALTER TABLE hotspot.raw_events ADD COLUMN IF NOT EXISTS install_time DateTime DEFAULT event_time;
 
 CREATE TABLE IF NOT EXISTS hotspot.pull_aggregate_daily (
   date Date,
@@ -135,6 +137,30 @@ ORDER BY (app_key, platform, date, keyword, match_type, campaign, media_source, 
 ALTER TABLE hotspot.keyword_daily_metrics ADD COLUMN IF NOT EXISTS platform LowCardinality(String);
 ALTER TABLE hotspot.keyword_daily_metrics ADD COLUMN IF NOT EXISTS af_average_ecpi Float64;
 
+CREATE TABLE IF NOT EXISTS hotspot.keyword_value_daily_metrics (
+  install_date Date,
+  app_key String,
+  platform LowCardinality(String),
+  media_source LowCardinality(String),
+  country LowCardinality(String),
+  campaign LowCardinality(String),
+  keyword String,
+  match_type LowCardinality(String),
+  installs Float64,
+  total_cost Float64,
+  purchase_count Float64,
+  revenue_d7 Float64,
+  ctr Float64,
+  cvr Float64,
+  cpi Float64,
+  cpp Float64,
+  d7_roas Float64,
+  version UInt64
+)
+ENGINE = ReplacingMergeTree(version)
+PARTITION BY toYYYYMM(install_date)
+ORDER BY (app_key, platform, install_date, media_source, country, campaign, keyword, match_type);
+
 CREATE TABLE IF NOT EXISTS hotspot.asa_raw_installs (
   install_date Date,
   install_time DateTime,
@@ -222,6 +248,24 @@ ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(date)
 ORDER BY (app_key, platform, date, keyword, campaign, adset);
 
+CREATE TABLE IF NOT EXISTS hotspot.asa_keyword_country_daily_metrics (
+  date Date,
+  app_key String,
+  platform LowCardinality(String),
+  country LowCardinality(String),
+  keyword String,
+  campaign LowCardinality(String),
+  adset LowCardinality(String),
+  installs Float64,
+  total_cost Float64,
+  ecpi Float64,
+  snapshot_id UInt64 DEFAULT 0,
+  version UInt64
+)
+ENGINE = ReplacingMergeTree(version)
+PARTITION BY toYYYYMM(date)
+ORDER BY (app_key, platform, date, country, keyword, campaign, adset);
+
 CREATE TABLE IF NOT EXISTS hotspot.asa_slice_snapshots (
   app_key String,
   platform LowCardinality(String),
@@ -237,3 +281,4 @@ ORDER BY (app_key, platform, date, snapshot_id);
 ALTER TABLE hotspot.asa_raw_installs ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;
 ALTER TABLE hotspot.asa_raw_in_app_events ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;
 ALTER TABLE hotspot.asa_keyword_daily_metrics_v2 ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;
+ALTER TABLE hotspot.asa_keyword_country_daily_metrics ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;

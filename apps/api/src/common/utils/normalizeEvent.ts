@@ -33,6 +33,19 @@ function parseEventTime(payload: Record<string, unknown>): Date {
   return new Date();
 }
 
+function parseInstallTime(payload: Record<string, unknown>, eventTime: Date): Date {
+  const candidates = [payload.install_time, payload.installTime, payload.first_install_time, payload.attributed_touch_time];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' || typeof candidate === 'number') {
+      const parsed = new Date(candidate);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+  }
+  return eventTime;
+}
+
 function parseRevenue(payload: Record<string, unknown>): number {
   const candidates = [
     payload.event_revenue,
@@ -132,6 +145,7 @@ export function normalizeEvent(input: {
   const ingestTime = input.ingestTime ?? new Date();
 
   const eventTime = parseEventTime(payload);
+  const installTime = parseInstallTime(payload, eventTime);
   const eventName = firstString(payload, ['event_name', 'af_event_name']) ?? 'unknown';
   const eventType = parseEventType(payload);
   const attribution = parseAttribution(payload);
@@ -172,6 +186,7 @@ export function normalizeEvent(input: {
     app_key: appKey,
     dataset,
     event_time: eventTime,
+    install_time: installTime,
     ingest_time: ingestTime,
     event_name: eventName,
     event_type: eventType,

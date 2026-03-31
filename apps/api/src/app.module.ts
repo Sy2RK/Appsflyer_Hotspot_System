@@ -8,6 +8,7 @@ import appsRoutes from './modules/apps.routes.js';
 import pullRecordsRoutes from './modules/pullRecords/pullRecords.routes.js';
 import keywordsRoutes from './modules/keywords/keywords.routes.js';
 import budgetRoutes from './modules/budget/budget.routes.js';
+import recommendationPoliciesRoutes from './modules/recommendationPolicies/recommendationPolicies.routes.js';
 import dailyBriefRoutes from './modules/dailyBrief/dailyBrief.routes.js';
 import bitableExportsRoutes from './modules/bitableExports/bitableExports.routes.js';
 import operationLogsRoutes from './modules/operationLogs/operationLogs.routes.js';
@@ -46,6 +47,7 @@ export function createApp(): express.Express {
   app.use(pullRecordsRoutes);
   app.use(keywordsRoutes);
   app.use(budgetRoutes);
+  app.use(recommendationPoliciesRoutes);
   app.use(dailyBriefRoutes);
   app.use(bitableExportsRoutes);
   app.use(asaKeywordsRoutes);

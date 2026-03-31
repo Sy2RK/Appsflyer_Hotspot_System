@@ -8,6 +8,7 @@ import {
   insertLlmAuditLog,
   listApps,
   listEnabledAsaKeywordRoutes,
+  listRecommendationPolicyConfigs,
   listProductStageConfigs,
   queryAsaKeywordRecommendations,
   queryAsaKeywordStates,
@@ -28,6 +29,14 @@ import { getPushScheduleTarget } from './runtimeSchedule.js';
 import { getTzParts } from './schedule.js';
 import { buildPreviousDateList } from './businessDate.js';
 import {
+  buildRecommendationPolicyKey,
+  buildRecommendationPolicyMap,
+  defaultRecommendationPolicyRule,
+  evaluateSpendScenarios,
+  normalizeRecommendationPolicyRule,
+  resolveRecommendationTarget
+} from './recommendationPolicies.js';
+import {
   AppsflyerRequestError,
   fetchAppsflyerText,
   type AppsflyerRequestFailureKind
@@ -37,7 +46,8 @@ import type {
   AsaKeywordRecommendationRow,
   AsaKeywordRouteRecord,
   AsaKeywordStateRow,
-  ProductStage
+  ProductStage,
+  RecommendationPolicyRuleJson
 } from '../types/models.js';
 
 interface LoggerLike {
@@ -115,6 +125,21 @@ interface AsaKeywordDailyMetricInsertRow {
   average_ecpi: number;
   cpp: number;
   d7_roas: number;
+  snapshot_id: number;
+  version: number;
+}
+
+interface AsaKeywordCountryMetricInsertRow {
+  date: string;
+  app_key: string;
+  platform: string;
+  country: string;
+  keyword: string;
+  campaign: string;
+  adset: string;
+  installs: number;
+  total_cost: number;
+  ecpi: number;
   snapshot_id: number;
   version: number;
 }
@@ -220,6 +245,7 @@ const RAW_MEDIA_SOURCE = 'apple search ads';
 const MASTER_MEDIA_SOURCE = 'apple search ads';
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ASA_KEYWORD_METRICS_TABLE = 'asa_keyword_daily_metrics_v2';
+const ASA_KEYWORD_COUNTRY_METRICS_TABLE = 'asa_keyword_country_daily_metrics';
 const ASA_SLICE_SNAPSHOT_TABLE = 'asa_slice_snapshots';
 const ASA_KEYWORD_BRIEF_SEND_LOCK_PREFIX = 'asa_keyword_brief:send';
 const ASA_KEYWORD_BRIEF_SEND_LOCK_TTL_MS = 30 * 60 * 1000;
@@ -792,12 +818,23 @@ function buildTrendJson(rows: AsaKeywordDailyMetricInsertRow[]): Record<string, 
   };
 }
 
-function recommendationSummary(action: string, stage: ProductStage, currentEcpi: number, currentCpp: number, currentD7Roas: number): {
+function recommendationSummary(
+  action: string,
+  stage: ProductStage,
+  currentEcpi: number,
+  currentCpp: number,
+  currentD7Roas: number,
+  extra: { actionItems?: string[]; scenarioTags?: string[] } = {}
+): {
   summary_cn: string;
   risk_level: 'low' | 'medium' | 'high';
   checklist: string[];
   explanation_points: string[];
+  action_items: string[];
+  scenario_tags: string[];
 } {
+  const actionItems = Array.isArray(extra.actionItems) ? extra.actionItems.filter(Boolean).slice(0, 8) : [];
+  const scenarioTags = Array.isArray(extra.scenarioTags) ? extra.scenarioTags.filter(Boolean).slice(0, 8) : [];
   if (stage === 'stable') {
     return {
       summary_cn:
@@ -812,7 +849,10 @@ function recommendationSummary(action: string, stage: ProductStage, currentEcpi:
         `d7_roas=${currentD7Roas.toFixed(2)}`,
         `cpp=${currentCpp.toFixed(2)}`,
         `stage=${stage}`
-      ]
+      ],
+      action_items:
+        actionItems.length > 0 ? actionItems : ['先确认回收窗口已经成熟，再执行调价。', '执行动作后继续观察 3-7 天。'],
+      scenario_tags: scenarioTags
     };
   }
 
@@ -825,7 +865,10 @@ function recommendationSummary(action: string, stage: ProductStage, currentEcpi:
           : `上升期当前 eCPI 接近目标线，建议先保持预算。`,
     risk_level: action === 'decrease' ? 'medium' : 'low',
     checklist: ['确认最近 3 天安装量是否稳定', '检查关键词与 campaign 命名是否一致'],
-    explanation_points: [`ecpi=${currentEcpi.toFixed(2)}`, `stage=${stage}`]
+    explanation_points: [`ecpi=${currentEcpi.toFixed(2)}`, `stage=${stage}`],
+    action_items:
+      actionItems.length > 0 ? actionItems : ['先验证素材与关键词匹配度，再决定是否继续放量。', '执行动作后至少跟踪 2-3 天成本变化。'],
+    scenario_tags: scenarioTags
   };
 }
 
@@ -864,6 +907,46 @@ async function queryAsaMetricWindow(from: string, to: string): Promise<AsaKeywor
   );
 }
 
+async function queryAsaCountryMetricWindow(from: string, to: string): Promise<AsaKeywordCountryMetricInsertRow[]> {
+  try {
+    return chQuery<AsaKeywordCountryMetricInsertRow>(
+      `WITH
+        ${buildLatestAsaSliceRangeCtes(ASA_KEYWORD_COUNTRY_METRICS_TABLE, 'date')}
+        SELECT
+          toString(m.date) AS date,
+          m.app_key AS app_key,
+          m.platform AS platform,
+          m.country AS country,
+          m.keyword AS keyword,
+          m.campaign AS campaign,
+          m.adset AS adset,
+          m.installs AS installs,
+          m.total_cost AS total_cost,
+          m.ecpi AS ecpi,
+          m.snapshot_id AS snapshot_id,
+          m.version AS version
+        FROM (
+          SELECT *
+          FROM ${ASA_KEYWORD_COUNTRY_METRICS_TABLE} FINAL
+        ) AS m
+        INNER JOIN latest_slices AS s
+          ON s.app_key = m.app_key
+         AND s.platform = m.platform
+         AND s.date = m.date
+         AND s.snapshot_id = m.snapshot_id`,
+      { from, to }
+    );
+  } catch {
+    return [];
+  }
+}
+
+function average(values: number[]): number {
+  const filtered = values.filter((value) => Number.isFinite(value) && value >= 0);
+  if (filtered.length === 0) return 0;
+  return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
+}
+
 async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, logger?: LoggerLike): Promise<{
   stateRows: number;
   recommendationRows: number;
@@ -871,11 +954,23 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
   const dates = buildDateList(Math.max(backfillDays, 14));
   const from = dates[dates.length - 1];
   const to = dates[0];
-  const metrics = await queryAsaMetricWindow(from, to);
-  const stageConfigs = await listProductStageConfigs();
-  const appByKey = new Map((await listApps()).map((app) => [app.app_key, app]));
+  const [metrics, countryMetrics, stageConfigs, policyRows, apps] = await Promise.all([
+    queryAsaMetricWindow(from, to),
+    queryAsaCountryMetricWindow(from, to),
+    listProductStageConfigs(),
+    listRecommendationPolicyConfigs({ engine: 'asa', enabled: true }),
+    listApps()
+  ]);
+  const appByKey = new Map(apps.map((app) => [app.app_key, app]));
   const stageMap = new Map(stageConfigs.filter((item) => item.enabled).map((item) => [`${item.app_key}|${item.platform}`, item.stage]));
+  const policyMap = buildRecommendationPolicyMap(
+    policyRows.map((row) => ({
+      ...row,
+      rule_json: normalizeRecommendationPolicyRule(row.rule_json)
+    }))
+  );
   const peerStatsByDate = new Map<string, { ecpi: number[]; cpp: number[]; roas: number[] }>();
+  const countryStatsByKeyword = new Map<string, AsaKeywordCountryMetricInsertRow[]>();
 
   const grouped = new Map<string, AsaKeywordDailyMetricInsertRow[]>();
   for (const row of metrics) {
@@ -895,6 +990,12 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       if (roas > 0) peerStats.roas.push(roas);
       peerStatsByDate.set(peerKey, peerStats);
     }
+  }
+  for (const row of countryMetrics) {
+    const key = [row.app_key, row.platform, row.keyword, row.campaign, row.adset].join('|');
+    const bucket = countryStatsByKeyword.get(key) ?? [];
+    bucket.push(row);
+    countryStatsByKeyword.set(key, bucket);
   }
 
   const scopesByApp = new Map<string, Array<{ keyword: string; campaign: string; adset: string }>>();
@@ -932,6 +1033,9 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     current: AsaKeywordDailyMetricInsertRow;
     action: 'increase' | 'decrease' | 'hold';
     stage: ProductStage;
+    policy: RecommendationPolicyRuleJson | null;
+    manualPromptMarkdown: string | null;
+    reasonCode: string;
     currentEcpi: number;
     currentCpp: number;
     currentD7Roas: number;
@@ -941,6 +1045,9 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     totalCost7d: number;
     installs7d: number;
     last3Installs: number;
+    spendSeries: number[];
+    scenarioTags: string[];
+    presetActionItems: string[];
   }> = [];
   for (const rows of grouped.values()) {
     rows.sort((a, b) => a.date.localeCompare(b.date));
@@ -951,7 +1058,13 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       await replaceAsaKeywordRecommendationsForDate(current.app_key, current.platform, current.date);
       recommendationScopes.add(scopeKey);
     }
-    const stage = stageMap.get(`${current.app_key}|${current.platform}`) ?? 'rising';
+    const policyRecord = policyMap.get(buildRecommendationPolicyKey(current.app_key, current.platform, 'asa')) ?? null;
+    const policy = policyRecord ? normalizeRecommendationPolicyRule(policyRecord.rule_json) : null;
+    const stage = policy
+      ? policy.metric_family === 'd7_roas_cpp'
+        ? 'stable'
+        : 'rising'
+      : stageMap.get(`${current.app_key}|${current.platform}`) ?? 'rising';
     const window7 = rows.slice(-7);
     const installs7d = window7.reduce((sum, row) => sum + Number(row.installs || 0), 0);
     const totalCost7d = window7.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
@@ -969,9 +1082,40 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     const peerEcpi = peerStats.ecpi;
     const peerCpp = peerStats.cpp;
     const peerRoas = peerStats.roas;
-    const targetEcpi = Math.max(0.01, percentile(peerEcpi, 0.4) || median(peerEcpi) || currentEcpi || 0.01);
-    const targetCpp = Math.max(0.01, percentile(peerCpp, 0.4) || median(peerCpp) || currentCpp || 0.01);
-    const targetD7Roas = Math.max(0.01, percentile(peerRoas, 0.6) || median(peerRoas) || currentD7Roas || 0.01);
+    const thresholdTargets = resolveRecommendationTarget(policy, { mediaSource: 'Apple Search Ads' });
+    let targetEcpi = Math.max(
+      0.01,
+      thresholdTargets.ecpi_max ?? (percentile(peerEcpi, 0.4) || median(peerEcpi) || currentEcpi || 0.01)
+    );
+    const targetCpp = Math.max(
+      0.01,
+      thresholdTargets.cpp_max ?? (percentile(peerCpp, 0.4) || median(peerCpp) || currentCpp || 0.01)
+    );
+    const targetD7Roas = Math.max(
+      0.01,
+      thresholdTargets.roas_min ?? (percentile(peerRoas, 0.6) || median(peerRoas) || currentD7Roas || 0.01)
+    );
+    const spendSeries = window7.map((row) => Number(row.total_cost || 0));
+    const scenarioEvaluation = evaluateSpendScenarios({
+      avgDailySpend: average(spendSeries),
+      spendSeries,
+      spendPolicy: policy?.spend_policy ?? defaultRecommendationPolicyRule().spend_policy,
+      actionPlaybook: policy?.action_playbook ?? defaultRecommendationPolicyRule().action_playbook
+    });
+    const countryRows = (
+      countryStatsByKeyword.get([current.app_key, current.platform, current.keyword, current.campaign, current.adset].join('|')) ?? []
+    ).filter((row) => window7.some((metricRow) => metricRow.date === row.date));
+    const countryBreaches = Object.entries(policy?.targets.country_targets ?? {}).flatMap(([country, target]) => {
+      const relevantRows = countryRows.filter((row) => row.country === country);
+      const installs = relevantRows.reduce((sum, row) => sum + Number(row.installs || 0), 0);
+      const totalCost = relevantRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
+      const ecpi = installs > 0 ? totalCost / installs : 0;
+      return target.ecpi_max != null && ecpi > target.ecpi_max ? [{ country, ecpi, targetEcpi: target.ecpi_max }] : [];
+    });
+    if (countryBreaches.length > 0) {
+      const worstBreach = countryBreaches.sort((a, b) => b.ecpi / b.targetEcpi - a.ecpi / a.targetEcpi)[0];
+      targetEcpi = worstBreach.targetEcpi;
+    }
 
     await upsertAsaKeywordState({
       app_key: current.app_key,
@@ -998,18 +1142,27 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     stateRows += 1;
     const action =
       stage === 'stable'
-        ? currentD7Roas < targetD7Roas * 0.85 || (currentCpp > 0 && currentCpp > targetCpp * 1.15)
+        ? currentD7Roas < targetD7Roas * 0.85 || (currentCpp > 0 && currentCpp > (thresholdTargets.cpp_pause_threshold ?? targetCpp * 1.15))
           ? 'decrease'
-          : currentD7Roas >= targetD7Roas && (currentCpp === 0 || currentCpp <= targetCpp)
+          : currentD7Roas >= (thresholdTargets.roas_good ?? targetD7Roas) && (currentCpp === 0 || currentCpp <= targetCpp)
             ? 'increase'
             : 'hold'
-        : currentEcpi > targetEcpi * 1.15
+        : countryBreaches.length > 0 || currentEcpi > targetEcpi * 1.15
           ? 'decrease'
           : currentEcpi <= targetEcpi * 0.9
             ? 'increase'
             : 'hold';
 
-    const llmResult = recommendationSummary(action, stage, currentEcpi, currentCpp, currentD7Roas);
+    const reasonCode =
+      stage === 'stable'
+        ? 'stable_dual_metric'
+        : countryBreaches.length > 0
+          ? 'policy_country_ecpi_breach'
+          : 'rising_ecpi';
+    const llmResult = recommendationSummary(action, stage, currentEcpi, currentCpp, currentD7Roas, {
+      actionItems: scenarioEvaluation.actionItems,
+      scenarioTags: scenarioEvaluation.scenarioTags
+    });
     await upsertAsaKeywordRecommendation({
       app_key: current.app_key,
       platform: current.platform,
@@ -1026,7 +1179,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       target_ecpi: targetEcpi,
       target_cpp: targetCpp,
       target_d7_roas: targetD7Roas,
-      reason_code: stage === 'stable' ? 'stable_dual_metric' : 'rising_ecpi',
+      reason_code: reasonCode,
       llm_summary: llmResult,
       status: 'pending'
     });
@@ -1035,6 +1188,9 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       current,
       action,
       stage,
+      policy,
+      manualPromptMarkdown: policyRecord?.manual_prompt_markdown ?? null,
+      reasonCode,
       currentEcpi,
       currentCpp,
       currentD7Roas,
@@ -1043,7 +1199,10 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       targetD7Roas,
       totalCost7d,
       installs7d,
-      last3Installs: rows.slice(-3).reduce((sum, row) => sum + Number(row.installs || 0), 0)
+      last3Installs: rows.slice(-3).reduce((sum, row) => sum + Number(row.installs || 0), 0),
+      spendSeries,
+      scenarioTags: scenarioEvaluation.scenarioTags,
+      presetActionItems: scenarioEvaluation.actionItems
     });
   }
 
@@ -1066,7 +1225,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
             ? item.totalCost7d * 0.8
             : item.totalCost7d,
       confidence: item.stage === 'stable' ? 0.88 : 0.82,
-      reasonCode: item.stage === 'stable' ? 'stable_dual_metric' : 'rising_ecpi',
+      reasonCode: item.reasonCode,
       stage: item.stage,
       lastCpi: item.currentEcpi,
       lastInstalls: item.installs7d,
@@ -1075,7 +1234,22 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       targetEcpi: item.targetEcpi,
       volumeTier: item.installs7d >= 30 ? 'high' : item.installs7d >= 15 ? 'medium' : 'low',
       last3Installs: item.last3Installs,
-      last7Installs: item.installs7d
+      last7Installs: item.installs7d,
+      currentRoas: item.currentD7Roas,
+      targetRoas: item.targetD7Roas,
+      currentCpp: item.currentCpp,
+      targetCpp: item.targetCpp,
+      scenarioTags: item.scenarioTags,
+      presetActionItems: item.presetActionItems,
+      structuredPolicy: item.policy ? (item.policy as unknown as Record<string, unknown>) : undefined,
+      computedContext: {
+        spend_series: item.spendSeries,
+        current_cpp: item.currentCpp,
+        target_cpp: item.targetCpp,
+        current_roas: item.currentD7Roas,
+        target_roas: item.targetD7Roas
+      },
+      manualPromptMarkdown: item.manualPromptMarkdown
     });
     await insertLlmAuditLog({
       biz_type: 'asa_keyword_recommendation',
@@ -1102,7 +1276,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       target_ecpi: item.targetEcpi,
       target_cpp: item.targetCpp,
       target_d7_roas: item.targetD7Roas,
-      reason_code: item.stage === 'stable' ? 'stable_dual_metric' : 'rising_ecpi',
+      reason_code: item.reasonCode,
       llm_summary: llmCall.output,
       status: 'pending'
     });
@@ -1203,6 +1377,52 @@ function aggregateDailyMetrics(
   });
 }
 
+function aggregateAsaCountryMetrics(installRows: AsaInstallRow[]): AsaKeywordCountryMetricInsertRow[] {
+  const aggregate = new Map<
+    string,
+    {
+      date: string;
+      app_key: string;
+      platform: string;
+      country: string;
+      keyword: string;
+      campaign: string;
+      adset: string;
+      installs: number;
+      total_cost: number;
+    }
+  >();
+
+  for (const row of installRows) {
+    const key = [row.install_date, row.app_key, row.platform, row.country, row.keyword, row.campaign, row.adset].join(
+      '|'
+    );
+    const bucket =
+      aggregate.get(key) ??
+      {
+        date: row.install_date,
+        app_key: row.app_key,
+        platform: row.platform,
+        country: row.country,
+        keyword: row.keyword,
+        campaign: row.campaign,
+        adset: row.adset,
+        installs: 0,
+        total_cost: 0
+      };
+    bucket.installs += 1;
+    bucket.total_cost += Number(row.cost_value || 0);
+    aggregate.set(key, bucket);
+  }
+
+  return Array.from(aggregate.values()).map((row) => ({
+    ...row,
+    ecpi: row.installs > 0 ? row.total_cost / row.installs : 0,
+    snapshot_id: 0,
+    version: Date.now()
+  }));
+}
+
 async function replaceAsaSlice(params: {
   appKey: string;
   platform: string;
@@ -1211,6 +1431,7 @@ async function replaceAsaSlice(params: {
   installRows: AsaInstallRow[];
   eventRows: AsaInAppEventRow[];
   metricRows: AsaKeywordDailyMetricInsertRow[];
+  countryMetricRows: AsaKeywordCountryMetricInsertRow[];
   logger?: LoggerLike;
 }): Promise<void> {
   const queryParams = {
@@ -1227,10 +1448,16 @@ async function replaceAsaSlice(params: {
     snapshot_id: params.snapshotId,
     version: params.snapshotId
   }));
+  const countryMetricRows = params.countryMetricRows.map((row) => ({
+    ...row,
+    snapshot_id: params.snapshotId,
+    version: params.snapshotId
+  }));
 
   await chInsertJSON('asa_raw_installs', installRows);
   await chInsertJSON('asa_raw_in_app_events', eventRows);
   await chInsertJSON(ASA_KEYWORD_METRICS_TABLE, metricRows);
+  await chInsertJSON(ASA_KEYWORD_COUNTRY_METRICS_TABLE, countryMetricRows);
   await chInsertJSON(ASA_SLICE_SNAPSHOT_TABLE, [
     {
       app_key: params.appKey,
@@ -1263,6 +1490,15 @@ async function replaceAsaSlice(params: {
     );
     await chExec(
       `ALTER TABLE ${ASA_KEYWORD_METRICS_TABLE}
+        DELETE WHERE app_key = {app_key:String}
+          AND platform = {platform:String}
+          AND date = toDate({date:String})
+          AND snapshot_id != {snapshot_id:UInt64}
+        SETTINGS mutations_sync = 2`,
+      queryParams
+    );
+    await chExec(
+      `ALTER TABLE ${ASA_KEYWORD_COUNTRY_METRICS_TABLE}
         DELETE WHERE app_key = {app_key:String}
           AND platform = {platform:String}
           AND date = toDate({date:String})
@@ -1338,6 +1574,7 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
       const installRows = toAsaInstallRows(target.app, target.platform, installsCsv);
       const eventRows = toAsaEventRows(target.app, target.platform, eventsCsv);
       const metricRows = aggregateDailyMetrics(installRows, eventRows, masterMetrics);
+      const countryMetricRows = aggregateAsaCountryMetrics(installRows);
       const snapshotId = createAsaSnapshotId();
 
       await replaceAsaSlice({
@@ -1348,6 +1585,7 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
         installRows,
         eventRows,
         metricRows,
+        countryMetricRows,
         logger
       });
 

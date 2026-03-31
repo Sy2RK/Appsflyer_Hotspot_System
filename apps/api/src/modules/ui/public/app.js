@@ -7,6 +7,7 @@ const state = {
   budgetRows: [],
   asaKeywordRows: [],
   asaStageConfigs: [],
+  recommendationPolicies: [],
   bitableExportSources: [],
   runtimeSchedule: null,
   operationLogs: [],
@@ -186,6 +187,34 @@ const el = {
   budgetRecomputeProgressText: document.getElementById('budgetRecomputeProgressText'),
   budgetRecomputeProgressHint: document.getElementById('budgetRecomputeProgressHint'),
   budgetRuleHelpBtn: document.getElementById('budgetRuleHelpBtn'),
+  recommendationPolicyForm: document.getElementById('recommendationPolicyForm'),
+  recommendationPolicyAppSelect: document.getElementById('recommendationPolicyAppSelect'),
+  recommendationPolicyPlatformSelect: document.getElementById('recommendationPolicyPlatformSelect'),
+  recommendationPolicyEngineSelect: document.getElementById('recommendationPolicyEngineSelect'),
+  recommendationPolicyMetricFamilySelect: document.getElementById('recommendationPolicyMetricFamilySelect'),
+  recommendationPolicyDecisionModeSelect: document.getElementById('recommendationPolicyDecisionModeSelect'),
+  recommendationPolicyTrafficScopeSelect: document.getElementById('recommendationPolicyTrafficScopeSelect'),
+  recommendationPolicyMediaSourcesInput: document.getElementById('recommendationPolicyMediaSourcesInput'),
+  recommendationPolicyExcludeRecentInput: document.getElementById('recommendationPolicyExcludeRecentInput'),
+  recommendationPolicyDecisionWindowInput: document.getElementById('recommendationPolicyDecisionWindowInput'),
+  recommendationPolicyContextWindowsInput: document.getElementById('recommendationPolicyContextWindowsInput'),
+  recommendationPolicyEcpiMaxInput: document.getElementById('recommendationPolicyEcpiMaxInput'),
+  recommendationPolicyRoasMinInput: document.getElementById('recommendationPolicyRoasMinInput'),
+  recommendationPolicyRoasGoodInput: document.getElementById('recommendationPolicyRoasGoodInput'),
+  recommendationPolicyCppMaxInput: document.getElementById('recommendationPolicyCppMaxInput'),
+  recommendationPolicyCppPauseInput: document.getElementById('recommendationPolicyCppPauseInput'),
+  recommendationPolicyDailyCapInput: document.getElementById('recommendationPolicyDailyCapInput'),
+  recommendationPolicyLowSpendInput: document.getElementById('recommendationPolicyLowSpendInput'),
+  recommendationPolicyHighSpendInput: document.getElementById('recommendationPolicyHighSpendInput'),
+  recommendationPolicyTrendLookbackInput: document.getElementById('recommendationPolicyTrendLookbackInput'),
+  recommendationPolicyUptrendRatioInput: document.getElementById('recommendationPolicyUptrendRatioInput'),
+  recommendationPolicyCountryTargetsInput: document.getElementById('recommendationPolicyCountryTargetsInput'),
+  recommendationPolicyMediaTargetsInput: document.getElementById('recommendationPolicyMediaTargetsInput'),
+  recommendationPolicyPromptInput: document.getElementById('recommendationPolicyPromptInput'),
+  recommendationPolicyEnabledSelect: document.getElementById('recommendationPolicyEnabledSelect'),
+  recommendationPolicySaveBtn: document.getElementById('recommendationPolicySaveBtn'),
+  recommendationPolicyStatus: document.getElementById('recommendationPolicyStatus'),
+  recommendationPoliciesTableBody: document.getElementById('recommendationPoliciesTableBody'),
 
   asaStageForm: document.getElementById('asaStageForm'),
   asaStageAppSelect: document.getElementById('asaStageAppSelect'),
@@ -238,6 +267,7 @@ const el = {
   asaKeywordTrendCanvas: document.getElementById('asaKeywordTrendCanvas'),
   asaKeywordTooltip: document.getElementById('asaKeywordTooltip'),
   asaKeywordTrendLegend: document.getElementById('asaKeywordTrendLegend'),
+  asaKeywordActionItems: document.getElementById('asaKeywordActionItems'),
   asaKeywordTrendRaw: document.getElementById('asaKeywordTrendRaw'),
 
   budgetDetailModal: document.getElementById('budgetDetailModal'),
@@ -262,6 +292,7 @@ const el = {
   budgetDetailFeedbackSyncedAt: document.getElementById('budgetDetailFeedbackSyncedAt'),
   budgetDetailValidationResult: document.getElementById('budgetDetailValidationResult'),
   budgetDetailRisk: document.getElementById('budgetDetailRisk'),
+  budgetDetailActionItems: document.getElementById('budgetDetailActionItems'),
   budgetDetailChecklist: document.getElementById('budgetDetailChecklist'),
   budgetDetailPoints: document.getElementById('budgetDetailPoints'),
   budgetDetailRaw: document.getElementById('budgetDetailRaw'),
@@ -1165,6 +1196,9 @@ function populateAppSelects() {
   el.asaKeywordAppSelect.innerHTML = options;
   el.asaBriefAppSelect.innerHTML = options;
   el.asaStageAppSelect.innerHTML = options;
+  el.recommendationPolicyAppSelect.innerHTML = state.apps
+    .map((a) => `<option value="${a.app_key}">${escapeHtml(displayNameOfApp(a))} (${a.app_key})</option>`)
+    .join('');
 
   const metricOptions = state.apps
     .map((a) => `<option value="${a.app_key}">${escapeHtml(displayNameOfApp(a))} (${a.app_key})</option>`)
@@ -1176,6 +1210,9 @@ function populateAppSelects() {
   }
   if (state.apps[0] && !el.asaStageAppSelect.value) {
     el.asaStageAppSelect.value = state.apps[0].app_key;
+  }
+  if (state.apps[0] && !el.recommendationPolicyAppSelect.value) {
+    el.recommendationPolicyAppSelect.value = state.apps[0].app_key;
   }
 }
 
@@ -1256,6 +1293,236 @@ function syncAsaStageFormSelection() {
   }
   const row = (state.asaStageConfigs || []).find((item) => item.app_key === appKey && item.platform === platform);
   el.asaStageStageSelect.value = row?.stage || 'rising';
+}
+
+function recommendationPolicyKey(row) {
+  return [row.app_key, row.platform, row.engine].join('|');
+}
+
+function parsePolicyTargetsJson(text, fieldLabel) {
+  const raw = String(text || '').trim();
+  if (!raw) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('需要是 JSON 对象');
+    }
+    return parsed;
+  } catch (error) {
+    throw new Error(`${fieldLabel}格式无效：${error.message || '请检查 JSON'}`);
+  }
+}
+
+function resetRecommendationPolicyForm() {
+  if (!el.recommendationPolicyForm) {
+    return;
+  }
+  el.recommendationPolicyMetricFamilySelect.value = 'ecpi';
+  el.recommendationPolicyDecisionModeSelect.value = 'deterministic';
+  el.recommendationPolicyTrafficScopeSelect.value = 'all';
+  el.recommendationPolicyMediaSourcesInput.value = '';
+  el.recommendationPolicyExcludeRecentInput.value = '7';
+  el.recommendationPolicyDecisionWindowInput.value = '14';
+  el.recommendationPolicyContextWindowsInput.value = '7,14,21';
+  el.recommendationPolicyEcpiMaxInput.value = '';
+  el.recommendationPolicyRoasMinInput.value = '';
+  el.recommendationPolicyRoasGoodInput.value = '';
+  el.recommendationPolicyCppMaxInput.value = '';
+  el.recommendationPolicyCppPauseInput.value = '';
+  el.recommendationPolicyDailyCapInput.value = '';
+  el.recommendationPolicyLowSpendInput.value = '10';
+  el.recommendationPolicyHighSpendInput.value = '100';
+  el.recommendationPolicyTrendLookbackInput.value = '7';
+  el.recommendationPolicyUptrendRatioInput.value = '0.15';
+  el.recommendationPolicyCountryTargetsInput.value = '';
+  el.recommendationPolicyMediaTargetsInput.value = '';
+  el.recommendationPolicyPromptInput.value = '';
+  el.recommendationPolicyEnabledSelect.value = 'true';
+}
+
+function applyRecommendationPolicyToForm(row) {
+  const rule = safeJsonParse(row.rule_json, {});
+  const maturity = rule.maturity_window || {};
+  const targets = rule.targets || {};
+  const globalTargets = targets.global_targets || {};
+  const spendPolicy = rule.spend_policy || {};
+  el.recommendationPolicyAppSelect.value = row.app_key || '';
+  el.recommendationPolicyPlatformSelect.value = row.platform || 'ios';
+  el.recommendationPolicyEngineSelect.value = row.engine || 'budget';
+  el.recommendationPolicyMetricFamilySelect.value = rule.metric_family || 'ecpi';
+  el.recommendationPolicyDecisionModeSelect.value = rule.decision_mode || 'deterministic';
+  el.recommendationPolicyTrafficScopeSelect.value = rule.traffic_scope || 'all';
+  el.recommendationPolicyMediaSourcesInput.value = Array.isArray(rule.media_sources) ? rule.media_sources.join(', ') : '';
+  el.recommendationPolicyExcludeRecentInput.value = String(maturity.exclude_recent_days ?? 7);
+  el.recommendationPolicyDecisionWindowInput.value = String(maturity.decision_window_days ?? 14);
+  el.recommendationPolicyContextWindowsInput.value = Array.isArray(maturity.context_window_days)
+    ? maturity.context_window_days.join(',')
+    : '7,14,21';
+  el.recommendationPolicyEcpiMaxInput.value = globalTargets.ecpi_max == null ? '' : String(globalTargets.ecpi_max);
+  el.recommendationPolicyRoasMinInput.value = globalTargets.roas_min == null ? '' : String(globalTargets.roas_min);
+  el.recommendationPolicyRoasGoodInput.value = globalTargets.roas_good == null ? '' : String(globalTargets.roas_good);
+  el.recommendationPolicyCppMaxInput.value = globalTargets.cpp_max == null ? '' : String(globalTargets.cpp_max);
+  el.recommendationPolicyCppPauseInput.value =
+    globalTargets.cpp_pause_threshold == null ? '' : String(globalTargets.cpp_pause_threshold);
+  el.recommendationPolicyDailyCapInput.value =
+    spendPolicy.daily_budget_cap_usd == null ? '' : String(spendPolicy.daily_budget_cap_usd);
+  el.recommendationPolicyLowSpendInput.value =
+    spendPolicy.low_spend_threshold_usd == null ? '' : String(spendPolicy.low_spend_threshold_usd);
+  el.recommendationPolicyHighSpendInput.value =
+    spendPolicy.high_spend_threshold_usd == null ? '' : String(spendPolicy.high_spend_threshold_usd);
+  el.recommendationPolicyTrendLookbackInput.value = String(spendPolicy.trend_lookback_days ?? 7);
+  el.recommendationPolicyUptrendRatioInput.value = String(spendPolicy.uptrend_min_ratio ?? 0.15);
+  el.recommendationPolicyCountryTargetsInput.value = JSON.stringify(targets.country_targets || {}, null, 2);
+  el.recommendationPolicyMediaTargetsInput.value = JSON.stringify(targets.media_targets || {}, null, 2);
+  el.recommendationPolicyPromptInput.value = String(row.manual_prompt_markdown || '');
+  el.recommendationPolicyEnabledSelect.value = row.enabled === false ? 'false' : 'true';
+}
+
+function syncRecommendationPolicyFormSelection() {
+  if (!el.recommendationPolicyForm) {
+    return;
+  }
+  const appKey = String(el.recommendationPolicyAppSelect.value || '').trim();
+  const platform = String(el.recommendationPolicyPlatformSelect.value || '').trim().toLowerCase();
+  const engine = String(el.recommendationPolicyEngineSelect.value || 'budget').trim().toLowerCase();
+  if (!appKey || !platform || !engine) {
+    return;
+  }
+  const row = (state.recommendationPolicies || []).find(
+    (item) => item.app_key === appKey && item.platform === platform && item.engine === engine
+  );
+  if (row) {
+    applyRecommendationPolicyToForm(row);
+    return;
+  }
+  resetRecommendationPolicyForm();
+  el.recommendationPolicyAppSelect.value = appKey;
+  el.recommendationPolicyPlatformSelect.value = platform;
+  el.recommendationPolicyEngineSelect.value = engine;
+}
+
+function renderRecommendationPolicies() {
+  if (!el.recommendationPoliciesTableBody) {
+    return;
+  }
+  const rows = Array.isArray(state.recommendationPolicies) ? state.recommendationPolicies : [];
+  if (rows.length === 0) {
+    el.recommendationPoliciesTableBody.innerHTML =
+      '<tr><td class="table-empty" colspan="8">当前还没有应用级策略，保存后会显示在这里。</td></tr>';
+    return;
+  }
+  el.recommendationPoliciesTableBody.innerHTML = rows
+    .map((row) => {
+      const support = row.effective_support || {};
+      const notes = Array.isArray(support.notes) ? support.notes : [];
+      return `
+        <tr>
+          <td>${escapeHtml(productViewName(row.app_key, row.platform || 'unknown'))}</td>
+          <td>${escapeHtml(platformLabel(row.platform || 'unknown'))}</td>
+          <td>${escapeHtml(String(row.engine || '-').toUpperCase())}</td>
+          <td>${escapeHtml(String(row.rule_json?.metric_family || '-'))}</td>
+          <td>${escapeHtml(String(row.rule_json?.traffic_scope || '-'))}</td>
+          <td class="table-cell-wrap">${escapeHtml(`${support.automation_level || 'partial'}${notes[0] ? ` · ${notes[0]}` : ''}`)}</td>
+          <td>${escapeHtml(fmtTime(row.updated_at))}</td>
+          <td>
+            <div class="table-actions">
+              <button class="btn btn-ghost btn-compact" type="button" data-policy-key="${escapeHtml(recommendationPolicyKey(row))}">编辑</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    })
+    .join('');
+}
+
+async function loadRecommendationPolicies() {
+  const body = await api('/api/recommendation-policies');
+  state.recommendationPolicies = Array.isArray(body.data) ? body.data : [];
+  renderRecommendationPolicies();
+  syncRecommendationPolicyFormSelection();
+}
+
+async function saveRecommendationPolicy(event) {
+  event.preventDefault();
+  const appKey = String(el.recommendationPolicyAppSelect.value || '').trim();
+  const platform = String(el.recommendationPolicyPlatformSelect.value || '').trim().toLowerCase();
+  const engine = String(el.recommendationPolicyEngineSelect.value || '').trim().toLowerCase();
+  if (!appKey || !platform || !engine) {
+    throw new Error('请先选择应用、平台和引擎');
+  }
+
+  const ruleJson = {
+    metric_family: String(el.recommendationPolicyMetricFamilySelect.value || 'ecpi').trim(),
+    decision_mode: String(el.recommendationPolicyDecisionModeSelect.value || 'deterministic').trim(),
+    traffic_scope: String(el.recommendationPolicyTrafficScopeSelect.value || 'all').trim(),
+    media_sources: String(el.recommendationPolicyMediaSourcesInput.value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean),
+    maturity_window: {
+      exclude_recent_days: Number(el.recommendationPolicyExcludeRecentInput.value || 7),
+      decision_window_days: Number(el.recommendationPolicyDecisionWindowInput.value || 14),
+      context_window_days: String(el.recommendationPolicyContextWindowsInput.value || '7,14,21')
+        .split(',')
+        .map((item) => Number(item.trim()))
+        .filter((item) => Number.isFinite(item) && item > 0)
+    },
+    targets: {
+      global_targets: {
+        ecpi_max: el.recommendationPolicyEcpiMaxInput.value ? Number(el.recommendationPolicyEcpiMaxInput.value) : undefined,
+        roas_min: el.recommendationPolicyRoasMinInput.value ? Number(el.recommendationPolicyRoasMinInput.value) : undefined,
+        roas_good: el.recommendationPolicyRoasGoodInput.value ? Number(el.recommendationPolicyRoasGoodInput.value) : undefined,
+        cpp_max: el.recommendationPolicyCppMaxInput.value ? Number(el.recommendationPolicyCppMaxInput.value) : undefined,
+        cpp_pause_threshold: el.recommendationPolicyCppPauseInput.value ? Number(el.recommendationPolicyCppPauseInput.value) : undefined
+      },
+      country_targets: parsePolicyTargetsJson(el.recommendationPolicyCountryTargetsInput.value, '国家目标 JSON'),
+      media_targets: parsePolicyTargetsJson(el.recommendationPolicyMediaTargetsInput.value, '媒体目标 JSON')
+    },
+    spend_policy: {
+      daily_budget_cap_usd: el.recommendationPolicyDailyCapInput.value ? Number(el.recommendationPolicyDailyCapInput.value) : undefined,
+      low_spend_threshold_usd: el.recommendationPolicyLowSpendInput.value ? Number(el.recommendationPolicyLowSpendInput.value) : undefined,
+      high_spend_threshold_usd: el.recommendationPolicyHighSpendInput.value ? Number(el.recommendationPolicyHighSpendInput.value) : undefined,
+      trend_lookback_days: Number(el.recommendationPolicyTrendLookbackInput.value || 7),
+      uptrend_min_ratio: Number(el.recommendationPolicyUptrendRatioInput.value || 0.15)
+    }
+  };
+
+  await api('/api/recommendation-policies', {
+    method: 'POST',
+    body: JSON.stringify({
+      appKey,
+      platform,
+      engine,
+      enabled: el.recommendationPolicyEnabledSelect.value !== 'false',
+      ruleJson,
+      manualPromptMarkdown: String(el.recommendationPolicyPromptInput.value || '')
+    })
+  });
+  if (el.recommendationPolicyStatus) {
+    el.recommendationPolicyStatus.textContent = `${productViewName(appKey, platform)} / ${engine.toUpperCase()} 策略已保存。`;
+  }
+  showToast(`已保存 ${productViewName(appKey, platform)} 的应用级策略`);
+  await loadRecommendationPolicies();
+}
+
+async function handleRecommendationPoliciesTableClick(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) {
+    return;
+  }
+  const policyKey = String(target.dataset.policyKey || '').trim();
+  if (!policyKey) {
+    return;
+  }
+  const row = (state.recommendationPolicies || []).find((item) => recommendationPolicyKey(item) === policyKey);
+  if (!row) {
+    return;
+  }
+  applyRecommendationPolicyToForm(row);
+  showToast(`正在编辑 ${productViewName(row.app_key, row.platform || 'unknown')} / ${String(row.engine || '').toUpperCase()} 策略`);
+  scrollToSection('section-budget', true);
 }
 
 async function loadApps() {
@@ -2907,6 +3174,7 @@ async function changeBudgetPage(delta) {
 function openBudgetDetail(row) {
   state.activeBudgetDetail = row;
   const llmSummary = safeJsonParse(row.llm_summary, {});
+  const actionItems = Array.isArray(llmSummary.action_items) ? llmSummary.action_items : [];
   const checklist = Array.isArray(llmSummary.checklist) ? llmSummary.checklist : [];
   const points = Array.isArray(llmSummary.explanation_points) ? llmSummary.explanation_points : [];
 
@@ -2929,6 +3197,7 @@ function openBudgetDetail(row) {
   el.budgetDetailFeedbackSyncedAt.textContent = fmtTime(row.feedback_synced_at);
   el.budgetDetailValidationResult.textContent = String(row.validation_result || '-');
   el.budgetDetailRisk.textContent = String(llmSummary.risk_level || '-');
+  el.budgetDetailActionItems.innerHTML = actionItems.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('');
   el.budgetDetailChecklist.innerHTML = checklist.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('');
   el.budgetDetailPoints.innerHTML = points.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('');
   el.budgetDetailRaw.textContent = JSON.stringify(llmSummary, null, 2);
@@ -3267,18 +3536,22 @@ async function openAsaKeywordDetail(row) {
   }));
   drawLineChart(el.asaKeywordTrendCanvas, chartRows);
   const llmSummary = safeJsonParse(row.llm_summary, {});
+  const actionItems = Array.isArray(llmSummary.action_items) ? llmSummary.action_items : [];
   el.asaKeywordDrawerMeta.textContent =
     `产品视图 ${productViewName(row.app_key, row.platform || 'unknown')} · 应用标识 ${row.app_key} · 平台 ${platformLabel(row.platform || 'unknown')} · 关键词 ${row.keyword} · 广告系列 ${row.campaign} · 广告组 ${row.adset || '-'} · 当前阶段 ${asaStageLabel(row.current_stage)} · 建议指标 ${asaPrimaryMetricLabel(row.primary_metric)}`;
   const last = trendRows.at(-1);
   el.asaKeywordTrendLegend.textContent =
     `数据点 ${trendRows.length} · 最新安装量 ${toFixed2(last?.installs)} · 最新 eCPI ${formatAsaEcpiDisplayWithReason(last?.ecpi, last?.total_cost, last?.installs)} · 参考 eCPI $${toFixed2(last?.average_ecpi || 0)} · 最新 D7 ROAS ${formatAsaD7RoasDisplayWithReason(last?.d7_roas, last?.total_cost, last?.revenue_d7)}`;
+  el.asaKeywordActionItems.innerHTML = actionItems.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('');
   el.asaKeywordTrendRaw.textContent = JSON.stringify(
     {
       recommendation: {
         action: row.recommendation_action,
         status: row.recommendation_status,
         summary: llmSummary.summary_cn || '',
-        explanation_points: llmSummary.explanation_points || []
+        explanation_points: llmSummary.explanation_points || [],
+        action_items: actionItems,
+        scenario_tags: llmSummary.scenario_tags || []
       },
       note: 'ASA 关键词成本来自 AppsFlyer 的关键词级成本接口。eCPI 显示为“—”表示有花费但没有安装；D7 ROAS 显示 0.00x 表示当前未观察到 D7 收入。',
       trend: trendRows
@@ -3567,6 +3840,7 @@ async function refreshAll() {
   state.keywordPage = 1;
   await safeRefresh('关键词生命周期', () => loadKeywordLifecycle(undefined, 1));
 
+  await safeRefresh('应用级策略', () => loadRecommendationPolicies());
   state.budgetPage = 1;
   await safeRefresh('预算建议', () => loadBudgetRecommendations(undefined, 1));
   await safeRefresh('预算建议进度', () => loadBudgetRecomputeStatus());
@@ -3590,6 +3864,7 @@ async function bootstrap() {
   setDefaultAsaDateRange();
   setDefaultDailyBriefDate();
   setDefaultBitableExportDate();
+  resetRecommendationPolicyForm();
   if (el.runtimePullTimeInput) {
     el.runtimePullTimeInput.value = '09:00';
   }
@@ -3778,6 +4053,16 @@ el.budgetRecomputeBtn.addEventListener('click', () =>
 );
 el.closeBudgetDetailModalBtn.addEventListener('click', () => setBudgetDetailModalOpen(false));
 el.budgetDetailModalBackdrop.addEventListener('click', () => setBudgetDetailModalOpen(false));
+
+el.recommendationPolicyForm?.addEventListener('submit', (e) =>
+  saveRecommendationPolicy(e).catch((err) => showToast(err.message || '应用级策略保存失败', true))
+);
+el.recommendationPolicyAppSelect?.addEventListener('change', syncRecommendationPolicyFormSelection);
+el.recommendationPolicyPlatformSelect?.addEventListener('change', syncRecommendationPolicyFormSelection);
+el.recommendationPolicyEngineSelect?.addEventListener('change', syncRecommendationPolicyFormSelection);
+el.recommendationPoliciesTableBody?.addEventListener('click', (e) =>
+  handleRecommendationPoliciesTableClick(e).catch((err) => showToast(err.message || '策略加载失败', true))
+);
 
 el.runtimeScheduleForm?.addEventListener('submit', (e) =>
   saveRuntimeSchedule(e).catch((err) => showToast(err.message || '调度时间保存失败', true))

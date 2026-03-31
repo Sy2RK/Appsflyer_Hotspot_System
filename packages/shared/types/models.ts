@@ -5,6 +5,7 @@ export interface NormalizedEvent {
   app_key: string;
   dataset: string;
   event_time: Date;
+  install_time: Date;
   ingest_time: Date;
   event_name: string;
   event_type: EventType;
@@ -189,12 +190,89 @@ export interface KeywordLifecycleStateRow {
 export type BudgetAction = 'increase' | 'decrease' | 'hold' | 'pause';
 export type BudgetRecommendationStatus = 'pending' | 'applied' | 'rejected' | 'expired';
 export type RecommendationType = 'budget' | 'asa_keyword';
+export type RecommendationPolicyEngine = 'budget' | 'asa';
+export type RecommendationMetricFamily = 'ecpi' | 'd7_roas_cpp' | 'relative_compare';
+export type RecommendationDecisionMode = 'deterministic' | 'hybrid';
+export type RecommendationTrafficScope = 'all' | 'asa_only' | 'media_sources';
+export type RecommendationCompareGranularity = 'campaign';
+
+export interface RecommendationThresholdTargets {
+  ecpi_max?: number;
+  roas_min?: number;
+  roas_good?: number;
+  cpp_max?: number;
+  cpp_pause_threshold?: number;
+}
+
+export interface RecommendationPolicyMaturityWindow {
+  exclude_recent_days: number;
+  decision_window_days: number;
+  context_window_days: number[];
+}
+
+export interface RecommendationPolicyTargetConfig {
+  global_targets: RecommendationThresholdTargets;
+  country_targets: Record<string, RecommendationThresholdTargets>;
+  media_targets: Record<string, RecommendationThresholdTargets>;
+}
+
+export interface RecommendationPolicySpendConfig {
+  daily_budget_cap_usd?: number;
+  low_spend_threshold_usd?: number;
+  high_spend_threshold_usd?: number;
+  trend_lookback_days: number;
+  uptrend_min_ratio: number;
+}
+
+export interface RecommendationPolicyScenarioRule {
+  enabled: boolean;
+  action_tags: string[];
+}
+
+export interface RecommendationPolicyActionPlaybook {
+  low_spend_signal_weak: RecommendationPolicyScenarioRule;
+  high_spend_uptrend_expandable: RecommendationPolicyScenarioRule;
+}
+
+export interface RecommendationPolicyRelativeCompare {
+  compare_granularity: RecommendationCompareGranularity;
+  metrics: Array<'ctr' | 'cvr' | 'cpi' | 'roas'>;
+  min_peer_count: number;
+  underperform_ratio: number;
+  min_failed_metrics: number;
+}
+
+export interface RecommendationPolicyRuleJson {
+  metric_family: RecommendationMetricFamily;
+  decision_mode: RecommendationDecisionMode;
+  traffic_scope: RecommendationTrafficScope;
+  media_sources: string[];
+  maturity_window: RecommendationPolicyMaturityWindow;
+  targets: RecommendationPolicyTargetConfig;
+  spend_policy: RecommendationPolicySpendConfig;
+  action_playbook: RecommendationPolicyActionPlaybook;
+  relative_compare: RecommendationPolicyRelativeCompare;
+}
+
+export interface RecommendationPolicyConfigRecord {
+  id: number;
+  app_key: string;
+  platform: string;
+  engine: RecommendationPolicyEngine;
+  enabled: boolean;
+  rule_json: RecommendationPolicyRuleJson;
+  manual_prompt_markdown: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface LlmExplainResult {
   summary_cn: string;
   risk_level: 'low' | 'medium' | 'high';
   checklist: string[];
   explanation_points: string[];
+  action_items: string[];
+  scenario_tags: string[];
 }
 
 export interface BudgetRecommendationRow {

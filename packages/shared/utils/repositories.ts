@@ -19,6 +19,8 @@ import {
   OperationLogRecord,
   ProductStage,
   ProductStageConfigRecord,
+  RecommendationPolicyConfigRecord,
+  RecommendationPolicyEngine,
   RecommendationExecutionFeedbackRecord,
   RecommendationType,
   RuntimeScheduleConfigRecord
@@ -228,6 +230,7 @@ let ensureRecommendationExecutionFeedbacksSchemaPromise: Promise<void> | null = 
 let ensureFeedbackSkillVersionsSchemaPromise: Promise<void> | null = null;
 let ensurePullReportReadinessSchemaPromise: Promise<void> | null = null;
 let ensureScheduledWorkerRunsSchemaPromise: Promise<void> | null = null;
+let ensureRecommendationPolicyConfigsSchemaPromise: Promise<void> | null = null;
 
 async function ensurePullReportReadinessSchema(): Promise<void> {
   if (!ensurePullReportReadinessSchemaPromise) {
@@ -287,6 +290,35 @@ async function ensureScheduledWorkerRunsSchema(): Promise<void> {
       });
   }
   await ensureScheduledWorkerRunsSchemaPromise;
+}
+
+async function ensureRecommendationPolicyConfigsSchema(): Promise<void> {
+  if (!ensureRecommendationPolicyConfigsSchemaPromise) {
+    ensureRecommendationPolicyConfigsSchemaPromise = (async () => {
+      await pgQuery(`CREATE TABLE IF NOT EXISTS recommendation_policy_configs (
+        id BIGSERIAL PRIMARY KEY,
+        app_key TEXT NOT NULL REFERENCES apps(app_key) ON DELETE CASCADE,
+        platform TEXT NOT NULL DEFAULT 'unknown',
+        engine TEXT NOT NULL CHECK (engine IN ('budget', 'asa')),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        rule_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        manual_prompt_markdown TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (app_key, platform, engine)
+      )`);
+      await pgQuery(
+        `CREATE INDEX IF NOT EXISTS idx_recommendation_policy_configs_lookup
+          ON recommendation_policy_configs (engine, enabled, app_key, platform)`
+      );
+    })()
+      .then(() => undefined)
+      .catch((error) => {
+        ensureRecommendationPolicyConfigsSchemaPromise = null;
+        throw error;
+      });
+  }
+  await ensureRecommendationPolicyConfigsSchemaPromise;
 }
 
 async function ensureBitableExportConfigSchema(): Promise<void> {
@@ -2214,6 +2246,96 @@ export async function getLatestOperationLogEntry(
   );
 
   return result.rows[0] ?? null;
+}
+
+export interface RecommendationPolicyConfigFilter {
+  appKey?: string;
+  platform?: string;
+  engine?: RecommendationPolicyEngine;
+  enabled?: boolean;
+}
+
+export async function listRecommendationPolicyConfigs(
+  filter: RecommendationPolicyConfigFilter = {}
+): Promise<RecommendationPolicyConfigRecord[]> {
+  await ensureRecommendationPolicyConfigsSchema();
+  const values: unknown[] = [];
+  const clauses: string[] = [];
+
+  if (filter.appKey) {
+    values.push(filter.appKey);
+    clauses.push(`app_key = $${values.length}`);
+  }
+  if (filter.platform) {
+    values.push(filter.platform);
+    clauses.push(`platform = $${values.length}`);
+  }
+  if (filter.engine) {
+    values.push(filter.engine);
+    clauses.push(`engine = $${values.length}`);
+  }
+  if (typeof filter.enabled === 'boolean') {
+    values.push(filter.enabled);
+    clauses.push(`enabled = $${values.length}`);
+  }
+
+  const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+  const result = await pgQuery<RecommendationPolicyConfigRecord>(
+    `SELECT id, app_key, platform, engine, enabled, rule_json, manual_prompt_markdown, created_at, updated_at
+       FROM recommendation_policy_configs
+       ${where}
+      ORDER BY app_key ASC, platform ASC, engine ASC, updated_at DESC`,
+    values
+  );
+  return result.rows;
+}
+
+export async function getRecommendationPolicyConfig(
+  appKey: string,
+  platform: string,
+  engine: RecommendationPolicyEngine
+): Promise<RecommendationPolicyConfigRecord | null> {
+  await ensureRecommendationPolicyConfigsSchema();
+  const result = await pgQuery<RecommendationPolicyConfigRecord>(
+    `SELECT id, app_key, platform, engine, enabled, rule_json, manual_prompt_markdown, created_at, updated_at
+       FROM recommendation_policy_configs
+      WHERE app_key = $1
+        AND platform = $2
+        AND engine = $3
+      LIMIT 1`,
+    [appKey, platform, engine]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function upsertRecommendationPolicyConfig(input: {
+  app_key: string;
+  platform: string;
+  engine: RecommendationPolicyEngine;
+  enabled?: boolean;
+  rule_json: Record<string, unknown>;
+  manual_prompt_markdown?: string | null;
+}): Promise<RecommendationPolicyConfigRecord> {
+  await ensureRecommendationPolicyConfigsSchema();
+  const result = await pgQuery<RecommendationPolicyConfigRecord>(
+    `INSERT INTO recommendation_policy_configs (app_key, platform, engine, enabled, rule_json, manual_prompt_markdown)
+     VALUES ($1, $2, $3, COALESCE($4, TRUE), $5::jsonb, NULLIF($6, ''))
+     ON CONFLICT (app_key, platform, engine) DO UPDATE SET
+       enabled = EXCLUDED.enabled,
+       rule_json = EXCLUDED.rule_json,
+       manual_prompt_markdown = EXCLUDED.manual_prompt_markdown,
+       updated_at = NOW()
+     RETURNING id, app_key, platform, engine, enabled, rule_json, manual_prompt_markdown, created_at, updated_at`,
+    [
+      input.app_key,
+      input.platform,
+      input.engine,
+      input.enabled ?? true,
+      JSON.stringify(input.rule_json ?? {}),
+      input.manual_prompt_markdown ?? null
+    ]
+  );
+  return result.rows[0];
 }
 
 export async function listProductStageConfigs(): Promise<ProductStageConfigRecord[]> {
