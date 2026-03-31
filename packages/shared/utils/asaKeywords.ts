@@ -1361,12 +1361,12 @@ export async function queryAsaKeywordTrend(
 }
 
 function statusLabel(status: string | null | undefined): string {
-  if (status === 'pending') return '待纳入简报';
-  if (status === 'sent') return '已纳入简报';
+  if (status === 'pending') return '本次新增建议';
+  if (status === 'sent') return '历史已发建议';
   if (status === 'applied') return '已执行';
   if (status === 'rejected') return '已拒绝';
   if (status === 'expired') return '已过期';
-  return '待纳入简报';
+  return '本次新增建议';
 }
 
 function stageTitle(stage: ProductStage | 'mixed'): string {

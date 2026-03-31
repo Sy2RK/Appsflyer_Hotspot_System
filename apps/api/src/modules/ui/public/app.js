@@ -485,8 +485,8 @@ function asaStageLabel(stage) {
 
 function asaRecommendationStatusLabel(status) {
   const mapping = {
-    pending: '待纳入简报',
-    sent: '已纳入简报',
+    pending: '本次新增建议',
+    sent: '历史已发建议',
     applied: '已执行',
     rejected: '已拒绝',
     expired: '已过期'
