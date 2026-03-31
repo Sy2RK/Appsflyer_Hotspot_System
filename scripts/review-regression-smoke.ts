@@ -1,14 +1,23 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
-import recommendationPoliciesRouter from '../apps/api/src/modules/recommendationPolicies/recommendationPolicies.routes.js';
+import { createRecommendationPoliciesRouter } from '../apps/api/src/modules/recommendationPolicies/recommendationPolicies.routes.js';
+import { aggregateBudgetCountryWindowFacts } from '../packages/shared/utils/budgetAdvisor.js';
 import {
   classifyAppsflyerHttpFailure,
   classifyAppsflyerTransportFailure
 } from '../packages/shared/utils/appsflyerRequest.js';
 import { resolveManualBitableExportHttpResult, type BitableExportRunResult } from '../packages/shared/utils/bitableExport.js';
 import { shouldUpsertFeedbackRow } from '../packages/shared/utils/recommendationFeedback.js';
-import { buildAsaContextWindow, buildAsaDecisionWindow } from '../packages/shared/utils/asaKeywords.js';
+import {
+  buildAsaContextWindow,
+  buildAsaDecisionWindow,
+  buildAsaRelativeCompareDecision
+} from '../packages/shared/utils/asaKeywords.js';
+import {
+  didKeywordEngineCycleComplete,
+  resolveKeywordEngineBackfillDays
+} from '../packages/shared/utils/keywordEngineWorkerPolicy.js';
 import {
   evaluateRelativeCompareMetrics,
   RecommendationPolicyValidationError,
@@ -85,12 +94,13 @@ function buildScheduledWorkerRun(
   };
 }
 
-async function withRecommendationPoliciesApi<T>(
+async function withHttpApi<T>(
+  router: express.Router,
   run: (baseUrl: string) => Promise<T>
 ): Promise<T> {
   const app = express();
   app.use(express.json());
-  app.use(recommendationPoliciesRouter);
+  app.use(router);
 
   const server = await new Promise<import('node:http').Server>((resolve) => {
     const instance = app.listen(0, () => resolve(instance));
@@ -341,6 +351,72 @@ async function main(): Promise<void> {
     from: '2026-03-11',
     to: '2026-03-31'
   });
+  const asaRelativeIncrease = buildAsaRelativeCompareDecision({
+    stage: 'rising',
+    currentEcpi: 2,
+    currentD7Roas: 0.8,
+    peerEcpi: [3, 3.2, 3.5, 3.6],
+    peerRoas: [0.35, 0.4, 0.45, 0.5],
+    policy: validatedPolicy
+  });
+  assert.equal(asaRelativeIncrease.action, 'increase');
+  assert.deepEqual(asaRelativeIncrease.strongMetrics.sort(), ['cpi', 'roas']);
+
+  const countryWindowFacts = aggregateBudgetCountryWindowFacts(
+    [
+      {
+        date: '2026-03-08',
+        platform: 'ios',
+        media_source: 'Apple Search Ads',
+        keyword: 'demo',
+        match_type: 'exact',
+        country: 'US',
+        installs: 4,
+        total_cost: 8
+      },
+      {
+        date: '2026-03-12',
+        platform: 'ios',
+        media_source: 'Apple Search Ads',
+        keyword: 'demo',
+        match_type: 'exact',
+        country: 'US',
+        installs: 2,
+        total_cost: 10
+      },
+      {
+        date: '2026-03-14',
+        platform: 'ios',
+        media_source: 'Apple Search Ads',
+        keyword: 'demo',
+        match_type: 'exact',
+        country: 'BR',
+        installs: 5,
+        total_cost: 5
+      }
+    ],
+    '2026-03-10',
+    '2026-03-15'
+  );
+  assert.deepEqual(countryWindowFacts, [
+    {
+      country: 'US',
+      installs: 2,
+      total_cost: 10,
+      current_ecpi: 5
+    },
+    {
+      country: 'BR',
+      installs: 5,
+      total_cost: 5,
+      current_ecpi: 1
+    }
+  ]);
+
+  assert.equal(resolveKeywordEngineBackfillDays(false, 30, 3), 30);
+  assert.equal(resolveKeywordEngineBackfillDays(true, 30, 3), 3);
+  assert.equal(didKeywordEngineCycleComplete({ failed_count: 0 }), true);
+  assert.equal(didKeywordEngineCycleComplete({ failed_count: 1 }), false);
 
   const supportSummary = summarizeRecommendationPolicySupport('budget', validatedPolicy);
   assert.equal(supportSummary.automation_level, 'partial');
@@ -374,7 +450,35 @@ async function main(): Promise<void> {
       error instanceof RecommendationPolicyValidationError && error.code === 'invalid_media_sources'
   );
 
-  await withRecommendationPoliciesApi(async (baseUrl) => {
+  const mockedPolicyRouter = createRecommendationPoliciesRouter({
+    getAppByKey: async () =>
+      ({
+        id: 1,
+        app_key: 'demo',
+        display_name: 'Demo',
+        ios_display_name: null,
+        android_display_name: null,
+        pull_app_id: null,
+        ios_pull_app_id: null,
+        android_pull_app_id: null,
+        dataset: null,
+        push_auth_token: null,
+        timezone: 'Asia/Shanghai',
+        notify_webhook_url: null,
+        notify_feishu_app_id: null,
+        notify_feishu_app_secret: null,
+        notify_feishu_chat_id: null,
+        created_at: '2026-03-01T00:00:00.000Z',
+        updated_at: '2026-03-01T00:00:00.000Z'
+      }) as never,
+    listRecommendationPolicyConfigs: async () => [],
+    upsertRecommendationPolicyConfig: (async () => {
+      throw new Error('upsert_should_not_be_called');
+    }) as never,
+    writeOperationLog: async () => undefined
+  } as never);
+
+  await withHttpApi(mockedPolicyRouter, async (baseUrl) => {
     const invalidPlatformResponse = await fetch(`${baseUrl}/api/recommendation-policies`, {
       method: 'POST',
       headers: {
@@ -419,6 +523,39 @@ async function main(): Promise<void> {
     assert.equal(invalidRulePayload.ok, false);
     assert.equal(invalidRulePayload.error, 'invalid_rule_json');
     assert.match(invalidRulePayload.message, /unexpected_field/);
+  });
+
+  const missingAppRouter = createRecommendationPoliciesRouter({
+    getAppByKey: async () => null,
+    listRecommendationPolicyConfigs: async () => [],
+    upsertRecommendationPolicyConfig: (async () => {
+      throw new Error('upsert_should_not_be_called');
+    }) as never,
+    writeOperationLog: async () => undefined
+  } as never);
+
+  await withHttpApi(missingAppRouter, async (baseUrl) => {
+    const appNotFoundResponse = await fetch(`${baseUrl}/api/recommendation-policies`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        appKey: 'missing-app',
+        platform: 'ios',
+        engine: 'budget',
+        ruleJson: {
+          metric_family: 'ecpi',
+          decision_mode: 'deterministic',
+          traffic_scope: 'all'
+        }
+      })
+    });
+    assert.equal(appNotFoundResponse.status, 404);
+    assert.deepEqual(await appNotFoundResponse.json(), {
+      ok: false,
+      error: 'app_not_found'
+    });
   });
 
   console.log('review_regression_smoke_passed');

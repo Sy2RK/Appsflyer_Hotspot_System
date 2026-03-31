@@ -1,5 +1,6 @@
 import {
   getScheduledWorkerRun,
+  hasCompletedScheduledWorkerRun,
   markScheduledWorkerRunCompleted,
   markScheduledWorkerRunFailed,
   tryStartScheduledWorkerRunAttempt,
@@ -88,6 +89,10 @@ export async function getScheduledWorkerRunDecision(
 ): Promise<ScheduledWorkerRunDecision> {
   const record = await getScheduledWorkerRun(workerName, runMarker);
   return evaluateScheduledWorkerRunDecision(record, policy, now);
+}
+
+export async function hasScheduledWorkerCompletedAnyRun(workerName: string): Promise<boolean> {
+  return hasCompletedScheduledWorkerRun(workerName);
 }
 
 export async function tryClaimScheduledWorkerRunAttempt(

@@ -96,15 +96,21 @@ interface BudgetValueFact {
   d7_roas: number;
 }
 
-interface BudgetCountryFact {
+export interface BudgetCountryFact {
+  date: string;
   platform: string;
   media_source: string;
   keyword: string;
   match_type: string;
   country: string;
-  last3_installs: number;
-  last7_installs: number;
-  last7_cost: number;
+  installs: number;
+  total_cost: number;
+}
+
+export interface BudgetCountryWindowMetric {
+  country: string;
+  installs: number;
+  total_cost: number;
   current_ecpi: number;
 }
 
@@ -540,52 +546,60 @@ async function queryBudgetKeywordSpendSeries(
   return result;
 }
 
-async function queryBudgetCountryFacts(appKey: string, reportDate: string): Promise<BudgetCountryFact[]> {
-  const last3From = shiftDateString(reportDate, -2);
-  const last7From = shiftDateString(reportDate, -6);
+export function aggregateBudgetCountryWindowFacts(
+  rows: BudgetCountryFact[],
+  from: string,
+  to: string
+): BudgetCountryWindowMetric[] {
+  const byCountry = new Map<string, { installs: number; total_cost: number }>();
+  for (const row of rows) {
+    if (row.date < from || row.date > to) {
+      continue;
+    }
+    const bucket = byCountry.get(row.country) ?? { installs: 0, total_cost: 0 };
+    bucket.installs += row.installs;
+    bucket.total_cost += row.total_cost;
+    byCountry.set(row.country, bucket);
+  }
+  return Array.from(byCountry.entries()).map(([country, stats]) => ({
+    country,
+    installs: stats.installs,
+    total_cost: stats.total_cost,
+    current_ecpi: stats.installs > 0 ? stats.total_cost / stats.installs : 0
+  }));
+}
+
+async function queryBudgetCountryFacts(appKey: string, from: string, to: string): Promise<BudgetCountryFact[]> {
   const rows = await chQuery<Record<string, unknown>>(
     `SELECT
+        toString(date) AS date,
         platform,
         media_source,
         keyword,
         match_type,
         country,
-        sumIf(toFloat64(installs), date >= toDate({last3_from:String}) AND date <= toDate({report_date:String})) AS last3_installs,
-        sumIf(toFloat64(installs), date >= toDate({last7_from:String}) AND date <= toDate({report_date:String})) AS last7_installs,
-        sumIf(toFloat64(total_cost), date >= toDate({last7_from:String}) AND date <= toDate({report_date:String})) AS last7_cost,
-        if(
-          sumIf(toFloat64(installs), date >= toDate({last3_from:String}) AND date <= toDate({report_date:String})) > 0,
-          sumIf(toFloat64(af_average_ecpi) * toFloat64(installs), date >= toDate({last3_from:String}) AND date <= toDate({report_date:String}))
-            / sumIf(toFloat64(installs), date >= toDate({last3_from:String}) AND date <= toDate({report_date:String})),
-          if(
-            sumIf(toFloat64(installs), date >= toDate({last7_from:String}) AND date <= toDate({report_date:String})) > 0,
-            sumIf(toFloat64(af_average_ecpi) * toFloat64(installs), date >= toDate({last7_from:String}) AND date <= toDate({report_date:String}))
-              / sumIf(toFloat64(installs), date >= toDate({last7_from:String}) AND date <= toDate({report_date:String})),
-            0
-          )
-        ) AS current_ecpi
+        sum(toFloat64(installs)) AS installs,
+        sum(toFloat64(total_cost)) AS total_cost
       FROM keyword_daily_metrics FINAL
       WHERE app_key = {app_key:String}
-        AND date >= toDate({last7_from:String})
-        AND date <= toDate({report_date:String})
-      GROUP BY platform, media_source, keyword, match_type, country`,
+        AND date >= toDate({from:String})
+        AND date <= toDate({to:String})
+      GROUP BY date, platform, media_source, keyword, match_type, country`,
     {
       app_key: appKey,
-      last3_from: last3From,
-      last7_from: last7From,
-      report_date: reportDate
+      from,
+      to
     }
   );
   return rows.map((row) => ({
+    date: String(row.date || ''),
     platform: String(row.platform || 'unknown').toLowerCase(),
     media_source: String(row.media_source || 'unknown'),
     keyword: String(row.keyword || ''),
     match_type: String(row.match_type || 'unknown'),
     country: String(row.country || 'unknown'),
-    last3_installs: safeNumber(row.last3_installs),
-    last7_installs: safeNumber(row.last7_installs),
-    last7_cost: safeNumber(row.last7_cost),
-    current_ecpi: safeNumber(row.current_ecpi)
+    installs: safeNumber(row.installs),
+    total_cost: safeNumber(row.total_cost)
   }));
 }
 
@@ -857,12 +871,17 @@ export async function runBudgetAdvisorCycle(
         ['d7_roas_cpp', 'relative_compare'].includes(row.rule_json.metric_family)
       );
       const valueFactFrom = shiftDateString(date, -45);
+      const maxCountryFactLookbackDays = Math.max(
+        7,
+        ...appPolicies.map((row) => row.rule_json.maturity_window.exclude_recent_days + row.rule_json.maturity_window.decision_window_days)
+      );
+      const countryFactFrom = shiftDateString(date, -(maxCountryFactLookbackDays - 1));
       const [states, facts, spendSeriesMap, valueFacts, countryFacts] = await Promise.all([
         listKeywordLifecycleStatesByApp(app.app_key),
         queryBudgetKeywordFacts(app.app_key, date),
         queryBudgetKeywordSpendSeries(app.app_key, date, maxTrendLookbackDays),
         needsValueFacts ? queryBudgetValueFacts(app.app_key, valueFactFrom, date) : Promise.resolve([]),
-        queryBudgetCountryFacts(app.app_key, date)
+        queryBudgetCountryFacts(app.app_key, countryFactFrom, date)
       ]);
       const filteredStates = states.filter((state) => String(state.last_seen_date || '') >= lookbackStartDate);
       await expirePendingBudgetRecommendationsForDate(app.app_key, date);
@@ -971,9 +990,13 @@ export async function runBudgetAdvisorCycle(
         const relevantValueFacts = (valueFactsByKey.get(factKey(fact.platform, fact.media_source, fact.keyword, fact.match_type)) ?? []).filter(
           (row) => row.date >= policyWindow.from && row.date <= policyWindow.to
         );
-        const relevantCountryFacts = (countryFactsByKey.get(
-          factKey(fact.platform, fact.media_source, fact.keyword, fact.match_type)
-        ) ?? []).filter((row) => policy?.targets.country_targets?.[row.country]);
+        const relevantCountryFacts = aggregateBudgetCountryWindowFacts(
+          (countryFactsByKey.get(factKey(fact.platform, fact.media_source, fact.keyword, fact.match_type)) ?? []).filter(
+            (row) => policy?.targets.country_targets?.[row.country]
+          ),
+          policyWindow.from,
+          policyWindow.to
+        );
         const totalValueCost = relevantValueFacts.reduce((sum, row) => sum + row.total_cost, 0);
         const totalValueRevenue = relevantValueFacts.reduce((sum, row) => sum + row.revenue_d7, 0);
         const totalValuePurchases = relevantValueFacts.reduce((sum, row) => sum + row.purchase_count, 0);

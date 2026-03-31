@@ -972,7 +972,7 @@ export function buildAsaContextWindow(
   };
 }
 
-function buildAsaRelativeCompareDecision(input: {
+export function buildAsaRelativeCompareDecision(input: {
   stage: ProductStage;
   currentEcpi: number;
   currentD7Roas: number;
@@ -1024,7 +1024,7 @@ function buildAsaRelativeCompareDecision(input: {
       targetD7Roas
     };
   }
-  if (relativeResult.strongMetrics.length >= input.policy.relative_compare.min_failed_metrics && input.stage !== 'rising') {
+  if (relativeResult.strongMetrics.length >= input.policy.relative_compare.min_failed_metrics) {
     return {
       action: 'increase',
       reasonCode: 'relative_compare_outperform',

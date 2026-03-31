@@ -576,6 +576,20 @@ export async function getScheduledWorkerRun(
   return result.rows[0] ?? null;
 }
 
+export async function hasCompletedScheduledWorkerRun(workerName: string): Promise<boolean> {
+  await ensureScheduledWorkerRunsSchema();
+  const result = await pgQuery<{ exists: boolean }>(
+    `SELECT EXISTS(
+       SELECT 1
+         FROM scheduled_worker_runs
+        WHERE worker_name = $1
+          AND completed_at IS NOT NULL
+     ) AS exists`,
+    [workerName]
+  );
+  return result.rows[0]?.exists === true;
+}
+
 export async function tryStartScheduledWorkerRunAttempt(
   workerName: string,
   runMarker: string,

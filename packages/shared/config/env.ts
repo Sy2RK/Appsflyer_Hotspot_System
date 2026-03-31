@@ -95,7 +95,6 @@ export const env = {
     24 * 60 * 60 * 1000
   ),
 
-  keywordEngineIntervalMs: optionalNumber('KEYWORD_ENGINE_INTERVAL_MS', 24 * 60 * 60 * 1000),
   keywordEngineInitialBackfillDays: optionalNumber('KEYWORD_ENGINE_INITIAL_BACKFILL_DAYS', 30),
   keywordEngineRollingBackfillDays: optionalNumber('KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS', 3),
   budgetAdvisorIntervalMs: optionalNumber('BUDGET_ADVISOR_INTERVAL_MS', 24 * 60 * 60 * 1000),
