@@ -64,10 +64,23 @@ const state = {
   dailyBriefMediaSources: [],
   dailyBriefSelectedMediaSources: [],
   rulesSectionExpanded: false,
-  recommendationPolicyEditor: createInitialRecommendationPolicyEditor()
+  recommendationPolicyEditor: createInitialRecommendationPolicyEditor(),
+  aiChat: {
+    aiDockOpen: false,
+    scrollLocked: false,
+    messages: [],
+    pending: false,
+    selectedImages: [],
+    selectedContextPacks: [],
+    contextMenuOpen: false,
+    activeToolSection: 'database',
+    activeToolSubsection: 'recommended'
+  }
 };
 
 let budgetRecomputePollTimer = null;
+let aiDockScrollY = 0;
+let aiDockPreviousFocus = null;
 
 const PUSH_METRIC_OPTIONS = [
   { value: 'revenue', label: '收入金额' },
@@ -80,6 +93,24 @@ const PULL_METRIC_OPTIONS = [
   { value: 'clicks', label: '点击量' },
   { value: 'total_cost', label: '花费金额' }
 ];
+
+const AI_CHAT_PACK_TEMPLATES = {
+  metrics_trend: [
+    { value: 'media_source', label: '按媒体源' },
+    { value: 'country', label: '按国家' },
+    { value: 'campaign', label: '按活动' }
+  ],
+  budget_summary: [
+    { value: 'platform_media_source', label: '按平台 / 媒体源' },
+    { value: 'action_status', label: '按动作 / 状态' },
+    { value: 'keyword', label: '按关键词' }
+  ],
+  asa_keyword_summary: [
+    { value: 'stage', label: '按阶段' },
+    { value: 'campaign_adset', label: '按活动 / 广告组' },
+    { value: 'keyword', label: '按关键词' }
+  ]
+};
 
 const defaultRule = {
   timezone: 'Asia/Shanghai',
@@ -100,6 +131,7 @@ const defaultRule = {
 };
 
 const el = {
+  appShell: document.getElementById('appShell'),
   sideNav: document.getElementById('sideNav'),
   navItems: Array.from(document.querySelectorAll('.nav-item[data-target]')),
   sections: Array.from(document.querySelectorAll('.section-panel[id]')),
@@ -264,6 +296,9 @@ const el = {
   recommendationPolicyHighSpendInput: document.getElementById('recommendationPolicyHighSpendInput'),
   recommendationPolicyTrendLookbackInput: document.getElementById('recommendationPolicyTrendLookbackInput'),
   recommendationPolicyUptrendRatioInput: document.getElementById('recommendationPolicyUptrendRatioInput'),
+  recommendationPolicyDefaultIncreaseRatioInput: document.getElementById('recommendationPolicyDefaultIncreaseRatioInput'),
+  recommendationPolicyDefaultDecreaseRatioInput: document.getElementById('recommendationPolicyDefaultDecreaseRatioInput'),
+  recommendationPolicyHighSpendIncreaseRatioInput: document.getElementById('recommendationPolicyHighSpendIncreaseRatioInput'),
   recommendationPolicyPromptInput: document.getElementById('recommendationPolicyPromptInput'),
   recommendationPolicyEnabledSelect: document.getElementById('recommendationPolicyEnabledSelect'),
   recommendationPolicyImpactSummary: document.getElementById('recommendationPolicyImpactSummary'),
@@ -341,6 +376,9 @@ const el = {
   budgetDetailTargetEcpi: document.getElementById('budgetDetailTargetEcpi'),
   budgetDetailCurrentRoas: document.getElementById('budgetDetailCurrentRoas'),
   budgetDetailTargetRoas: document.getElementById('budgetDetailTargetRoas'),
+  budgetDetailBudgetAction: document.getElementById('budgetDetailBudgetAction'),
+  budgetDetailExecutionActions: document.getElementById('budgetDetailExecutionActions'),
+  budgetDetailScenarioTags: document.getElementById('budgetDetailScenarioTags'),
   budgetDetailCurrentCost: document.getElementById('budgetDetailCurrentCost'),
   budgetDetailSuggestedBudget: document.getElementById('budgetDetailSuggestedBudget'),
   budgetDetailChangeRatio: document.getElementById('budgetDetailChangeRatio'),
@@ -384,8 +422,44 @@ const el = {
   alertContribRaw: document.getElementById('alertContribRaw'),
 
   aiDock: document.getElementById('aiDock'),
+  aiDockBackdrop: document.getElementById('aiDockBackdrop'),
   aiDockToggle: document.getElementById('aiDockToggle'),
   aiDockPanel: document.getElementById('aiDockPanel'),
+  aiChatDialog: document.getElementById('aiChatDialog'),
+  aiChatBody: document.getElementById('aiChatBody'),
+  aiChatCloseBtn: document.getElementById('aiChatCloseBtn'),
+  aiChatClearBtn: document.getElementById('aiChatClearBtn'),
+  aiChatContextMenu: document.getElementById('aiChatContextMenu'),
+  aiChatRecommendedPacks: document.getElementById('aiChatRecommendedPacks'),
+  aiChatCorePacks: document.getElementById('aiChatCorePacks'),
+  aiChatMessages: document.getElementById('aiChatMessages'),
+  aiChatAttachmentStrip: document.getElementById('aiChatAttachmentStrip'),
+  aiChatImageList: document.getElementById('aiChatImageList'),
+  aiChatContextPackList: document.getElementById('aiChatContextPackList'),
+  aiChatForm: document.getElementById('aiChatForm'),
+  aiChatInput: document.getElementById('aiChatInput'),
+  aiChatSendBtn: document.getElementById('aiChatSendBtn'),
+  aiChatAddImageBtn: document.getElementById('aiChatAddImageBtn'),
+  aiChatAddContextBtn: document.getElementById('aiChatAddContextBtn'),
+  aiChatImageUploaderInline: document.getElementById('aiChatImageUploaderInline'),
+  aiChatFileInput: document.getElementById('aiChatFileInput'),
+  aiChatPackTypeSelect: document.getElementById('aiChatPackTypeSelect'),
+  aiChatPackTemplateSelect: document.getElementById('aiChatPackTemplateSelect'),
+  aiChatPackAppSelect: document.getElementById('aiChatPackAppSelect'),
+  aiChatPackPlatformSelect: document.getElementById('aiChatPackPlatformSelect'),
+  aiChatPackFromInput: document.getElementById('aiChatPackFromInput'),
+  aiChatPackToInput: document.getElementById('aiChatPackToInput'),
+  aiChatPackSourceField: document.getElementById('aiChatPackSourceField'),
+  aiChatPackSourceSelect: document.getElementById('aiChatPackSourceSelect'),
+  aiChatPackMetricField: document.getElementById('aiChatPackMetricField'),
+  aiChatPackMetricSelect: document.getElementById('aiChatPackMetricSelect'),
+  aiChatPackEventNameField: document.getElementById('aiChatPackEventNameField'),
+  aiChatPackEventNameInput: document.getElementById('aiChatPackEventNameInput'),
+  aiChatPackStageField: document.getElementById('aiChatPackStageField'),
+  aiChatPackStageSelect: document.getElementById('aiChatPackStageSelect'),
+  aiChatAttachCustomPackBtn: document.getElementById('aiChatAttachCustomPackBtn'),
+  aiChatPackBuilderPreview: document.getElementById('aiChatPackBuilderPreview'),
+  aiChatPackBuilderHint: document.getElementById('aiChatPackBuilderHint'),
 
   toast: document.getElementById('toast')
 };
@@ -447,21 +521,901 @@ function showToast(message, isError = false) {
   }, 2600);
 }
 
+function lockAIDockScroll() {
+  if (state.aiChat.scrollLocked) {
+    return;
+  }
+  aiDockScrollY = window.scrollY || window.pageYOffset || 0;
+  document.body.classList.add('ai-dock-scroll-locked');
+  document.body.style.top = `-${aiDockScrollY}px`;
+  state.aiChat.scrollLocked = true;
+}
+
+function unlockAIDockScroll() {
+  if (!state.aiChat.scrollLocked) {
+    return;
+  }
+  document.body.classList.remove('ai-dock-scroll-locked');
+  document.body.style.top = '';
+  window.scrollTo(0, aiDockScrollY);
+  state.aiChat.scrollLocked = false;
+}
+
+function setAIDockInert(open) {
+  if (!(el.appShell instanceof HTMLElement)) {
+    return;
+  }
+  if (open) {
+    el.appShell.setAttribute('aria-hidden', 'true');
+    el.appShell.setAttribute('inert', '');
+    return;
+  }
+  el.appShell.removeAttribute('aria-hidden');
+  el.appShell.removeAttribute('inert');
+}
+
+function getAIDockFocusableElements() {
+  if (!(el.aiDockPanel instanceof HTMLElement)) {
+    return [];
+  }
+  const selectors = [
+    'button:not([disabled])',
+    '[href]:not([aria-disabled="true"])',
+    'input:not([disabled]):not([type="hidden"])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    '[tabindex]:not([tabindex="-1"])'
+  ];
+  return Array.from(el.aiDockPanel.querySelectorAll(selectors.join(','))).filter(
+    (node) => node instanceof HTMLElement && !node.closest('.hidden')
+  );
+}
+
+function focusAIDockInitialTarget() {
+  if (el.aiChatInput instanceof HTMLTextAreaElement) {
+    el.aiChatInput.focus();
+    return;
+  }
+  if (el.aiChatDialog instanceof HTMLElement) {
+    el.aiChatDialog.focus();
+  }
+}
+
+function restoreAIDockFocus() {
+  if (
+    aiDockPreviousFocus instanceof HTMLElement &&
+    (document.body?.contains(aiDockPreviousFocus) || document.documentElement.contains(aiDockPreviousFocus))
+  ) {
+    aiDockPreviousFocus.focus();
+  } else if (el.aiDockToggle instanceof HTMLButtonElement) {
+    el.aiDockToggle.focus();
+  }
+}
+
+function handleAIDockFocusTrap(event) {
+  if (!state.aiChat.aiDockOpen || event.key !== 'Tab') {
+    return;
+  }
+  const focusable = getAIDockFocusableElements();
+  if (focusable.length === 0) {
+    event.preventDefault();
+    el.aiChatDialog?.focus();
+    return;
+  }
+  const currentIndex = focusable.indexOf(document.activeElement);
+  if (event.shiftKey) {
+    if (currentIndex <= 0) {
+      event.preventDefault();
+      focusable[focusable.length - 1].focus();
+    }
+    return;
+  }
+  if (currentIndex === -1 || currentIndex === focusable.length - 1) {
+    event.preventDefault();
+    focusable[0].focus();
+  }
+}
+
 function setAIDockOpen(open) {
   if (!(el.aiDock instanceof HTMLElement) || !(el.aiDockToggle instanceof HTMLButtonElement) || !(el.aiDockPanel instanceof HTMLElement)) {
     return;
   }
 
-  el.aiDock.classList.toggle('is-open', open);
-  el.aiDockPanel.classList.toggle('hidden', !open);
-  el.aiDockPanel.setAttribute('aria-hidden', open ? 'false' : 'true');
-  el.aiDockToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-  el.aiDockToggle.setAttribute('aria-label', open ? '关闭 AI 功能舱' : '打开 AI 功能舱');
+  const nextOpen = open === true;
+  if (state.aiChat.aiDockOpen === nextOpen) {
+    return;
+  }
+
+  state.aiChat.aiDockOpen = nextOpen;
+  el.aiDock.classList.toggle('is-open', nextOpen);
+  el.aiDockPanel.classList.toggle('hidden', !nextOpen);
+  el.aiDockBackdrop?.classList.toggle('hidden', !nextOpen);
+  el.aiDockPanel.setAttribute('aria-hidden', nextOpen ? 'false' : 'true');
+  el.aiDockToggle.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+  el.aiDockToggle.setAttribute('aria-label', nextOpen ? '关闭 AI 功能舱' : '打开 AI 功能舱');
+  el.aiChatAddContextBtn?.setAttribute('aria-expanded', state.aiChat.contextMenuOpen ? 'true' : 'false');
+
+  if (nextOpen) {
+    aiDockPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    lockAIDockScroll();
+    setAIDockInert(true);
+    renderAIChatPackMenus();
+    requestAnimationFrame(() => {
+      focusAIDockInitialTarget();
+      scrollAIChatToBottom(true);
+    });
+    return;
+  }
+
+  setAIChatContextMenuOpen(false);
+  unlockAIDockScroll();
+  setAIDockInert(false);
+  restoreAIDockFocus();
 }
 
 function toggleAIDock() {
-  const isOpen = el.aiDock?.classList.contains('is-open') === true;
-  setAIDockOpen(!isOpen);
+  setAIDockOpen(!state.aiChat.aiDockOpen);
+}
+
+function parseTriStateBoolean(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  return undefined;
+}
+
+function formatFileSize(size) {
+  const value = Number(size || 0);
+  if (value >= 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${Math.max(1, Math.round(value / 1024))} KB`;
+}
+
+function aiChatMessageId() {
+  return `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function aiChatPackTemplateLabel(type, templateId) {
+  const items = AI_CHAT_PACK_TEMPLATES[type] || [];
+  return items.find((item) => item.value === templateId)?.label || templateId;
+}
+
+function aiChatPackTypeLabel(type) {
+  if (type === 'metrics_trend') return '指标时序';
+  if (type === 'budget_summary') return '预算建议';
+  if (type === 'asa_keyword_summary') return 'ASA 关键词';
+  return type;
+}
+
+function aiChatPackKey(spec) {
+  return JSON.stringify({
+    type: spec.type,
+    templateId: spec.templateId,
+    appKey: spec.appKey,
+    platform: spec.platform || '',
+    from: spec.from || '',
+    to: spec.to || '',
+    source: spec.source || '',
+    metric: spec.metric || '',
+    eventName: spec.eventName || '',
+    status: spec.status || '',
+    executionStatus: spec.executionStatus || '',
+    isAdopted: typeof spec.isAdopted === 'boolean' ? spec.isAdopted : null,
+    hasManualReview: typeof spec.hasManualReview === 'boolean' ? spec.hasManualReview : null,
+    stage: spec.stage || '',
+    keyword: spec.keyword || '',
+    campaign: spec.campaign || ''
+  });
+}
+
+function buildAIChatPackDisplay(spec) {
+  const lines = [];
+  const title = `${aiChatPackTypeLabel(spec.type)} · ${aiChatPackTemplateLabel(spec.type, spec.templateId)}`;
+  if (spec.appKey) {
+    lines.push(spec.appKey);
+  }
+  if (spec.platform) {
+    lines.push(platformLabel(spec.platform));
+  }
+  if (spec.from || spec.to) {
+    lines.push(`${spec.from || '不限'} ~ ${spec.to || '不限'}`);
+  }
+  if (spec.type === 'metrics_trend' && spec.metric) {
+    lines.push(metricLabel(spec.metric));
+  }
+  if (spec.type === 'asa_keyword_summary' && spec.stage) {
+    lines.push(spec.stage);
+  }
+  return {
+    title,
+    meta: lines.join(' · ') || '当前工作台上下文'
+  };
+}
+
+function isAIChatNearBottom() {
+  if (!(el.aiChatBody instanceof HTMLElement)) {
+    return true;
+  }
+  const threshold = 96;
+  return el.aiChatBody.scrollHeight - el.aiChatBody.scrollTop - el.aiChatBody.clientHeight <= threshold;
+}
+
+function scrollAIChatToBottom(force = false) {
+  if (!(el.aiChatBody instanceof HTMLElement)) {
+    return;
+  }
+  if (!force && !isAIChatNearBottom()) {
+    return;
+  }
+  requestAnimationFrame(() => {
+    el.aiChatBody.scrollTop = el.aiChatBody.scrollHeight;
+  });
+}
+
+function syncAIChatAccordionState() {
+  if (!(el.aiChatContextMenu instanceof HTMLElement)) {
+    return;
+  }
+  const activeFold = el.aiChatContextMenu.querySelector('.ai-chat-fold[open]');
+  if (activeFold instanceof HTMLDetailsElement) {
+    state.aiChat.activeToolSection = String(activeFold.dataset.aiToolSection || 'database');
+    const activeSubfold = activeFold.querySelector('.ai-chat-subfold[open]');
+    state.aiChat.activeToolSubsection = String(activeSubfold?.dataset.aiToolSubsection || '');
+  }
+}
+
+function ensureAIChatDefaultAccordionState() {
+  if (!(el.aiChatContextMenu instanceof HTMLElement)) {
+    return;
+  }
+  const folds = Array.from(el.aiChatContextMenu.querySelectorAll('.ai-chat-fold'));
+  const openFold = folds.find((item) => item instanceof HTMLDetailsElement && item.open);
+  if (!openFold && folds[0] instanceof HTMLDetailsElement) {
+    folds[0].open = true;
+  }
+  const activeFold = folds.find((item) => item instanceof HTMLDetailsElement && item.open);
+  if (!(activeFold instanceof HTMLDetailsElement)) {
+    return;
+  }
+  const subfolds = Array.from(activeFold.querySelectorAll('.ai-chat-subfold'));
+  const openSubfold = subfolds.find((item) => item instanceof HTMLDetailsElement && item.open);
+  if (!openSubfold && subfolds[0] instanceof HTMLDetailsElement) {
+    subfolds[0].open = true;
+  }
+  syncAIChatAccordionState();
+}
+
+function setAIChatContextMenuOpen(open) {
+  state.aiChat.contextMenuOpen = open === true;
+  if (!(el.aiChatContextMenu instanceof HTMLElement)) {
+    return;
+  }
+  el.aiChatDialog?.classList.toggle('has-context-open', state.aiChat.contextMenuOpen);
+  el.aiChatContextMenu.classList.toggle('hidden', !state.aiChat.contextMenuOpen);
+  el.aiChatAddContextBtn?.setAttribute('aria-expanded', state.aiChat.contextMenuOpen ? 'true' : 'false');
+  if (state.aiChat.contextMenuOpen) {
+    ensureAIChatDefaultAccordionState();
+    renderAIChatPackMenus();
+    requestAnimationFrame(() => {
+      el.aiChatBody?.scrollTo({ top: 0, behavior: 'auto' });
+    });
+  }
+}
+
+function getAIChatMetricOptions(source) {
+  return source === 'push' ? PUSH_METRIC_OPTIONS : PULL_METRIC_OPTIONS;
+}
+
+function syncAIChatPackMetricOptions() {
+  if (!(el.aiChatPackSourceSelect instanceof HTMLSelectElement) || !(el.aiChatPackMetricSelect instanceof HTMLSelectElement)) {
+    return;
+  }
+  const items = getAIChatMetricOptions(el.aiChatPackSourceSelect.value || 'pull');
+  const currentValue = String(el.aiChatPackMetricSelect.value || '').trim();
+  el.aiChatPackMetricSelect.innerHTML = items
+    .map((item) => `<option value="${item.value}">${item.label}</option>`)
+    .join('');
+  if (items.some((item) => item.value === currentValue)) {
+    el.aiChatPackMetricSelect.value = currentValue;
+  }
+}
+
+function syncAIChatContextBuilderVisibility() {
+  if (
+    !(el.aiChatPackTypeSelect instanceof HTMLSelectElement) ||
+    !(el.aiChatPackTemplateSelect instanceof HTMLSelectElement) ||
+    !(el.aiChatPackBuilderHint instanceof HTMLElement)
+  ) {
+    return;
+  }
+  const type = el.aiChatPackTypeSelect.value || 'metrics_trend';
+  const templates = AI_CHAT_PACK_TEMPLATES[type] || AI_CHAT_PACK_TEMPLATES.metrics_trend;
+  const templateValue = String(el.aiChatPackTemplateSelect.value || '').trim();
+  el.aiChatPackTemplateSelect.innerHTML = templates
+    .map((item) => `<option value="${item.value}">${item.label}</option>`)
+    .join('');
+  if (templates.some((item) => item.value === templateValue)) {
+    el.aiChatPackTemplateSelect.value = templateValue;
+  }
+
+  const isMetrics = type === 'metrics_trend';
+  const isAsa = type === 'asa_keyword_summary';
+  el.aiChatPackSourceField?.classList.toggle('hidden', !isMetrics);
+  el.aiChatPackMetricField?.classList.toggle('hidden', !isMetrics);
+  el.aiChatPackStageField?.classList.toggle('hidden', !isAsa);
+  syncAIChatPackMetricOptions();
+  const isEventCount = isMetrics && (el.aiChatPackMetricSelect?.value || '') === 'event_count';
+  const isPush = isMetrics && (el.aiChatPackSourceSelect?.value || '') === 'push';
+  el.aiChatPackEventNameField?.classList.toggle('hidden', !(isPush && isEventCount));
+
+  const hint =
+    type === 'metrics_trend'
+      ? '生成按媒体源 / 国家 / 活动的趋势聚合，不上传原始时序明细。'
+      : type === 'budget_summary'
+        ? '生成预算建议分布、状态与 Top 聚合摘要，不上传逐条 recommendation 原文。'
+        : '生成 ASA 关键词阶段或广告组级摘要，聚焦 7 日表现与动作分布。';
+  el.aiChatPackBuilderHint.textContent = hint;
+  syncAIChatPackBuilderPreview();
+}
+
+function syncAIChatPackBuilderPreview() {
+  if (!(el.aiChatPackBuilderPreview instanceof HTMLElement)) {
+    return;
+  }
+  try {
+    const spec = buildCustomAIChatPackSpec();
+    const display = buildAIChatPackDisplay(spec);
+    const extra = [];
+    if (spec.type === 'metrics_trend' && spec.source) {
+      extra.push(spec.source === 'push' ? '实时回传' : '广告日报');
+    }
+    if (spec.type === 'metrics_trend' && spec.eventName) {
+      extra.push(`事件 ${spec.eventName}`);
+    }
+    if (spec.type === 'asa_keyword_summary' && spec.stage) {
+      extra.push(`阶段 ${spec.stage}`);
+    }
+    el.aiChatPackBuilderPreview.textContent = `即将附加：${display.title}｜${[display.meta, ...extra].filter(Boolean).join(' ｜ ')}`;
+  } catch (error) {
+    el.aiChatPackBuilderPreview.textContent = '先选择应用、模板和时间范围，再附加自定义数据包。';
+  }
+}
+
+function syncAIChatInputHeight() {
+  if (!(el.aiChatInput instanceof HTMLTextAreaElement)) {
+    return;
+  }
+  el.aiChatInput.style.height = 'auto';
+  const nextHeight = Math.min(el.aiChatInput.scrollHeight, 176);
+  el.aiChatInput.style.height = `${Math.max(nextHeight, 28)}px`;
+}
+
+function renderAIChatMessageAttachments(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return '';
+  }
+  return `<div class="ai-chat-message-attachments">${items
+    .map((item) => `<span class="ai-chat-message-chip">${escapeHtml(item.title || item.name || '附件')}</span>`)
+    .join('')}</div>`;
+}
+
+function renderAIChatMessages() {
+  if (!(el.aiChatMessages instanceof HTMLElement)) {
+    return;
+  }
+  const shouldStick = isAIChatNearBottom();
+  const rows = Array.isArray(state.aiChat.messages) ? state.aiChat.messages : [];
+  if (rows.length === 0) {
+    el.aiChatMessages.innerHTML = `
+      <div class="ai-chat-empty">
+        <div class="ai-chat-empty-orbit" aria-hidden="true"></div>
+        <p class="ai-chat-empty-kicker">Ready for Context</p>
+        <h4>从当前工作台发起一段有上下文的对话</h4>
+        <p>可以直接提问，也可以先附带数据库聚合包或截图，让模型围绕当前业务面板给出分析。</p>
+      </div>
+    `;
+    scrollAIChatToBottom(true);
+    return;
+  }
+  el.aiChatMessages.innerHTML = rows
+    .map((item) => {
+      const roleClass = item.role === 'assistant' ? 'is-assistant' : item.role === 'system' ? 'is-system' : 'is-user';
+      const roleLabel = item.role === 'assistant' ? 'Guru Ads Agent' : item.role === 'system' ? '系统提示' : '你';
+      const metaText = item.pending ? `${roleLabel} · 正在生成…` : `${roleLabel} · ${fmtTime(item.createdAt)}`;
+      return `
+        <div class="ai-chat-message ${roleClass}">
+          <div class="ai-chat-message-meta">${escapeHtml(metaText)}</div>
+          <div class="ai-chat-message-bubble">${escapeHtml(item.content || '')}</div>
+          ${renderAIChatMessageAttachments(item.attachments)}
+        </div>
+      `;
+    })
+    .join('');
+  scrollAIChatToBottom(shouldStick);
+}
+
+function revokeAIChatImagePreview(image) {
+  if (image && typeof image.previewUrl === 'string' && image.previewUrl.startsWith('blob:')) {
+    URL.revokeObjectURL(image.previewUrl);
+  }
+}
+
+function renderAIChatAttachmentStrip() {
+  if (
+    !(el.aiChatAttachmentStrip instanceof HTMLElement) ||
+    !(el.aiChatImageList instanceof HTMLElement) ||
+    !(el.aiChatContextPackList instanceof HTMLElement)
+  ) {
+    return;
+  }
+  const images = Array.isArray(state.aiChat.selectedImages) ? state.aiChat.selectedImages : [];
+  const packs = Array.isArray(state.aiChat.selectedContextPacks) ? state.aiChat.selectedContextPacks : [];
+  const hasAttachments = images.length > 0 || packs.length > 0;
+  el.aiChatAttachmentStrip.classList.toggle('hidden', !hasAttachments);
+  el.aiChatImageList.innerHTML = images
+    .map(
+      (item) => `
+        <div class="ai-chat-chip">
+          <img class="ai-chat-chip-preview" src="${escapeHtml(item.previewUrl)}" alt="${escapeHtml(item.file.name)}" />
+          <span class="ai-chat-chip-copy">
+            <strong>${escapeHtml(item.file.name)}</strong>
+            <small>${escapeHtml(formatFileSize(item.file.size))}</small>
+          </span>
+          <button class="ai-chat-chip-remove" type="button" data-ai-chat-image-remove="${escapeHtml(item.id)}">×</button>
+        </div>
+      `
+    )
+    .join('');
+  el.aiChatContextPackList.innerHTML = packs
+    .map(
+      (item) => `
+        <div class="ai-chat-chip">
+          <span class="ai-chat-chip-copy">
+            <strong>${escapeHtml(item.title)}</strong>
+            <small>${escapeHtml(item.meta)}</small>
+          </span>
+          <button class="ai-chat-chip-remove" type="button" data-ai-chat-pack-remove="${escapeHtml(item.key)}">×</button>
+        </div>
+      `
+    )
+    .join('');
+}
+
+function clearAIChatAttachments() {
+  (state.aiChat.selectedImages || []).forEach((item) => revokeAIChatImagePreview(item));
+  state.aiChat.selectedImages = [];
+  state.aiChat.selectedContextPacks = [];
+  if (el.aiChatFileInput instanceof HTMLInputElement) {
+    el.aiChatFileInput.value = '';
+  }
+  renderAIChatAttachmentStrip();
+}
+
+function removeAIChatImage(id) {
+  const next = [];
+  for (const item of state.aiChat.selectedImages || []) {
+    if (item.id === id) {
+      revokeAIChatImagePreview(item);
+      continue;
+    }
+    next.push(item);
+  }
+  state.aiChat.selectedImages = next;
+  renderAIChatAttachmentStrip();
+}
+
+function removeAIChatContextPack(key) {
+  state.aiChat.selectedContextPacks = (state.aiChat.selectedContextPacks || []).filter((item) => item.key !== key);
+  renderAIChatAttachmentStrip();
+}
+
+function resolveDefaultMetricsPack(overrides = {}) {
+  const now = new Date();
+  const source = String(overrides.source || el.metricsSourceSelect?.value || 'pull').trim();
+  const to = toLocalDate(now);
+  const from = toLocalDate(new Date(now.getTime() - (source === 'push' ? 2 : 13) * 24 * 60 * 60 * 1000));
+  return {
+    type: 'metrics_trend',
+    templateId: overrides.templateId || 'media_source',
+    appKey: String(overrides.appKey || el.metricsAppSelect?.value || state.apps[0]?.app_key || '').trim(),
+    platform: String(overrides.platform || el.metricsPlatformSelect?.value || '').trim().toLowerCase() || undefined,
+    from: String(overrides.from || from),
+    to: String(overrides.to || to),
+    source,
+    metric: String(overrides.metric || el.metricsMetricSelect?.value || (source === 'push' ? 'revenue' : 'installs')).trim(),
+    eventName: String(overrides.eventName || el.metricsEventNameInput?.value || '').trim() || undefined,
+    sourceSection: state.activeSection
+  };
+}
+
+function resolveBudgetPack(overrides = {}) {
+  const form = el.budgetFilter instanceof HTMLFormElement ? new FormData(el.budgetFilter) : new FormData();
+  return {
+    type: 'budget_summary',
+    templateId: overrides.templateId || 'platform_media_source',
+    appKey: String(overrides.appKey || form.get('appKey') || state.apps[0]?.app_key || '').trim(),
+    platform: String(overrides.platform || form.get('platform') || '').trim().toLowerCase() || undefined,
+    from: String(overrides.from || form.get('from') || '').trim() || undefined,
+    to: String(overrides.to || form.get('to') || '').trim() || undefined,
+    status: String(overrides.status || form.get('status') || '').trim() || undefined,
+    executionStatus: String(overrides.executionStatus || form.get('executionStatus') || '').trim() || undefined,
+    isAdopted:
+      typeof overrides.isAdopted === 'boolean' ? overrides.isAdopted : parseTriStateBoolean(form.get('isAdopted')),
+    hasManualReview:
+      typeof overrides.hasManualReview === 'boolean'
+        ? overrides.hasManualReview
+        : parseTriStateBoolean(form.get('hasManualReview')),
+    sourceSection: state.activeSection
+  };
+}
+
+function resolveAsaPack(overrides = {}) {
+  const form = el.asaKeywordFilter instanceof HTMLFormElement ? new FormData(el.asaKeywordFilter) : new FormData();
+  return {
+    type: 'asa_keyword_summary',
+    templateId: overrides.templateId || 'stage',
+    appKey: String(overrides.appKey || form.get('appKey') || state.apps[0]?.app_key || '').trim(),
+    platform: String(overrides.platform || form.get('platform') || '').trim().toLowerCase() || undefined,
+    from: String(overrides.from || form.get('from') || '').trim() || undefined,
+    to: String(overrides.to || form.get('to') || '').trim() || undefined,
+    stage: String(overrides.stage || form.get('stage') || '').trim() || undefined,
+    keyword: String(overrides.keyword || form.get('keyword') || '').trim() || undefined,
+    campaign: String(overrides.campaign || form.get('campaign') || '').trim() || undefined,
+    sourceSection: state.activeSection
+  };
+}
+
+function createAIChatPackCard(spec, meta, desc) {
+  const info = buildAIChatPackDisplay(spec);
+  return {
+    spec,
+    title: info.title,
+    meta: meta || info.meta,
+    desc,
+    disabled: !spec.appKey
+  };
+}
+
+function buildRecommendedAIChatPackCards() {
+  if (state.activeSection === 'section-metrics') {
+    return [
+      createAIChatPackCard(resolveDefaultMetricsPack({ templateId: 'media_source' }), '当前指标面板', '最适合追问最近波动来自哪个媒体源。'),
+      createAIChatPackCard(resolveDefaultMetricsPack({ templateId: 'country' }), '当前指标面板', '快速查看地域维度是否出现结构性异常。')
+    ];
+  }
+  if (state.activeSection === 'section-budget') {
+    return [
+      createAIChatPackCard(resolveBudgetPack({ templateId: 'platform_media_source' }), '当前预算筛选', '把预算建议按平台与媒体源重新聚合给模型。'),
+      createAIChatPackCard(resolveBudgetPack({ templateId: 'action_status' }), '当前预算筛选', '适合追问哪些动作类型最需要优先处理。')
+    ];
+  }
+  if (state.activeSection === 'section-asa-keywords') {
+    return [
+      createAIChatPackCard(resolveAsaPack({ templateId: 'stage' }), '当前 ASA 筛选', '先看 rising / stable 等阶段分布。'),
+      createAIChatPackCard(resolveAsaPack({ templateId: 'campaign_adset' }), '当前 ASA 筛选', '快速聚焦广告组层面的重点包。')
+    ];
+  }
+  if (state.activeSection === 'section-pull-records') {
+    return [
+      createAIChatPackCard(resolveDefaultMetricsPack({ source: 'pull', templateId: 'campaign' }), '广告日报视角', '把最近拉取日报按 campaign 聚合附带给模型。'),
+      createAIChatPackCard(resolveBudgetPack({ templateId: 'platform_media_source' }), '预算建议联动', '顺手串联预算建议，看是否和日报趋势一致。')
+    ];
+  }
+  return [
+    createAIChatPackCard(resolveDefaultMetricsPack({ templateId: 'media_source' }), '默认推荐', '先用指标时序概览当前流量和成本。'),
+    createAIChatPackCard(resolveBudgetPack({ templateId: 'platform_media_source' }), '默认推荐', '快速附带预算建议整体分布。')
+  ];
+}
+
+function buildCoreAIChatPackCards() {
+  return [
+    createAIChatPackCard(resolveDefaultMetricsPack({ templateId: 'media_source' }), '核心包', '指标时序默认按媒体源聚合。'),
+    createAIChatPackCard(resolveBudgetPack({ templateId: 'platform_media_source' }), '核心包', '预算建议默认按平台 / 媒体源聚合。'),
+    createAIChatPackCard(resolveAsaPack({ templateId: 'stage' }), '核心包', 'ASA 默认按阶段聚合。')
+  ];
+}
+
+function renderAIChatPackCards(container, cards, role) {
+  if (!(container instanceof HTMLElement)) {
+    return;
+  }
+  container.innerHTML = cards
+    .map((card) => {
+      const payload = encodeURIComponent(JSON.stringify(card.spec));
+      return `
+        <button
+          class="ai-chat-pack-card"
+          type="button"
+          data-ai-chat-pack-role="${escapeHtml(role)}"
+          data-ai-chat-pack-spec="${payload}"
+          ${card.disabled ? 'disabled' : ''}
+        >
+          <span class="ai-chat-pack-card-title">
+            <span>${escapeHtml(card.title)}</span>
+            <span class="badge badge-open">${escapeHtml(role === 'recommended' ? '推荐' : '核心')}</span>
+          </span>
+          <span class="ai-chat-pack-card-meta">${escapeHtml(card.meta || '当前上下文')}</span>
+          <span class="ai-chat-pack-card-desc">${escapeHtml(card.desc || '')}</span>
+        </button>
+      `;
+    })
+    .join('');
+}
+
+function renderAIChatPackMenus() {
+  renderAIChatPackCards(el.aiChatRecommendedPacks, buildRecommendedAIChatPackCards(), 'recommended');
+  renderAIChatPackCards(el.aiChatCorePacks, buildCoreAIChatPackCards(), 'core');
+}
+
+function addAIChatContextPack(spec) {
+  if (!spec.appKey) {
+    throw new Error('请先选择应用，再附加数据包。');
+  }
+  const key = aiChatPackKey(spec);
+  if ((state.aiChat.selectedContextPacks || []).some((item) => item.key === key)) {
+    showToast('这个数据包已经在待发送列表里');
+    return;
+  }
+  if ((state.aiChat.selectedContextPacks || []).length >= 3) {
+    throw new Error('单次最多附加 3 个数据库聚合包');
+  }
+  const display = buildAIChatPackDisplay(spec);
+  state.aiChat.selectedContextPacks = [...(state.aiChat.selectedContextPacks || []), { key, spec, ...display }];
+  renderAIChatAttachmentStrip();
+  setAIChatContextMenuOpen(false);
+  showToast(`已附加 ${display.title}`);
+}
+
+function buildCustomAIChatPackSpec() {
+  if (
+    !(el.aiChatPackTypeSelect instanceof HTMLSelectElement) ||
+    !(el.aiChatPackTemplateSelect instanceof HTMLSelectElement) ||
+    !(el.aiChatPackAppSelect instanceof HTMLSelectElement) ||
+    !(el.aiChatPackPlatformSelect instanceof HTMLSelectElement) ||
+    !(el.aiChatPackFromInput instanceof HTMLInputElement) ||
+    !(el.aiChatPackToInput instanceof HTMLInputElement)
+  ) {
+    throw new Error('AI 数据包表单未就绪');
+  }
+  const type = el.aiChatPackTypeSelect.value || 'metrics_trend';
+  const appKey = String(el.aiChatPackAppSelect.value || '').trim();
+  if (!appKey) {
+    throw new Error('请先为自定义数据包选择应用');
+  }
+  const spec = {
+    type,
+    templateId: el.aiChatPackTemplateSelect.value,
+    appKey,
+    platform: String(el.aiChatPackPlatformSelect.value || '').trim() || undefined,
+    from: String(el.aiChatPackFromInput.value || '').trim() || undefined,
+    to: String(el.aiChatPackToInput.value || '').trim() || undefined,
+    sourceSection: state.activeSection
+  };
+  if (type === 'metrics_trend') {
+    return {
+      ...spec,
+      source: String(el.aiChatPackSourceSelect?.value || 'pull'),
+      metric: String(el.aiChatPackMetricSelect?.value || 'installs'),
+      eventName: String(el.aiChatPackEventNameInput?.value || '').trim() || undefined
+    };
+  }
+  if (type === 'asa_keyword_summary') {
+    return {
+      ...spec,
+      stage: String(el.aiChatPackStageSelect?.value || '').trim() || undefined
+    };
+  }
+  return spec;
+}
+
+function primeAIChatBuilderDefaults() {
+  const defaultAppKey = String(state.apps[0]?.app_key || '').trim();
+  if (el.aiChatPackAppSelect instanceof HTMLSelectElement && !el.aiChatPackAppSelect.value && defaultAppKey) {
+    el.aiChatPackAppSelect.value = defaultAppKey;
+  }
+  if (el.aiChatPackFromInput instanceof HTMLInputElement && !el.aiChatPackFromInput.value) {
+    el.aiChatPackFromInput.value = toLocalDate(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
+  }
+  if (el.aiChatPackToInput instanceof HTMLInputElement && !el.aiChatPackToInput.value) {
+    el.aiChatPackToInput.value = toLocalDate(new Date());
+  }
+  syncAIChatContextBuilderVisibility();
+  syncAIChatPackBuilderPreview();
+}
+
+function clearAIChatConversation() {
+  state.aiChat.messages = [];
+  clearAIChatAttachments();
+  renderAIChatMessages();
+}
+
+function handleAIChatPackCardClick(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+  const button = target.closest('[data-ai-chat-pack-spec]');
+  if (!(button instanceof HTMLButtonElement)) {
+    return;
+  }
+  const raw = String(button.dataset.aiChatPackSpec || '').trim();
+  if (!raw) {
+    return;
+  }
+  try {
+    const spec = JSON.parse(decodeURIComponent(raw));
+    addAIChatContextPack(spec);
+  } catch (error) {
+    showToast(error.message || '数据包配置无效', true);
+  }
+}
+
+function handleAIChatImageSelection(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+  const files = Array.from(target.files || []);
+  if (files.length === 0) {
+    return;
+  }
+  const existing = state.aiChat.selectedImages || [];
+  if (existing.length + files.length > 4) {
+    target.value = '';
+    throw new Error('图片最多上传 4 张');
+  }
+
+  const next = [...existing];
+  files.forEach((file) => {
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      throw new Error(`不支持的图片格式：${file.name}`);
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      throw new Error(`图片过大：${file.name}`);
+    }
+    next.push({
+      id: aiChatMessageId(),
+      file,
+      previewUrl: URL.createObjectURL(file)
+    });
+  });
+  state.aiChat.selectedImages = next;
+  target.value = '';
+  renderAIChatAttachmentStrip();
+  setAIChatContextMenuOpen(false);
+  showToast(`已附加 ${files.length} 张图片`);
+}
+
+function handleAIChatAttachmentStripClick(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+  const removeImageId = String(target.dataset.aiChatImageRemove || '').trim();
+  if (removeImageId) {
+    removeAIChatImage(removeImageId);
+    return;
+  }
+  const removePackKey = String(target.dataset.aiChatPackRemove || '').trim();
+  if (removePackKey) {
+    removeAIChatContextPack(removePackKey);
+  }
+}
+
+async function sendAIChat(event) {
+  event.preventDefault();
+  if (state.aiChat.pending) {
+    return;
+  }
+  const draft = String(el.aiChatInput?.value || '').trim();
+  const images = [...(state.aiChat.selectedImages || [])];
+  const packs = [...(state.aiChat.selectedContextPacks || [])];
+  if (!draft && images.length === 0 && packs.length === 0) {
+    throw new Error('请先输入内容，或者附带图片 / 数据包');
+  }
+
+  const history = (state.aiChat.messages || [])
+    .filter((item) => !item.pending && (item.role === 'user' || item.role === 'assistant'))
+    .slice(-8)
+    .map((item) => ({
+      role: item.role,
+      content: item.content
+    }));
+
+  const attachmentSnapshot = [
+    ...images.map((item) => ({ type: 'image', title: item.file.name })),
+    ...packs.map((item) => ({ type: 'context', title: item.title }))
+  ];
+
+  const userMessage = {
+    id: aiChatMessageId(),
+    role: 'user',
+    content: draft || '请结合我附带的附件进行分析。',
+    attachments: attachmentSnapshot,
+    createdAt: new Date().toISOString()
+  };
+  const pendingMessage = {
+    id: aiChatMessageId(),
+    role: 'assistant',
+    content: '处理中...',
+    attachments: [],
+    createdAt: new Date().toISOString(),
+    pending: true
+  };
+
+  state.aiChat.messages = [...(state.aiChat.messages || []), userMessage, pendingMessage];
+  state.aiChat.pending = true;
+  if (el.aiChatInput instanceof HTMLTextAreaElement) {
+    el.aiChatInput.value = '';
+  }
+  syncAIChatInputHeight();
+  clearAIChatAttachments();
+  renderAIChatMessages();
+
+  try {
+    const formData = new FormData();
+    formData.set('message', draft);
+    formData.set('history_json', JSON.stringify(history));
+    formData.set(
+      'context_packs_json',
+      JSON.stringify(
+        packs.map((item) => ({
+          ...item.spec
+        }))
+      )
+    );
+    for (const image of images) {
+      formData.append('images', image.file, image.file.name);
+    }
+
+    const res = await fetch('/api/ai/chat', {
+      method: 'POST',
+      body: formData
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.ok === false) {
+      throw new Error(
+        body.message || getRecommendationPolicyErrorMessage(body.error) || body.error || `request_failed_${res.status}`
+      );
+    }
+
+    const result = body.data || {};
+    state.aiChat.messages = (state.aiChat.messages || []).filter((item) => item.id !== pendingMessage.id);
+    state.aiChat.messages.push({
+      id: aiChatMessageId(),
+      role: 'assistant',
+      content: String(result.reply || '').trim() || '模型没有返回可展示内容。',
+      attachments: (result.attachments_used?.context_packs || []).map((item) => ({
+        type: 'context',
+        title: item.title || '上下文包'
+      })),
+      createdAt: new Date().toISOString()
+    });
+    if (Array.isArray(result.warnings) && result.warnings.length > 0) {
+      state.aiChat.messages.push({
+        id: aiChatMessageId(),
+        role: 'system',
+        content: `部分上下文已降级处理：${result.warnings.join('；')}`,
+        attachments: [],
+        createdAt: new Date().toISOString()
+      });
+    }
+    renderAIChatMessages();
+  } catch (error) {
+    state.aiChat.messages = (state.aiChat.messages || []).filter((item) => item.id !== pendingMessage.id);
+    state.aiChat.messages.push({
+      id: aiChatMessageId(),
+      role: 'system',
+      content: error.message || 'Guru Ads Agent 请求失败，请稍后重试。',
+      attachments: [],
+      createdAt: new Date().toISOString()
+    });
+    renderAIChatMessages();
+    showToast(error.message || 'Guru Ads Agent 请求失败', true);
+  } finally {
+    state.aiChat.pending = false;
+  }
 }
 
 async function api(path, options = {}) {
@@ -661,6 +1615,75 @@ function volumeTierLabel(tier) {
     high: '高量级'
   };
   return mapping[tier] || tier || '-';
+}
+
+function normalizeExecutionActions(value) {
+  if (Array.isArray(value)) {
+    return value.filter((item) => item && typeof item === 'object');
+  }
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter((item) => item && typeof item === 'object') : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function normalizeScenarioTags(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => String(item || '').trim()).filter(Boolean);
+      }
+    } catch {
+      return value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+  }
+  return [];
+}
+
+function scenarioTagLabel(tag) {
+  const mapping = {
+    low_spend_signal_weak: '低量级信号偏弱',
+    high_spend_uptrend_expandable: '高量级上涨可扩量'
+  };
+  return mapping[tag] || tag || '';
+}
+
+function formatBudgetExecutionActionSummary(row, llmSummary = null) {
+  const executionActions = normalizeExecutionActions(row?.execution_actions);
+  if (executionActions.length > 0) {
+    return executionActions
+      .map((item) => String(item.label || '').trim())
+      .filter(Boolean)
+      .join(' / ');
+  }
+  const summary = llmSummary || safeJsonParse(row?.llm_summary, {});
+  const actionItems = Array.isArray(summary?.action_items)
+    ? summary.action_items.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+  return actionItems.slice(0, 2).join(' / ');
+}
+
+function formatBudgetScenarioTagSummary(row, llmSummary = null) {
+  const tags = normalizeScenarioTags(row?.scenario_tags);
+  if (tags.length > 0) {
+    return tags.map((item) => scenarioTagLabel(item)).join(' / ');
+  }
+  const summary = llmSummary || safeJsonParse(row?.llm_summary, {});
+  return normalizeScenarioTags(summary?.scenario_tags)
+    .map((item) => scenarioTagLabel(item))
+    .join(' / ');
 }
 
 function operationStatusLabel(status) {
@@ -1125,6 +2148,9 @@ function setActiveNav(sectionId) {
   for (const btn of el.navItems) {
     btn.classList.toggle('is-active', btn.dataset.target === sectionId);
   }
+  if (state.aiChat.contextMenuOpen || el.aiDock?.classList.contains('is-open')) {
+    renderAIChatPackMenus();
+  }
 }
 
 function scrollToSection(sectionId, smooth = true) {
@@ -1258,6 +2284,12 @@ function populateAppSelects() {
   if (el.recommendationPolicyAppSelect) {
     el.recommendationPolicyAppSelect.innerHTML = '<option value="">请选择要配置的应用</option>';
   }
+  if (el.aiChatPackAppSelect instanceof HTMLSelectElement) {
+    const appOptions = state.apps
+      .map((a) => `<option value="${a.app_key}">${escapeHtml(displayNameOfApp(a))} (${a.app_key})</option>`)
+      .join('');
+    el.aiChatPackAppSelect.innerHTML = `<option value="">请选择应用</option>${appOptions}`;
+  }
 
   const metricOptions = state.apps
     .map((a) => `<option value="${a.app_key}">${escapeHtml(displayNameOfApp(a))} (${a.app_key})</option>`)
@@ -1271,6 +2303,7 @@ function populateAppSelects() {
     el.asaStageAppSelect.value = state.apps[0].app_key;
   }
   renderRecommendationPolicySelectionFields();
+  primeAIChatBuilderDefaults();
 }
 
 function renderApps() {
@@ -1843,6 +2876,11 @@ function applyRecommendationPolicyDraftToInputs(draft) {
   el.recommendationPolicyHighSpendInput.value = String(draft.spendPolicy?.high_spend_threshold_usd || '');
   el.recommendationPolicyTrendLookbackInput.value = String(draft.spendPolicy?.trend_lookback_days || '7');
   el.recommendationPolicyUptrendRatioInput.value = String(draft.spendPolicy?.uptrend_min_ratio || '0.15');
+  el.recommendationPolicyDefaultIncreaseRatioInput.value = String(draft.adjustmentPolicy?.default_increase_ratio || '0.2');
+  el.recommendationPolicyDefaultDecreaseRatioInput.value = String(draft.adjustmentPolicy?.default_decrease_ratio || '0.2');
+  el.recommendationPolicyHighSpendIncreaseRatioInput.value = String(
+    draft.adjustmentPolicy?.high_spend_uptrend_increase_ratio || '0.3'
+  );
   el.recommendationPolicyPromptInput.value = String(draft.manualPromptMarkdown || '');
   el.recommendationPolicyEnabledSelect.value = draft.enabled === false ? 'false' : 'true';
   el.recommendationPolicyMediaSourceDraftInput.value = '';
@@ -1890,6 +2928,14 @@ function collectRecommendationPolicyDraftFromInputs() {
     high_spend_threshold_usd: String(el.recommendationPolicyHighSpendInput?.value || '').trim(),
     trend_lookback_days: String(el.recommendationPolicyTrendLookbackInput?.value || '7').trim() || '7',
     uptrend_min_ratio: String(el.recommendationPolicyUptrendRatioInput?.value || '0.15').trim() || '0.15'
+  };
+  baseDraft.adjustmentPolicy = {
+    default_increase_ratio:
+      String(el.recommendationPolicyDefaultIncreaseRatioInput?.value || '0.2').trim() || '0.2',
+    default_decrease_ratio:
+      String(el.recommendationPolicyDefaultDecreaseRatioInput?.value || '0.2').trim() || '0.2',
+    high_spend_uptrend_increase_ratio:
+      String(el.recommendationPolicyHighSpendIncreaseRatioInput?.value || '0.3').trim() || '0.3'
   };
   baseDraft.manualPromptMarkdown = String(el.recommendationPolicyPromptInput?.value || '');
   baseDraft.enabled = el.recommendationPolicyEnabledSelect?.value !== 'false';
@@ -3825,7 +4871,7 @@ function renderBudgetTable() {
   const rows = state.budgetRows || [];
   if (rows.length === 0) {
     el.budgetTableBody.innerHTML =
-      '<tr><td class="table-empty" colspan="18">当前筛选条件下暂无预算建议</td></tr>';
+      '<tr><td class="table-empty" colspan="19">当前筛选条件下暂无预算建议</td></tr>';
     return;
   }
 
@@ -3833,6 +4879,7 @@ function renderBudgetTable() {
     .map((row) => {
       const manualReview = String(row.validation_result || '').trim();
       const executionTableUrl = currentExecutionTableUrl();
+      const executionActionSummary = formatBudgetExecutionActionSummary(row);
       return `
       <tr>
         <td>${escapeHtml(row.date)}</td>
@@ -3847,6 +4894,7 @@ function renderBudgetTable() {
         <td class="table-cell-tight">${toFixed2(row.target_ecpi)}</td>
         <td><span class="badge badge-action-${escapeHtml(row.action)}">${actionLabel(row.action)}</span></td>
         <td>${(Number(row.change_ratio || 0) * 100).toFixed(1)}%</td>
+        <td class="table-cell-wrap">${escapeHtml(executionActionSummary || '-')}</td>
         <td>${(Number(row.confidence || 0) * 100).toFixed(1)}%</td>
         <td><span class="badge badge-${escapeHtml(row.status)}">${budgetStatusLabel(row.status)}</span></td>
         <td>${escapeHtml(String(row.execution_status || '未填写'))}</td>
@@ -3925,9 +4973,15 @@ async function changeBudgetPage(delta) {
 function openBudgetDetail(row) {
   state.activeBudgetDetail = row;
   const llmSummary = safeJsonParse(row.llm_summary, {});
-  const actionItems = Array.isArray(llmSummary.action_items) ? llmSummary.action_items : [];
+  const executionActionSummary = formatBudgetExecutionActionSummary(row, llmSummary);
+  const actionItems = Array.isArray(llmSummary.action_items) && llmSummary.action_items.length > 0
+    ? llmSummary.action_items
+    : executionActionSummary
+      ? executionActionSummary.split(' / ')
+      : [];
   const checklist = Array.isArray(llmSummary.checklist) ? llmSummary.checklist : [];
   const points = Array.isArray(llmSummary.explanation_points) ? llmSummary.explanation_points : [];
+  const scenarioTagSummary = formatBudgetScenarioTagSummary(row, llmSummary);
 
   el.budgetDetailTitle.textContent = `预算建议说明 · ${productViewName(row.app_key, row.platform || 'unknown')} · ${row.keyword}`;
   el.budgetDetailSummary.textContent = String(llmSummary.summary_cn || row.reason_code || '暂无补充说明');
@@ -3940,6 +4994,9 @@ function openBudgetDetail(row) {
   el.budgetDetailTargetEcpi.textContent = toFixed2(row.target_ecpi);
   el.budgetDetailCurrentRoas.textContent = row.current_roas == null ? '-' : toFixed2(row.current_roas);
   el.budgetDetailTargetRoas.textContent = row.target_roas == null ? '-' : toFixed2(row.target_roas);
+  el.budgetDetailBudgetAction.textContent = actionLabel(row.action);
+  el.budgetDetailExecutionActions.textContent = executionActionSummary || '-';
+  el.budgetDetailScenarioTags.textContent = scenarioTagSummary || '-';
   el.budgetDetailCurrentCost.textContent = toFixed2(row.current_cost);
   el.budgetDetailSuggestedBudget.textContent = toFixed2(row.suggested_budget);
   el.budgetDetailChangeRatio.textContent = `${(Number(row.change_ratio || 0) * 100).toFixed(1)}%`;
@@ -4627,6 +5684,10 @@ async function bootstrap() {
   setRulesSectionExpanded(false);
   applyUniformFieldLabels();
   setActiveNav('section-overview');
+  primeAIChatBuilderDefaults();
+  renderAIChatMessages();
+  renderAIChatAttachmentStrip();
+  syncAIChatInputHeight();
   setupSideNav();
   bindChartHover(el.metricsCanvas, el.metricsTooltip);
   bindChartHover(el.keywordTrendCanvas, el.keywordTooltip);
@@ -4837,6 +5898,9 @@ el.recommendationPolicyLowSpendInput?.addEventListener('input', handleRecommenda
 el.recommendationPolicyHighSpendInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
 el.recommendationPolicyTrendLookbackInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
 el.recommendationPolicyUptrendRatioInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyDefaultIncreaseRatioInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyDefaultDecreaseRatioInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyHighSpendIncreaseRatioInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
 el.recommendationPolicyPromptInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
 el.recommendationPolicyEnabledSelect?.addEventListener('change', handleRecommendationPolicyScalarInputChange);
 el.recommendationPolicyForm
@@ -5032,6 +6096,78 @@ el.aiDockToggle?.addEventListener('click', (event) => {
   event.stopPropagation();
   toggleAIDock();
 });
+el.aiDockBackdrop?.addEventListener('click', () => setAIDockOpen(false));
+el.aiChatCloseBtn?.addEventListener('click', () => setAIDockOpen(false));
+el.aiChatClearBtn?.addEventListener('click', () => {
+  clearAIChatConversation();
+  showToast('AI 会话已清空');
+});
+el.aiChatAddImageBtn?.addEventListener('click', () => {
+  if (el.aiChatFileInput instanceof HTMLInputElement) {
+    el.aiChatFileInput.click();
+  }
+});
+el.aiChatImageUploaderInline?.addEventListener('click', () => {
+  if (el.aiChatFileInput instanceof HTMLInputElement) {
+    el.aiChatFileInput.click();
+  }
+});
+el.aiChatAddContextBtn?.addEventListener('click', () => {
+  setAIChatContextMenuOpen(!state.aiChat.contextMenuOpen);
+});
+el.aiChatInput?.addEventListener('input', () => syncAIChatInputHeight());
+el.aiChatFileInput?.addEventListener('change', (event) => {
+  try {
+    handleAIChatImageSelection(event);
+  } catch (error) {
+    showToast(error.message || '图片上传失败', true);
+  }
+});
+el.aiChatAttachmentStrip?.addEventListener('click', (event) => handleAIChatAttachmentStripClick(event));
+el.aiChatRecommendedPacks?.addEventListener('click', (event) => handleAIChatPackCardClick(event));
+el.aiChatCorePacks?.addEventListener('click', (event) => handleAIChatPackCardClick(event));
+el.aiChatContextMenu?.addEventListener('toggle', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLDetailsElement)) {
+    return;
+  }
+  if (target.open && target.classList.contains('ai-chat-subfold')) {
+    const wrapper = target.parentElement;
+    wrapper?.querySelectorAll('.ai-chat-subfold').forEach((item) => {
+      if (item !== target) {
+        item.open = false;
+      }
+    });
+    syncAIChatAccordionState();
+    return;
+  }
+  if (target.open && target.classList.contains('ai-chat-fold')) {
+    el.aiChatContextMenu?.querySelectorAll('.ai-chat-fold').forEach((item) => {
+      if (item !== target) {
+        item.open = false;
+      }
+    });
+  }
+  syncAIChatAccordionState();
+});
+el.aiChatPackTypeSelect?.addEventListener('change', () => syncAIChatContextBuilderVisibility());
+el.aiChatPackSourceSelect?.addEventListener('change', () => syncAIChatContextBuilderVisibility());
+el.aiChatPackMetricSelect?.addEventListener('change', () => syncAIChatContextBuilderVisibility());
+el.aiChatPackTemplateSelect?.addEventListener('change', () => syncAIChatPackBuilderPreview());
+el.aiChatPackAppSelect?.addEventListener('change', () => syncAIChatPackBuilderPreview());
+el.aiChatPackPlatformSelect?.addEventListener('change', () => syncAIChatPackBuilderPreview());
+el.aiChatPackFromInput?.addEventListener('input', () => syncAIChatPackBuilderPreview());
+el.aiChatPackToInput?.addEventListener('input', () => syncAIChatPackBuilderPreview());
+el.aiChatPackEventNameInput?.addEventListener('input', () => syncAIChatPackBuilderPreview());
+el.aiChatPackStageSelect?.addEventListener('change', () => syncAIChatPackBuilderPreview());
+el.aiChatAttachCustomPackBtn?.addEventListener('click', () => {
+  try {
+    addAIChatContextPack(buildCustomAIChatPackSpec());
+  } catch (error) {
+    showToast(error.message || '附加数据包失败', true);
+  }
+});
+el.aiChatForm?.addEventListener('submit', (event) => sendAIChat(event).catch((err) => showToast(err.message || '发送失败', true)));
 el.aiDockPanel?.addEventListener('click', (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) {
@@ -5072,6 +6208,16 @@ document.addEventListener('click', (event) => {
   if (!(el.aiDock instanceof HTMLElement)) {
     return;
   }
+  if (state.aiChat.contextMenuOpen) {
+    const target = event.target;
+    if (
+      target instanceof Node &&
+      (el.aiChatContextMenu?.contains(target) || el.aiChatAddContextBtn?.contains(target))
+    ) {
+      return;
+    }
+    setAIChatContextMenuOpen(false);
+  }
   const target = event.target;
   if (target instanceof Node && el.aiDock.contains(target)) {
     return;
@@ -5079,8 +6225,16 @@ document.addEventListener('click', (event) => {
   setAIDockOpen(false);
 });
 document.addEventListener('keydown', (event) => {
+  if (state.aiChat.aiDockOpen && event.key === 'Tab') {
+    handleAIDockFocusTrap(event);
+    return;
+  }
   if (event.key === 'Escape') {
     hideAllHelpPopovers();
+    if (state.aiChat.contextMenuOpen) {
+      setAIChatContextMenuOpen(false);
+      return;
+    }
     setAIDockOpen(false);
   }
 });

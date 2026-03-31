@@ -14,6 +14,7 @@ import bitableExportsRoutes from './modules/bitableExports/bitableExports.routes
 import operationLogsRoutes from './modules/operationLogs/operationLogs.routes.js';
 import asaKeywordsRoutes from './modules/asaKeywords/asaKeywords.routes.js';
 import runtimeScheduleRoutes from './modules/runtimeSchedule/runtimeSchedule.routes.js';
+import aiRoutes from './modules/ai/ai.routes.js';
 import uiRoutes from './modules/ui/ui.routes.js';
 import authRoutes from './modules/auth/auth.routes.js';
 import { adminBasicAuthMiddleware, assertAdminAuthConfigured } from './common/auth/adminBasicAuth.js';
@@ -52,6 +53,7 @@ export function createApp(): express.Express {
   app.use(bitableExportsRoutes);
   app.use(asaKeywordsRoutes);
   app.use(runtimeScheduleRoutes);
+  app.use(aiRoutes);
   app.use(operationLogsRoutes);
   app.use(alertsRoutes);
   app.use(rulesRoutes);

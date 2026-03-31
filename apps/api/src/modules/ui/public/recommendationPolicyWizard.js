@@ -1,6 +1,11 @@
 const THRESHOLD_FIELDS = ['ecpi_max', 'roas_min', 'roas_good', 'cpp_max', 'cpp_pause_threshold'];
 const DEFAULT_CONTEXT_WINDOWS = [7, 14, 21];
 const DEFAULT_RELATIVE_METRICS = ['ctr', 'cvr', 'cpi', 'roas'];
+const DEFAULT_ADJUSTMENT_POLICY = {
+  default_increase_ratio: '0.2',
+  default_decrease_ratio: '0.2',
+  high_spend_uptrend_increase_ratio: '0.3'
+};
 const THRESHOLD_FIELDS_BY_METRIC_FAMILY = {
   ecpi: ['ecpi_max'],
   d7_roas_cpp: ['roas_min', 'roas_good', 'cpp_max', 'cpp_pause_threshold'],
@@ -188,6 +193,11 @@ function createBaseDraft(selection = {}) {
       trend_lookback_days: '7',
       uptrend_min_ratio: '0.15'
     },
+    adjustmentPolicy: {
+      default_increase_ratio: DEFAULT_ADJUSTMENT_POLICY.default_increase_ratio,
+      default_decrease_ratio: DEFAULT_ADJUSTMENT_POLICY.default_decrease_ratio,
+      high_spend_uptrend_increase_ratio: DEFAULT_ADJUSTMENT_POLICY.high_spend_uptrend_increase_ratio
+    },
     relativeCompare: {
       metrics: DEFAULT_RELATIVE_METRICS.slice(),
       underperform_ratio: '0.2',
@@ -214,6 +224,7 @@ export function buildPolicyDraftFromRow(row = {}) {
   const targets = isPlainObject(rule.targets) ? rule.targets : {};
   const maturityWindow = isPlainObject(rule.maturity_window) ? rule.maturity_window : {};
   const spendPolicy = isPlainObject(rule.spend_policy) ? rule.spend_policy : {};
+  const adjustmentPolicy = isPlainObject(rule.adjustment_policy) ? rule.adjustment_policy : {};
   const relativeCompare = isPlainObject(rule.relative_compare) ? rule.relative_compare : {};
   const draft = createBaseDraft({
     platform: row.platform,
@@ -240,6 +251,13 @@ export function buildPolicyDraftFromRow(row = {}) {
     high_spend_threshold_usd: toInputValue(spendPolicy.high_spend_threshold_usd),
     trend_lookback_days: toInputValue(spendPolicy.trend_lookback_days ?? 7),
     uptrend_min_ratio: toInputValue(spendPolicy.uptrend_min_ratio ?? 0.15)
+  };
+  draft.adjustmentPolicy = {
+    default_increase_ratio: toInputValue(adjustmentPolicy.default_increase_ratio ?? DEFAULT_ADJUSTMENT_POLICY.default_increase_ratio),
+    default_decrease_ratio: toInputValue(adjustmentPolicy.default_decrease_ratio ?? DEFAULT_ADJUSTMENT_POLICY.default_decrease_ratio),
+    high_spend_uptrend_increase_ratio: toInputValue(
+      adjustmentPolicy.high_spend_uptrend_increase_ratio ?? DEFAULT_ADJUSTMENT_POLICY.high_spend_uptrend_increase_ratio
+    )
   };
   draft.relativeCompare = {
     metrics: normalizeStringList(relativeCompare.metrics).filter((metric) => POLICY_RELATIVE_METRIC_LABELS[metric]),
@@ -363,6 +381,25 @@ export function mergeRecommendationPolicyRule(baseRule = {}, draft = {}) {
     spendPolicy.uptrend_min_ratio = 0.15;
   }
 
+  const adjustmentPolicy = isPlainObject(result.adjustment_policy) ? result.adjustment_policy : {};
+  result.adjustment_policy = adjustmentPolicy;
+  applyControlledNumberFields(adjustmentPolicy, sanitizedDraft.adjustmentPolicy, [
+    'default_increase_ratio',
+    'default_decrease_ratio',
+    'high_spend_uptrend_increase_ratio'
+  ]);
+  if (toNumberOrUndefined(sanitizedDraft.adjustmentPolicy?.default_increase_ratio) === undefined) {
+    adjustmentPolicy.default_increase_ratio = Number(DEFAULT_ADJUSTMENT_POLICY.default_increase_ratio);
+  }
+  if (toNumberOrUndefined(sanitizedDraft.adjustmentPolicy?.default_decrease_ratio) === undefined) {
+    adjustmentPolicy.default_decrease_ratio = Number(DEFAULT_ADJUSTMENT_POLICY.default_decrease_ratio);
+  }
+  if (toNumberOrUndefined(sanitizedDraft.adjustmentPolicy?.high_spend_uptrend_increase_ratio) === undefined) {
+    adjustmentPolicy.high_spend_uptrend_increase_ratio = Number(
+      DEFAULT_ADJUSTMENT_POLICY.high_spend_uptrend_increase_ratio
+    );
+  }
+
   if (metricFamily === 'relative_compare') {
     const relativeCompare = isPlainObject(result.relative_compare) ? result.relative_compare : {};
     result.relative_compare = relativeCompare;
@@ -393,6 +430,22 @@ function formatNumber(value) {
     return String(value);
   }
   return Number.isInteger(parsed) ? String(parsed) : parsed.toFixed(parsed >= 10 ? 0 : 2).replace(/\.?0+$/, '');
+}
+
+function summarizeAdjustmentPolicy(rule) {
+  const adjustmentPolicy = isPlainObject(rule.adjustment_policy) ? rule.adjustment_policy : {};
+  const increaseRatio = Number(adjustmentPolicy.default_increase_ratio);
+  const decreaseRatio = Number(adjustmentPolicy.default_decrease_ratio);
+  const highSpendIncreaseRatio = Number(adjustmentPolicy.high_spend_uptrend_increase_ratio);
+  if (
+    !Number.isFinite(increaseRatio) ||
+    !Number.isFinite(decreaseRatio) ||
+    !Number.isFinite(highSpendIncreaseRatio) ||
+    (increaseRatio === 0.2 && decreaseRatio === 0.2 && highSpendIncreaseRatio === 0.3)
+  ) {
+    return '';
+  }
+  return `上调 ${formatNumber(increaseRatio * 100)}% / 下调 ${formatNumber(decreaseRatio * 100)}% / 高花费扩量 ${formatNumber(highSpendIncreaseRatio * 100)}%`;
 }
 
 function summarizeObjective(rule) {
@@ -434,6 +487,8 @@ function summarizeThresholds(rule) {
     if (globalTargets.roas_good != null) parts.push(`优秀线 ≥ ${formatNumber(globalTargets.roas_good)}`);
     if (globalTargets.cpp_max != null) parts.push(`CPP ≤ ${formatNumber(globalTargets.cpp_max)}`);
     if (globalTargets.cpp_pause_threshold != null) parts.push(`暂停线 ≥ ${formatNumber(globalTargets.cpp_pause_threshold)}`);
+    const adjustmentSummary = summarizeAdjustmentPolicy(rule);
+    if (adjustmentSummary) parts.push(adjustmentSummary);
     return parts.join(' · ') || '按 ROAS 与 CPP 共同判断';
   }
 
@@ -446,6 +501,8 @@ function summarizeThresholds(rule) {
       parts.push(`明显落后阈值 ${formatNumber(Number(relativeCompare.underperform_ratio) * 100)}%`);
     }
     if (relativeCompare.min_peer_count != null) parts.push(`至少 ${formatNumber(relativeCompare.min_peer_count)} 个对比对象`);
+    const adjustmentSummary = summarizeAdjustmentPolicy(rule);
+    if (adjustmentSummary) parts.push(adjustmentSummary);
     return parts.join(' · ') || '按同类对比判断';
   }
 
@@ -459,6 +516,8 @@ function summarizeThresholds(rule) {
   if (mediaCount > 0) {
     parts.push(`${mediaCount} 个媒体源单独阈值`);
   }
+  const adjustmentSummary = summarizeAdjustmentPolicy(rule);
+  if (adjustmentSummary) parts.push(adjustmentSummary);
   return parts.join(' · ') || '按 eCPI 判断';
 }
 

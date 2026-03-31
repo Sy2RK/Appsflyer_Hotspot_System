@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { logger } from '@api/common/logger/logger.js';
 import { env } from '@shared/config/env.js';
+import { startJobLockHeartbeat } from '@shared/utils/jobLockHeartbeat.js';
 import { runScheduledBitableExports } from '@shared/utils/bitableExport.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 import {
@@ -14,6 +15,7 @@ import {
   hasReachedDailyTime,
   nextDailyTimeLocalString
 } from '@shared/utils/schedule.js';
+import { isScheduledWorkerTimeoutError, withScheduledWorkerTimeout } from '@shared/utils/scheduledWorkerTimeout.js';
 import {
   completeScheduledWorkerRun,
   failScheduledWorkerRun,
@@ -28,7 +30,7 @@ let lastRetryBlockMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
 const BITABLE_EXPORT_WORKER_NAME = 'worker.bitable_export';
 const BITABLE_EXPORT_JOB_LOCK = 'worker:bitable_export:tick';
-const BITABLE_EXPORT_JOB_LOCK_TTL_MS = 60 * 60 * 1000;
+const BITABLE_EXPORT_JOB_LOCK_TTL_MS = 5 * 60 * 1000;
 const MAX_DAILY_RETRY_ATTEMPTS = 3;
 const RETRY_COOLDOWN_MS = 15 * 60 * 1000;
 const RETRY_POLICY = {
@@ -44,8 +46,10 @@ async function tick(runMarker: string): Promise<boolean> {
 
   running = true;
   let lockOwnerId = '';
+  let stopLockHeartbeat: (() => void) | null = null;
   let attemptClaimed = false;
   let completed = false;
+  let shouldExitAfterTimeout = false;
   try {
     lockOwnerId = crypto.randomUUID();
     const lockAcquired = await tryAcquireJobLock(
@@ -57,6 +61,13 @@ async function tick(runMarker: string): Promise<boolean> {
       logger.warn('bitable_export_skip_distributed_overlap');
       return false;
     }
+    stopLockHeartbeat = startJobLockHeartbeat({
+      lockName: BITABLE_EXPORT_JOB_LOCK,
+      ownerId: lockOwnerId,
+      ttlMs: BITABLE_EXPORT_JOB_LOCK_TTL_MS,
+      logger,
+      logPrefix: 'bitable_export'
+    });
     const claimDecision = await tryClaimScheduledWorkerRunAttempt(
       BITABLE_EXPORT_WORKER_NAME,
       runMarker,
@@ -72,7 +83,11 @@ async function tick(runMarker: string): Promise<boolean> {
       return false;
     }
     attemptClaimed = true;
-    const result = await runScheduledBitableExports(logger);
+    const result = await withScheduledWorkerTimeout(
+      BITABLE_EXPORT_WORKER_NAME,
+      env.scheduledWorkerMaxRuntimeMs,
+      () => runScheduledBitableExports(logger)
+    );
     completed = result.completed;
     if (completed) {
       await completeScheduledWorkerRun(BITABLE_EXPORT_WORKER_NAME, runMarker);
@@ -96,6 +111,7 @@ async function tick(runMarker: string): Promise<boolean> {
       logger
     );
   } catch (error) {
+    shouldExitAfterTimeout = isScheduledWorkerTimeoutError(error);
     if (attemptClaimed) {
       await failScheduledWorkerRun(
         BITABLE_EXPORT_WORKER_NAME,
@@ -121,10 +137,18 @@ async function tick(runMarker: string): Promise<boolean> {
       logger
     );
   } finally {
+    stopLockHeartbeat?.();
     if (lockOwnerId) {
       await releaseJobLock(BITABLE_EXPORT_JOB_LOCK, lockOwnerId);
     }
     running = false;
+    if (shouldExitAfterTimeout) {
+      logger.error('bitable_export_process_exit_after_timeout', {
+        run_marker: runMarker,
+        timeout_ms: env.scheduledWorkerMaxRuntimeMs
+      });
+      process.exit(1);
+    }
   }
 
   return completed;

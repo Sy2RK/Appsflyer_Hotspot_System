@@ -5,6 +5,7 @@ import { chQuery } from './clickhouse.js';
 import { pgQuery } from './postgres.js';
 import { getPushScheduleTarget } from './runtimeSchedule.js';
 import {
+  ensureBudgetRecommendationsSchema,
   getDailyBriefDispatch,
   listAlerts,
   listApps,
@@ -52,8 +53,12 @@ interface DailyBriefBudgetHighlight {
   metric_mode: 'active' | 'roas_pending_revenue';
   confidence: number;
   reason_code: string;
+  execution_actions?: Array<{ label?: string; code?: string }> | null;
+  scenario_tags?: string[] | null;
   llm_summary?: {
     summary_cn?: string;
+    action_items?: string[];
+    scenario_tags?: string[];
   } | null;
   reason_summary?: string;
 }
@@ -311,10 +316,34 @@ function budgetDeltaRatio(row: Pick<DailyBriefBudgetHighlight, 'current_ecpi' | 
 }
 
 function isSignificantBudgetHighlight(row: DailyBriefBudgetHighlight): boolean {
+  const executionActions = Array.isArray(row.execution_actions) ? row.execution_actions : [];
+  if (executionActions.length > 0) {
+    return Number(row.confidence) >= DAILY_BRIEF_BUDGET_MIN_CONFIDENCE;
+  }
   return (
     Number(row.confidence) >= DAILY_BRIEF_BUDGET_MIN_CONFIDENCE &&
     budgetDeltaRatio(row) >= DAILY_BRIEF_BUDGET_MIN_DELTA_RATIO
   );
+}
+
+function formatExecutionActionSummary(row: DailyBriefBudgetHighlight): string {
+  const executionActions = Array.isArray(row.execution_actions)
+    ? row.execution_actions.map((item) => String(item?.label || '').trim()).filter(Boolean)
+    : [];
+  if (executionActions.length > 0) {
+    return executionActions.join(' / ');
+  }
+  const actionItems = Array.isArray(row.llm_summary?.action_items)
+    ? row.llm_summary.action_items.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+  return actionItems.slice(0, 2).join(' / ');
+}
+
+function formatBudgetActionSummary(row: DailyBriefBudgetHighlight): string {
+  if (row.action === 'hold') {
+    return '保持预算';
+  }
+  return `${actionLabel(row.action)} ${Math.abs(row.change_ratio * 100).toFixed(0)}%`;
 }
 
 function trimSentence(value: string, limit = 72): string {
@@ -336,6 +365,11 @@ function buildBudgetAdjustmentReason(row: DailyBriefBudgetHighlight): string {
   const llmSummary = normalizeBudgetReasonText(String(row.llm_summary?.summary_cn || ''));
   if (llmSummary) {
     return llmSummary;
+  }
+
+  const executionSummary = formatExecutionActionSummary(row);
+  if (executionSummary) {
+    return `执行动作：${executionSummary}。`;
   }
 
   const current = Number(row.current_ecpi) || 0;
@@ -457,7 +491,8 @@ async function queryAppMetrics(reportDate: string, filters: DailyBriefFilters): 
 }
 
 async function queryPendingBudgetHighlights(reportDate: string, filters: DailyBriefFilters): Promise<DailyBriefBudgetHighlight[]> {
-  const clauses = [`date = $1::date`, `status = 'pending'`, `action <> 'hold'`];
+  await ensureBudgetRecommendationsSchema();
+  const clauses = [`date = $1::date`, `status = 'pending'`, `(action <> 'hold' OR jsonb_array_length(execution_actions) > 0)`];
   const values: unknown[] = [reportDate];
 
   const appKey = cleanText(filters.appKey);
@@ -479,7 +514,7 @@ async function queryPendingBudgetHighlights(reportDate: string, filters: DailyBr
 
   const result = await pgQuery<DailyBriefBudgetHighlight>(
     `SELECT app_key, platform, media_source, keyword, action, change_ratio, current_ecpi, target_ecpi,
-            primary_metric, metric_mode, confidence, reason_code, llm_summary
+            primary_metric, metric_mode, confidence, reason_code, llm_summary, execution_actions, scenario_tags
        FROM budget_recommendations
       WHERE ${clauses.join(' AND ')}
       ORDER BY ABS(current_ecpi - target_ecpi) DESC, confidence DESC, updated_at DESC
@@ -618,11 +653,14 @@ function buildActionItems(params: {
     const app = params.appByKey.get(row.app_key);
     const appName = resolveProductViewName(app, row.platform);
     const action = actionLabel(row.action);
-    const ratio = `${Math.abs(row.change_ratio * 100).toFixed(0)}%`;
+    const actionSummary = formatBudgetActionSummary(row);
+    const executionSummary = formatExecutionActionSummary(row);
     items.push({
       priority: row.action === 'pause' ? 'P0' : 'P2',
       category: 'budget',
-      title: `${appName} / ${row.media_source} 建议${action}广告系列预算 ${ratio}`,
+      title: executionSummary
+        ? `${appName} / ${row.media_source} 建议${action}预算并执行「${executionSummary}」`
+        : `${appName} / ${row.media_source} 建议${actionSummary}`,
       detail: `广告系列 ${row.keyword} 当前 eCPI ${formatUsd(row.current_ecpi)}，目标 ${formatUsd(row.target_ecpi)}，置信度 ${(row.confidence * 100).toFixed(0)}%。${row.reason_summary || buildBudgetAdjustmentReason(row)}`
     });
   }
@@ -698,7 +736,10 @@ function buildDailyBriefInteractiveCard(params: {
               row.metric_mode === 'roas_pending_revenue'
                 ? `当前仍按 eCPI 建议，ROAS 待收入数据接入`
                 : `当前 eCPI ${formatUsd(row.current_ecpi)} ｜ 目标 ${formatUsd(row.target_ecpi)}`;
-            return `${actionEmoji(row.action)} **${appName}**\n媒体源：${row.media_source}\n广告系列：${row.keyword}\n${actionLabel(row.action)} ${Math.abs(row.change_ratio * 100).toFixed(0)}% ｜ ${metricText} ｜ 置信度 ${(row.confidence * 100).toFixed(0)}%\n理由：${row.reason_summary || buildBudgetAdjustmentReason(row)}`;
+            const executionSummary = formatExecutionActionSummary(row);
+            return `${actionEmoji(row.action)} **${appName}**\n媒体源：${row.media_source}\n广告系列：${row.keyword}\n${formatBudgetActionSummary(row)} ｜ ${metricText} ｜ 置信度 ${(row.confidence * 100).toFixed(0)}${
+              executionSummary ? `\n执行动作：${executionSummary}` : ''
+            }\n理由：${row.reason_summary || buildBudgetAdjustmentReason(row)}`;
           })
           .join('\n\n')
       : '暂无待处理预算动作。';
@@ -917,7 +958,9 @@ export async function buildDailyBriefPreview(
           ? '当前仍按 eCPI 建议，ROAS 待收入数据接入'
           : `当前 eCPI ${formatUsd(row.current_ecpi)}，目标 ${formatUsd(row.target_ecpi)}`;
       lines.push(
-        `- ${appName}：媒体源 ${row.media_source}；广告系列 ${row.keyword}；${actionLabel(row.action)} ${Math.abs(row.change_ratio * 100).toFixed(0)}%，${metricModeText}，置信度 ${(row.confidence * 100).toFixed(0)}%。${row.reason_summary}`
+        `- ${appName}：媒体源 ${row.media_source}；广告系列 ${row.keyword}；${formatBudgetActionSummary(row)}，${metricModeText}，置信度 ${(row.confidence * 100).toFixed(0)}%。${
+          formatExecutionActionSummary(row) ? `执行动作 ${formatExecutionActionSummary(row)}。` : ''
+        }${row.reason_summary}`
       );
     }
   }

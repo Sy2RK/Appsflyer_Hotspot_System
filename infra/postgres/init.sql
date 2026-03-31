@@ -156,6 +156,8 @@ CREATE TABLE IF NOT EXISTS budget_recommendations (
   confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
   reason_code TEXT NOT NULL DEFAULT 'unknown',
   llm_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+  execution_actions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  scenario_tags JSONB NOT NULL DEFAULT '[]'::jsonb,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'applied', 'rejected', 'expired')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -171,6 +173,8 @@ ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS metric_mode TEXT NOT
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS current_roas DOUBLE PRECISION;
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS target_roas DOUBLE PRECISION;
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS volume_tier TEXT NOT NULL DEFAULT 'low';
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS execution_actions JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS scenario_tags JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE budget_recommendations
   DROP CONSTRAINT IF EXISTS budget_recommendations_app_key_keyword_match_type_date_key;
 DROP INDEX IF EXISTS uq_budget_recommendations_platform_key;

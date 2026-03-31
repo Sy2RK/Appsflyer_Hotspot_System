@@ -13,9 +13,11 @@
   - `bitable-export` 自动使用 `推送时间 + 5 分钟`
   - 自动发送链路会等待 `budget-advisor` 与 `asa-keywords` 对应报告日真正完成后，再继续日报 / ASA 简报 / Feishu 多维表格
 - WebUI 全局 AI 悬浮入口
-  - 右下角提供统一的 AI 功能舱入口
-  - 当前内置 Gemini 官网跳转
-  - 后续可继续扩展诊断助手、投放 Copilot 等功能
+  - 右下角提供统一的 `Guru Ads Agent` 入口
+  - 当前已接入抽屉式对话窗，复用 Qwen 3.5
+  - 支持页面内多轮对话、图片上传、数据库聚合上下文包附带
+  - 面板内保留 Gemini 官网外部工具快捷入口
+  - 后续可继续扩展诊断助手、投放 Copilot、日报快读等功能
 - 通用投放项 / 广告系列监控与预算建议
   - 手动生成预算建议时支持进度条与 `已生成建议 / 总建议` 实时展示
   - 内置“应用级规则配置”向导，按 `app + platform + 建议类型` 单独维护规则
@@ -105,7 +107,7 @@ docker compose up -d --build
 ## 最近补充
 
 - 顶部全局调度配置（Pull / Push 时间统一管理）
-- WebUI 全局 Gemini 悬浮舱入口
+- WebUI 全局 `Guru Ads Agent` 悬浮入口
 - ASA keyword 成本切换到 AppsFlyer Master API
 - Feishu 多维表格按日期留档、反馈回读与 `七天后数据` 自动补列
 - 每日 worker 改为数据库持久化运行状态，避免多实例串行重复跑

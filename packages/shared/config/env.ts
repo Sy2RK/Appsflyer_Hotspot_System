@@ -94,6 +94,7 @@ export const env = {
     'PULLER_SAME_CONTENT_COOLDOWN_HISTORICAL_MS',
     24 * 60 * 60 * 1000
   ),
+  scheduledWorkerMaxRuntimeMs: optionalNumber('SCHEDULED_WORKER_MAX_RUNTIME_MS', 6 * 60 * 60 * 1000),
 
   keywordEngineInitialBackfillDays: optionalNumber('KEYWORD_ENGINE_INITIAL_BACKFILL_DAYS', 30),
   keywordEngineRollingBackfillDays: optionalNumber('KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS', 3),

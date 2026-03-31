@@ -10,8 +10,11 @@ services:
       - '127.0.0.1:9000:9000'
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-system-part-log:/var/lib/clickhouse/store/24c/24c2bf8d-37ed-4f7e-90b8-75717be87350
+      - clickhouse-system-asynchronous-metric-log:/var/lib/clickhouse/store/7c5/7c5a2d48-7106-4cc3-9184-887f2ffa8205
       - ./clickhouse/init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
       - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ./clickhouse/disable-problematic-system-logs.xml:/etc/clickhouse-server/config.d/disable-problematic-system-logs.xml:ro
 
   postgres:
     image: postgres:16
@@ -296,4 +299,6 @@ services:
 
 volumes:
   clickhouse-data:
+  clickhouse-system-part-log:
+  clickhouse-system-asynchronous-metric-log:
   postgres-data:

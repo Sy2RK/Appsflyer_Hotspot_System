@@ -10,8 +10,15 @@ import {
   listRecommendationPolicyConfigs,
   upsertBudgetRecommendation
 } from './repositories.js';
-import { KeywordLifecycleStateRow, RecommendationPolicyRuleJson } from '../types/models.js';
 import {
+  BudgetAction,
+  BudgetExecutionAction,
+  KeywordLifecycleStateRow,
+  RecommendationPolicyAdjustmentConfig,
+  RecommendationPolicyRuleJson
+} from '../types/models.js';
+import {
+  buildBudgetExecutionActions,
   buildRecommendationPolicyKey,
   buildRecommendationPolicyMap,
   defaultRecommendationPolicyRule,
@@ -117,6 +124,18 @@ export interface BudgetCountryWindowMetric {
 type VolumeTier = 'low' | 'medium' | 'high';
 type PrimaryMetric = 'ecpi' | 'roas';
 type MetricMode = 'active' | 'roas_pending_revenue';
+type BudgetDecisionPlan = {
+  action: BudgetAction;
+  changeRatio: number;
+  confidence: number;
+  reasonCode: string;
+  volumeTier: VolumeTier;
+};
+
+export interface FinalizedBudgetDecisionPlan extends BudgetDecisionPlan {
+  executionActions: BudgetExecutionAction[];
+  scenarioTags: string[];
+}
 
 function factKey(platform: string, mediaSource: string, keyword: string, matchType: string): string {
   return `${platform}|${mediaSource}|${keyword}|${matchType}`;
@@ -191,8 +210,65 @@ function resolveVolumeTier(last3Installs: number): VolumeTier {
   return 'low';
 }
 
-function shouldCreateRecommendation(action: 'increase' | 'decrease' | 'hold' | 'pause'): boolean {
-  return action !== 'hold';
+function shouldPersistBudgetRecommendation(action: BudgetAction, executionActions: BudgetExecutionAction[]): boolean {
+  return action !== 'hold' || executionActions.length > 0;
+}
+
+function buildExecutionActionCodesForScenario(tag: string): Array<BudgetExecutionAction['code']> {
+  if (tag === 'low_spend_signal_weak') {
+    return ['iterate_creative', 'increase_spend_capacity'];
+  }
+  if (tag === 'high_spend_uptrend_expandable') {
+    return ['raise_roas_target', 'scale_gradually'];
+  }
+  return [];
+}
+
+function resolveBudgetChangeRatio(action: BudgetAction, policy: RecommendationPolicyAdjustmentConfig): number {
+  if (action === 'increase') {
+    return Math.max(0, policy.default_increase_ratio);
+  }
+  if (action === 'decrease') {
+    return -Math.max(0, policy.default_decrease_ratio);
+  }
+  if (action === 'pause') {
+    return -1;
+  }
+  return 0;
+}
+
+export function finalizeBudgetDecisionPlan(input: {
+  decision: BudgetDecisionPlan;
+  scenarioTags: string[];
+  adjustmentPolicy?: RecommendationPolicyAdjustmentConfig | null;
+}): FinalizedBudgetDecisionPlan {
+  const adjustmentPolicy = input.adjustmentPolicy ?? defaultRecommendationPolicyRule().adjustment_policy;
+  const scenarioTags = Array.from(new Set((input.scenarioTags || []).filter(Boolean)));
+  const hasLowSpendSignal = scenarioTags.includes('low_spend_signal_weak');
+  const hasHighSpendUptrend = scenarioTags.includes('high_spend_uptrend_expandable');
+  const baseDecision = input.decision;
+  let finalAction = baseDecision.action;
+  let finalChangeRatio = resolveBudgetChangeRatio(baseDecision.action, adjustmentPolicy);
+  let executionActions: BudgetExecutionAction[] = [];
+
+  if (baseDecision.action === 'pause') {
+    finalChangeRatio = -1;
+  } else if (hasLowSpendSignal) {
+    finalAction = 'hold';
+    finalChangeRatio = 0;
+    executionActions = buildBudgetExecutionActions(buildExecutionActionCodesForScenario('low_spend_signal_weak'), 'scenario');
+  } else if (hasHighSpendUptrend && baseDecision.action === 'increase') {
+    finalChangeRatio = Math.max(0, adjustmentPolicy.high_spend_uptrend_increase_ratio);
+    executionActions = buildBudgetExecutionActions(buildExecutionActionCodesForScenario('high_spend_uptrend_expandable'), 'scenario');
+  }
+
+  return {
+    ...baseDecision,
+    action: finalAction,
+    changeRatio: finalChangeRatio,
+    executionActions,
+    scenarioTags
+  };
 }
 
 function resolvePrimaryMetric(
@@ -238,13 +314,7 @@ function buildDeterministicDecision(input: {
   last3Installs: number;
   last7Installs: number;
   last7Cost: number;
-}): {
-  action: 'increase' | 'decrease' | 'hold' | 'pause';
-  changeRatio: number;
-  confidence: number;
-  reasonCode: string;
-  volumeTier: VolumeTier;
-} {
+}): BudgetDecisionPlan {
   const stage = input.state.current_stage;
   const score = safeNumber(input.state.stage_score, 0);
   const ecpi = input.currentEcpi;
@@ -354,13 +424,7 @@ function buildValueWindowDecision(input: {
   pauseCppThreshold: number;
   volumeTier: VolumeTier;
   avgDailySpend: number;
-}): {
-  action: 'increase' | 'decrease' | 'hold' | 'pause';
-  changeRatio: number;
-  confidence: number;
-  reasonCode: string;
-  volumeTier: VolumeTier;
-} {
+}): BudgetDecisionPlan {
   const roasMin = Math.max(0, input.targetRoasMin);
   const roasGood = Math.max(roasMin, input.targetRoasGood || roasMin);
   const cppMax = Math.max(0, input.targetCpp);
@@ -506,14 +570,14 @@ async function queryBudgetKeywordSpendSeries(
         media_source,
         keyword,
         match_type,
-        toString(date) AS date,
+        toString(date) AS report_date,
         sum(toFloat64(total_cost)) AS daily_cost
       FROM keyword_daily_metrics FINAL
       WHERE app_key = {app_key:String}
         AND date >= toDate({from:String})
         AND date <= toDate({report_date:String})
-      GROUP BY platform, media_source, keyword, match_type, date
-      ORDER BY platform ASC, media_source ASC, keyword ASC, match_type ASC, date ASC`,
+      GROUP BY platform, media_source, keyword, match_type, report_date
+      ORDER BY platform ASC, media_source ASC, keyword ASC, match_type ASC, report_date ASC`,
     {
       app_key: appKey,
       from,
@@ -532,7 +596,7 @@ async function queryBudgetKeywordSpendSeries(
       String(row.match_type || 'unknown')
     );
     const bucket = byKeyDate.get(key) ?? new Map<string, number>();
-    bucket.set(String(row.date || ''), safeNumber(row.daily_cost));
+    bucket.set(String(row.report_date || ''), safeNumber(row.daily_cost));
     byKeyDate.set(key, bucket);
   }
 
@@ -572,7 +636,7 @@ export function aggregateBudgetCountryWindowFacts(
 async function queryBudgetCountryFacts(appKey: string, from: string, to: string): Promise<BudgetCountryFact[]> {
   const rows = await chQuery<Record<string, unknown>>(
     `SELECT
-        toString(date) AS date,
+        toString(date) AS report_date,
         platform,
         media_source,
         keyword,
@@ -584,7 +648,7 @@ async function queryBudgetCountryFacts(appKey: string, from: string, to: string)
       WHERE app_key = {app_key:String}
         AND date >= toDate({from:String})
         AND date <= toDate({to:String})
-      GROUP BY date, platform, media_source, keyword, match_type, country`,
+      GROUP BY report_date, platform, media_source, keyword, match_type, country`,
     {
       app_key: appKey,
       from,
@@ -592,7 +656,7 @@ async function queryBudgetCountryFacts(appKey: string, from: string, to: string)
     }
   );
   return rows.map((row) => ({
-    date: String(row.date || ''),
+    date: String(row.report_date || ''),
     platform: String(row.platform || 'unknown').toLowerCase(),
     media_source: String(row.media_source || 'unknown'),
     keyword: String(row.keyword || ''),
@@ -689,12 +753,7 @@ function buildRelativeCompareDecision(input: {
     cpi: number[];
     roas: number[];
   };
-}): {
-  action: 'increase' | 'decrease' | 'hold' | 'pause';
-  changeRatio: number;
-  confidence: number;
-  reasonCode: string;
-  volumeTier: VolumeTier;
+}): BudgetDecisionPlan & {
   failedMetrics: string[];
   strongMetrics: string[];
 } {
@@ -934,11 +993,9 @@ export async function runBudgetAdvisorCycle(
         currentCpp: number | null;
         targetCpp: number | null;
         spendSeries: number[];
-        scenarioTags: string[];
-        presetActionItems: string[];
+        finalDecision: FinalizedBudgetDecisionPlan;
         failedMetrics: string[];
         strongMetrics: string[];
-        decision: ReturnType<typeof buildDeterministicDecision> | ReturnType<typeof buildValueWindowDecision>;
         metricSettings: { primaryMetric: PrimaryMetric; metricMode: MetricMode };
       }> = [];
       const valueFactsByKey = new Map<string, BudgetValueFact[]>();
@@ -1109,7 +1166,13 @@ export async function runBudgetAdvisorCycle(
             volumeTier
           };
         }
-        if (!shouldCreateRecommendation(decision.action)) {
+        const finalDecision = finalizeBudgetDecisionPlan({
+          decision,
+          scenarioTags: scenarioEvaluation.scenarioTags,
+          adjustmentPolicy: policy?.adjustment_policy
+        });
+
+        if (!shouldPersistBudgetRecommendation(finalDecision.action, finalDecision.executionActions)) {
           continue;
         }
 
@@ -1129,11 +1192,9 @@ export async function runBudgetAdvisorCycle(
           currentCpp,
           targetCpp: policy?.metric_family === 'd7_roas_cpp' ? thresholdTargets.cpp_max ?? null : null,
           spendSeries,
-          scenarioTags: scenarioEvaluation.scenarioTags,
-          presetActionItems: scenarioEvaluation.actionItems,
+          finalDecision,
           failedMetrics: relativeDecision?.failedMetrics ?? [],
           strongMetrics: relativeDecision?.strongMetrics ?? [],
-          decision,
           metricSettings: resolvePrimaryMetric(app.app_key, fact.platform, policy)
         });
       }
@@ -1147,25 +1208,23 @@ export async function runBudgetAdvisorCycle(
           state,
           targetEcpi,
           policy,
-          decision,
+          finalDecision,
           metricSettings,
           currentRoas,
           targetRoas,
           currentCpp,
           targetCpp,
-          scenarioTags,
-          presetActionItems,
           failedMetrics,
           strongMetrics
         } = candidate;
         const currentCost = Math.max(0, fact.last7_cost);
-        const suggestedBudget = Math.max(0, currentCost * (1 + decision.changeRatio));
+        const suggestedBudget = Math.max(0, currentCost * (1 + finalDecision.changeRatio));
         const expectedInstallsDelta =
-          decision.action === 'increase'
-            ? fact.last7_installs * Math.abs(decision.changeRatio) * 0.7
-            : decision.action === 'decrease'
-              ? -fact.last7_installs * Math.abs(decision.changeRatio) * 0.6
-              : decision.action === 'pause'
+          finalDecision.action === 'increase'
+            ? fact.last7_installs * Math.abs(finalDecision.changeRatio) * 0.7
+            : finalDecision.action === 'decrease'
+              ? -fact.last7_installs * Math.abs(finalDecision.changeRatio) * 0.6
+              : finalDecision.action === 'pause'
                 ? -fact.last7_installs
                 : 0;
 
@@ -1177,27 +1236,28 @@ export async function runBudgetAdvisorCycle(
           metricMode: metricSettings.metricMode,
           keyword: state.keyword,
           matchType: state.match_type,
-          action: decision.action,
-          changeRatio: decision.changeRatio,
+          action: finalDecision.action,
+          budgetAction: finalDecision.action,
+          changeRatio: finalDecision.changeRatio,
           currentCost,
           suggestedBudget,
-          confidence: decision.confidence,
-          reasonCode: decision.reasonCode,
+          confidence: finalDecision.confidence,
+          reasonCode: finalDecision.reasonCode,
           stage: state.current_stage,
           lastCpi: safeNumber(state.last_cpi),
           lastInstalls: safeNumber(state.last_installs),
           lastClicks: safeNumber(state.last_clicks),
           currentEcpi: fact.current_ecpi,
           targetEcpi,
-          volumeTier: decision.volumeTier,
+          volumeTier: finalDecision.volumeTier,
           last3Installs: fact.last3_installs,
           last7Installs: fact.last7_installs,
           currentRoas,
           targetRoas,
           currentCpp,
           targetCpp,
-          scenarioTags,
-          presetActionItems,
+          executionActions: finalDecision.executionActions,
+          scenarioTags: finalDecision.scenarioTags,
           structuredPolicy: policy ? (policy as unknown as Record<string, unknown>) : undefined,
           computedContext: {
             spend_series: candidate.spendSeries,
@@ -1228,8 +1288,8 @@ export async function runBudgetAdvisorCycle(
           keyword: state.keyword,
           match_type: state.match_type,
           date,
-          action: decision.action,
-          change_ratio: decision.changeRatio,
+          action: finalDecision.action,
+          change_ratio: finalDecision.changeRatio,
           suggested_budget: suggestedBudget,
           current_cost: currentCost,
           current_ecpi: fact.current_ecpi,
@@ -1238,16 +1298,16 @@ export async function runBudgetAdvisorCycle(
           metric_mode: metricSettings.metricMode,
           current_roas: currentRoas,
           target_roas: targetRoas,
-          volume_tier: decision.volumeTier,
+          volume_tier: finalDecision.volumeTier,
           expected_installs_delta: expectedInstallsDelta,
-          confidence: decision.confidence,
-          reason_code: decision.reasonCode,
+          confidence: finalDecision.confidence,
+          reason_code: finalDecision.reasonCode,
           llm_summary: {
             ...llm.output,
             media_source: fact.media_source,
             current_ecpi: fact.current_ecpi,
             target_ecpi: targetEcpi,
-            volume_tier: decision.volumeTier,
+            volume_tier: finalDecision.volumeTier,
             primary_metric: metricSettings.primaryMetric,
             metric_mode: metricSettings.metricMode,
             last3_installs: fact.last3_installs,
@@ -1256,11 +1316,15 @@ export async function runBudgetAdvisorCycle(
             target_roas: targetRoas,
             current_cpp: currentCpp,
             target_cpp: targetCpp,
-            scenario_tags: scenarioTags,
+            budget_action: finalDecision.action,
+            execution_actions: finalDecision.executionActions,
+            scenario_tags: finalDecision.scenarioTags,
             metric_family: policy?.metric_family ?? 'ecpi',
             failed_metrics: failedMetrics,
             strong_metrics: strongMetrics
           },
+          execution_actions: finalDecision.executionActions,
+          scenario_tags: finalDecision.scenarioTags,
           status: 'pending'
         });
 

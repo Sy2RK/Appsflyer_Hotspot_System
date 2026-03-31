@@ -9,7 +9,7 @@ import {
   buildRecommendationPolicyTableSummary,
   getRecommendationPolicyErrorMessage
 } from '../apps/api/src/modules/ui/public/recommendationPolicyWizard.js';
-import { aggregateBudgetCountryWindowFacts } from '../packages/shared/utils/budgetAdvisor.js';
+import { aggregateBudgetCountryWindowFacts, finalizeBudgetDecisionPlan } from '../packages/shared/utils/budgetAdvisor.js';
 import {
   classifyAppsflyerHttpFailure,
   classifyAppsflyerTransportFailure
@@ -26,6 +26,8 @@ import {
   resolveKeywordEngineBackfillDays
 } from '../packages/shared/utils/keywordEngineWorkerPolicy.js';
 import {
+  defaultRecommendationPolicyRule,
+  evaluateSpendScenarios,
   evaluateRelativeCompareMetrics,
   RecommendationPolicyValidationError,
   resolveRecommendationTarget,
@@ -256,6 +258,94 @@ async function main(): Promise<void> {
     existing
   );
   assert.equal(changed, true);
+
+  const defaultPolicyRule = defaultRecommendationPolicyRule();
+  assert.equal(defaultPolicyRule.adjustment_policy.default_increase_ratio, 0.2);
+  assert.equal(defaultPolicyRule.adjustment_policy.default_decrease_ratio, 0.2);
+  assert.equal(defaultPolicyRule.adjustment_policy.high_spend_uptrend_increase_ratio, 0.3);
+
+  const scenarioEvaluation = evaluateSpendScenarios({
+    avgDailySpend: 8,
+    spendSeries: [6, 7, 8, 9],
+    spendPolicy: {
+      daily_budget_cap_usd: undefined,
+      low_spend_threshold_usd: 10,
+      high_spend_threshold_usd: 100,
+      trend_lookback_days: 7,
+      uptrend_min_ratio: 0.15
+    },
+    actionPlaybook: defaultPolicyRule.action_playbook
+  });
+  assert.deepEqual(scenarioEvaluation.scenarioTags, ['low_spend_signal_weak']);
+  assert.deepEqual(scenarioEvaluation.executionActionCodes, ['iterate_creative', 'increase_spend_capacity']);
+
+  const lowSpendFinalDecision = finalizeBudgetDecisionPlan({
+    decision: {
+      action: 'increase',
+      changeRatio: 0.2,
+      confidence: 0.8,
+      reasonCode: 'test_expand',
+      volumeTier: 'medium'
+    },
+    scenarioTags: ['low_spend_signal_weak'],
+    adjustmentPolicy: defaultPolicyRule.adjustment_policy
+  });
+  assert.equal(lowSpendFinalDecision.action, 'hold');
+  assert.equal(lowSpendFinalDecision.changeRatio, 0);
+  assert.deepEqual(
+    lowSpendFinalDecision.executionActions.map((item) => item.code),
+    ['iterate_creative', 'increase_spend_capacity']
+  );
+
+  const pauseFinalDecision = finalizeBudgetDecisionPlan({
+    decision: {
+      action: 'pause',
+      changeRatio: -1,
+      confidence: 0.9,
+      reasonCode: 'test_pause',
+      volumeTier: 'high'
+    },
+    scenarioTags: ['low_spend_signal_weak'],
+    adjustmentPolicy: defaultPolicyRule.adjustment_policy
+  });
+  assert.equal(pauseFinalDecision.action, 'pause');
+  assert.equal(pauseFinalDecision.changeRatio, -1);
+  assert.equal(pauseFinalDecision.executionActions.length, 0);
+
+  const highSpendFinalDecision = finalizeBudgetDecisionPlan({
+    decision: {
+      action: 'increase',
+      changeRatio: 0.2,
+      confidence: 0.85,
+      reasonCode: 'test_uptrend',
+      volumeTier: 'high'
+    },
+    scenarioTags: ['high_spend_uptrend_expandable'],
+    adjustmentPolicy: {
+      default_increase_ratio: 0.1,
+      default_decrease_ratio: 0.25,
+      high_spend_uptrend_increase_ratio: 0.3
+    }
+  });
+  assert.equal(highSpendFinalDecision.action, 'increase');
+  assert.equal(highSpendFinalDecision.changeRatio, 0.3);
+  assert.deepEqual(
+    highSpendFinalDecision.executionActions.map((item) => item.code),
+    ['raise_roas_target', 'scale_gradually']
+  );
+
+  const defaultDecreaseDecision = finalizeBudgetDecisionPlan({
+    decision: {
+      action: 'decrease',
+      changeRatio: -0.2,
+      confidence: 0.7,
+      reasonCode: 'test_reduce',
+      volumeTier: 'medium'
+    },
+    scenarioTags: [],
+    adjustmentPolicy: null
+  });
+  assert.equal(defaultDecreaseDecision.changeRatio, -0.2);
 
   const inserted = shouldUpsertFeedbackRow(
     {

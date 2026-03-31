@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { env } from '@shared/config/env.js';
 import { logger } from '@api/common/logger/logger.js';
+import { startJobLockHeartbeat } from '@shared/utils/jobLockHeartbeat.js';
 import { runScheduledAsaKeywordBrief } from '@shared/utils/asaKeywords.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 import {
@@ -10,6 +11,7 @@ import {
 } from '@shared/utils/pullReadiness.js';
 import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { getTzParts, hasReachedDailyTime, nextDailyTimeLocalString } from '@shared/utils/schedule.js';
+import { isScheduledWorkerTimeoutError, withScheduledWorkerTimeout } from '@shared/utils/scheduledWorkerTimeout.js';
 import {
   completeScheduledWorkerRun,
   failScheduledWorkerRun,
@@ -24,7 +26,7 @@ let lastRetryBlockMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
 const ASA_DAILY_BRIEF_WORKER_NAME = 'worker.asa_daily_brief';
 const ASA_DAILY_BRIEF_JOB_LOCK = 'worker:asa_daily_brief:tick';
-const ASA_DAILY_BRIEF_JOB_LOCK_TTL_MS = 60 * 60 * 1000;
+const ASA_DAILY_BRIEF_JOB_LOCK_TTL_MS = 5 * 60 * 1000;
 const MAX_DAILY_RETRY_ATTEMPTS = 3;
 const RETRY_COOLDOWN_MS = 15 * 60 * 1000;
 const RETRY_POLICY = {
@@ -40,8 +42,10 @@ async function tick(runMarker: string): Promise<boolean> {
 
   running = true;
   let lockOwnerId = '';
+  let stopLockHeartbeat: (() => void) | null = null;
   let attemptClaimed = false;
   let completed = false;
+  let shouldExitAfterTimeout = false;
   try {
     lockOwnerId = crypto.randomUUID();
     const lockAcquired = await tryAcquireJobLock(
@@ -53,6 +57,13 @@ async function tick(runMarker: string): Promise<boolean> {
       logger.warn('asa_daily_brief_skip_distributed_overlap');
       return false;
     }
+    stopLockHeartbeat = startJobLockHeartbeat({
+      lockName: ASA_DAILY_BRIEF_JOB_LOCK,
+      ownerId: lockOwnerId,
+      ttlMs: ASA_DAILY_BRIEF_JOB_LOCK_TTL_MS,
+      logger,
+      logPrefix: 'asa_daily_brief'
+    });
     const claimDecision = await tryClaimScheduledWorkerRunAttempt(
       ASA_DAILY_BRIEF_WORKER_NAME,
       runMarker,
@@ -68,7 +79,11 @@ async function tick(runMarker: string): Promise<boolean> {
       return false;
     }
     attemptClaimed = true;
-    const result = await runScheduledAsaKeywordBrief(logger);
+    const result = await withScheduledWorkerTimeout(
+      ASA_DAILY_BRIEF_WORKER_NAME,
+      env.scheduledWorkerMaxRuntimeMs,
+      () => runScheduledAsaKeywordBrief(logger)
+    );
     completed = result.completed;
     if (completed) {
       await completeScheduledWorkerRun(ASA_DAILY_BRIEF_WORKER_NAME, runMarker);
@@ -92,6 +107,7 @@ async function tick(runMarker: string): Promise<boolean> {
       logger
     );
   } catch (error) {
+    shouldExitAfterTimeout = isScheduledWorkerTimeoutError(error);
     if (attemptClaimed) {
       await failScheduledWorkerRun(
         ASA_DAILY_BRIEF_WORKER_NAME,
@@ -117,10 +133,18 @@ async function tick(runMarker: string): Promise<boolean> {
       logger
     );
   } finally {
+    stopLockHeartbeat?.();
     if (lockOwnerId) {
       await releaseJobLock(ASA_DAILY_BRIEF_JOB_LOCK, lockOwnerId);
     }
     running = false;
+    if (shouldExitAfterTimeout) {
+      logger.error('asa_daily_brief_process_exit_after_timeout', {
+        run_marker: runMarker,
+        timeout_ms: env.scheduledWorkerMaxRuntimeMs
+      });
+      process.exit(1);
+    }
   }
 
   return completed;

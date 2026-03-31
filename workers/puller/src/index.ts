@@ -2,9 +2,11 @@ import crypto from 'crypto';
 import { env } from '@shared/config/env.js';
 import { runPullCycle } from '@shared/utils/puller.js';
 import { logger } from '@api/common/logger/logger.js';
+import { startJobLockHeartbeat } from '@shared/utils/jobLockHeartbeat.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { getTzParts, hasReachedDailyTime, nextDailyTimeLocalString } from '@shared/utils/schedule.js';
+import { isScheduledWorkerTimeoutError, withScheduledWorkerTimeout } from '@shared/utils/scheduledWorkerTimeout.js';
 import {
   completeScheduledWorkerRun,
   failScheduledWorkerRun,
@@ -20,7 +22,7 @@ let lastRetryBlockMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
 const PULLER_WORKER_NAME = 'worker.puller';
 const PULLER_JOB_LOCK = 'worker:puller:tick';
-const PULLER_JOB_LOCK_TTL_MS = 2 * 60 * 60 * 1000;
+const PULLER_JOB_LOCK_TTL_MS = 5 * 60 * 1000;
 const MAX_DAILY_RETRY_ATTEMPTS = 3;
 const RETRY_COOLDOWN_MS = 15 * 60 * 1000;
 const RETRY_POLICY = {
@@ -58,8 +60,10 @@ async function tick(runMarker: string): Promise<boolean> {
   running = true;
   const backfillDays = firstCycle ? env.pullerBackfillDays : 1;
   let lockOwnerId = '';
+  let stopLockHeartbeat: (() => void) | null = null;
   let attemptClaimed = false;
   let completed = false;
+  let shouldExitAfterTimeout = false;
 
   try {
     lockOwnerId = crypto.randomUUID();
@@ -68,6 +72,13 @@ async function tick(runMarker: string): Promise<boolean> {
       logger.warn('puller_skip_distributed_overlap');
       return false;
     }
+    stopLockHeartbeat = startJobLockHeartbeat({
+      lockName: PULLER_JOB_LOCK,
+      ownerId: lockOwnerId,
+      ttlMs: PULLER_JOB_LOCK_TTL_MS,
+      logger,
+      logPrefix: 'puller'
+    });
     const claimDecision = await tryClaimScheduledWorkerRunAttempt(PULLER_WORKER_NAME, runMarker, RETRY_POLICY);
     if (!claimDecision.allowed) {
       logger.info('puller_attempt_claim_skipped', {
@@ -79,7 +90,9 @@ async function tick(runMarker: string): Promise<boolean> {
       return false;
     }
     attemptClaimed = true;
-    const result = await runPullCycle(backfillDays, logger);
+    const result = await withScheduledWorkerTimeout(PULLER_WORKER_NAME, env.scheduledWorkerMaxRuntimeMs, () =>
+      runPullCycle(backfillDays, logger)
+    );
     completed = didPullCycleComplete(result);
     if (completed) {
       await completeScheduledWorkerRun(PULLER_WORKER_NAME, runMarker);
@@ -102,6 +115,7 @@ async function tick(runMarker: string): Promise<boolean> {
       logger
     );
   } catch (error) {
+    shouldExitAfterTimeout = isScheduledWorkerTimeoutError(error);
     if (attemptClaimed) {
       await failScheduledWorkerRun(
         PULLER_WORKER_NAME,
@@ -129,11 +143,19 @@ async function tick(runMarker: string): Promise<boolean> {
       logger
     );
   } finally {
+    stopLockHeartbeat?.();
     if (lockOwnerId) {
       await releaseJobLock(PULLER_JOB_LOCK, lockOwnerId);
     }
     firstCycle = false;
     running = false;
+    if (shouldExitAfterTimeout) {
+      logger.error('puller_process_exit_after_timeout', {
+        run_marker: runMarker,
+        timeout_ms: env.scheduledWorkerMaxRuntimeMs
+      });
+      process.exit(1);
+    }
   }
 
   return completed;

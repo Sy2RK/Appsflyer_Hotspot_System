@@ -195,6 +195,12 @@ export type RecommendationMetricFamily = 'ecpi' | 'd7_roas_cpp' | 'relative_comp
 export type RecommendationDecisionMode = 'deterministic' | 'hybrid';
 export type RecommendationTrafficScope = 'all' | 'asa_only' | 'media_sources';
 export type RecommendationCompareGranularity = 'campaign';
+export type BudgetExecutionActionCode =
+  | 'iterate_creative'
+  | 'increase_spend_capacity'
+  | 'raise_roas_target'
+  | 'scale_gradually';
+export type BudgetExecutionActionSource = 'scenario' | 'policy';
 
 export interface RecommendationThresholdTargets {
   ecpi_max?: number;
@@ -224,6 +230,12 @@ export interface RecommendationPolicySpendConfig {
   uptrend_min_ratio: number;
 }
 
+export interface RecommendationPolicyAdjustmentConfig {
+  default_increase_ratio: number;
+  default_decrease_ratio: number;
+  high_spend_uptrend_increase_ratio: number;
+}
+
 export interface RecommendationPolicyScenarioRule {
   enabled: boolean;
   action_tags: string[];
@@ -250,6 +262,7 @@ export interface RecommendationPolicyRuleJson {
   maturity_window: RecommendationPolicyMaturityWindow;
   targets: RecommendationPolicyTargetConfig;
   spend_policy: RecommendationPolicySpendConfig;
+  adjustment_policy: RecommendationPolicyAdjustmentConfig;
   action_playbook: RecommendationPolicyActionPlaybook;
   relative_compare: RecommendationPolicyRelativeCompare;
 }
@@ -275,6 +288,13 @@ export interface LlmExplainResult {
   scenario_tags: string[];
 }
 
+export interface BudgetExecutionAction {
+  code: BudgetExecutionActionCode;
+  label: string;
+  source: BudgetExecutionActionSource;
+  priority: number;
+}
+
 export interface BudgetRecommendationRow {
   id: number;
   app_key: string;
@@ -298,6 +318,8 @@ export interface BudgetRecommendationRow {
   confidence: number;
   reason_code: string;
   llm_summary: unknown;
+  execution_actions: BudgetExecutionAction[];
+  scenario_tags: string[];
   status: BudgetRecommendationStatus;
   execution_status: string | null;
   is_adopted: boolean;

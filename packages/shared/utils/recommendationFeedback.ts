@@ -16,6 +16,7 @@ import {
   SEVEN_DAY_LATER_FIELD_LABEL
 } from './sevenDayLaterData.js';
 import {
+  ensureBudgetRecommendationsSchema,
   ensureRecommendationFeedbackStorage,
   getBitableExportConfig,
   getLatestFeedbackSkillVersion,
@@ -71,6 +72,8 @@ interface BudgetFeedbackDatasetRow {
   confidence: number;
   reason_code: string;
   llm_summary: unknown;
+  execution_actions: unknown;
+  scenario_tags: unknown;
   status: string;
   stage: string | null;
   last_installs: number | null;
@@ -432,6 +435,7 @@ function normalizeBudgetDatasetFilter(filter: BudgetFeedbackQueryFilter = {}): R
 
 async function queryBudgetFeedbackDatasetRows(filter: BudgetFeedbackQueryFilter = {}): Promise<BudgetFeedbackDatasetRow[]> {
   await ensureRecommendationFeedbackStorage();
+  await ensureBudgetRecommendationsSchema();
   const normalized = normalizeBudgetDatasetFilter(filter);
   const values: unknown[] = [];
   const clauses: string[] = [];
@@ -481,7 +485,7 @@ async function queryBudgetFeedbackDatasetRows(filter: BudgetFeedbackQueryFilter 
             br.platform, br.media_source, br.keyword, br.match_type, br.date::text AS report_date, br.action, br.change_ratio,
             br.suggested_budget, br.current_cost, br.current_ecpi, br.target_ecpi, br.primary_metric, br.metric_mode,
             br.current_roas, br.target_roas, br.volume_tier, br.expected_installs_delta, br.confidence, br.reason_code,
-            br.llm_summary, br.status, ks.current_stage AS stage, ks.last_installs, ks.last_clicks, ks.last_cpi,
+            br.llm_summary, br.execution_actions, br.scenario_tags, br.status, ks.current_stage AS stage, ks.last_installs, ks.last_clicks, ks.last_cpi,
             ref.execution_status, COALESCE(ref.is_adopted, FALSE) AS is_adopted, ref.validation_result,
             ref.synced_at::text AS feedback_synced_at, ref.record_id AS feedback_record_id, ref.table_id AS feedback_table_id,
             ref.report_date::text AS feedback_report_date, ref.bitable_last_modified_time::text AS bitable_last_modified_time
@@ -522,6 +526,8 @@ function buildBudgetFeedbackDatasetEntry(row: BudgetFeedbackDatasetRow): Record<
       confidence: row.confidence,
       reason_code: row.reason_code,
       llm_summary: row.llm_summary,
+      execution_actions: row.execution_actions,
+      scenario_tags: row.scenario_tags,
       status: row.status
     },
     context: {

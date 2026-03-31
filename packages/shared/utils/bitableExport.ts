@@ -7,6 +7,7 @@ import type {
 } from '../types/models.js';
 import { pgQuery } from './postgres.js';
 import {
+  ensureBudgetRecommendationsSchema,
   deleteBitableExportRecordRefsByRecordIds,
   getBitableExportConfig,
   getBitableExportDailyTable,
@@ -827,6 +828,24 @@ function formatActionSummary(action: string, changeRatio: unknown): string {
   return '保持';
 }
 
+function formatExecutionActionSummary(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (item && typeof item === 'object' ? String((item as Record<string, unknown>).label || '').trim() : ''))
+      .filter(Boolean)
+      .join(' / ');
+  }
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return formatExecutionActionSummary(parsed);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
 function formatBudgetCurrentValue(row: Record<string, unknown>): string {
   if (String(row.primary_metric || '') === 'roas') {
     const currentRoas = Number(row.current_roas || 0);
@@ -889,6 +908,7 @@ function formatAsaVolumeReference(row: Record<string, unknown>): string {
 }
 
 async function queryBudgetActionRows(reportDate: string, options: BitableExportRunOptions = {}): Promise<DeliveryActionRow[]> {
+  await ensureBudgetRecommendationsSchema();
   const statusClause = options.includeAllStatuses ? '' : `AND br.status = 'pending'`;
   const result = await pgQuery<Record<string, unknown>>(
     `SELECT
@@ -918,6 +938,7 @@ async function queryBudgetActionRows(reportDate: string, options: BitableExportR
         COALESCE(ks.last_installs, 0) AS last_installs,
         br.action,
         br.change_ratio,
+        br.execution_actions,
         br.status,
         br.reason_code,
         COALESCE(br.llm_summary->>'summary_cn', '') AS reason_summary,
@@ -962,7 +983,11 @@ async function queryBudgetActionRows(reportDate: string, options: BitableExportR
     execution_status: EXECUTION_STATUS_DEFAULT,
     validation_result: '',
     is_adopted: false,
-    reason: String(row.reason_summary || row.reason_code || '暂无补充说明')
+    reason: (() => {
+      const executionSummary = formatExecutionActionSummary(row.execution_actions);
+      const baseReason = String(row.reason_summary || row.reason_code || '暂无补充说明');
+      return executionSummary ? `执行动作：${executionSummary}；理由：${baseReason}` : baseReason;
+    })()
   }));
 }
 

@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/ui/styles.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <div id="appShell" class="app-shell">
       <aside class="sidebar" aria-label="导航栏">
         <div class="brand-block">
           <p class="brand-kicker">AppsFlyer 投放工作台</p>
@@ -373,12 +373,14 @@
                         ?
                       </button>
                       <div id="budgetRuleHelpPanel" class="help-popover help-popover-floating">
-                        <h4>每次安装成本（eCPI）分级规则</h4>
+                        <h4>预算动作与执行动作说明</h4>
                         <ul class="simple-list">
                           <li>核心口径：优先使用 AppsFlyer 广告日报返回的官方 eCPI。</li>
                           <li>低量级：最近 3 天激活量 &lt; 15，默认观察，不自动调价。</li>
-                          <li>中量级：最近 3 天激活量 15-30。eCPI ≤ 目标 90% 时上调 20%，≥ 目标 115% 时下调 20%。</li>
-                          <li>高量级：最近 3 天激活量 &gt; 30。eCPI ≤ 目标时上调 20%，≥ 目标 120% 时下调 20%。</li>
+                          <li>中量级与高量级：是否上调、下调或暂停，仍由核心指标和阈值规则决定。</li>
+                          <li>预算调幅不再固定写死，可按应用级规则单独配置默认上调、默认下调和高花费扩量比例。</li>
+                          <li>低量级且信号偏弱时，系统会优先给出“保持预算 + 迭代素材 / 提升跑量能力”的执行动作。</li>
+                          <li>高量级且持续上涨时，如果主动作是扩量，系统会叠加“提高 ROAS 目标 / 稳步扩量”的执行动作。</li>
                           <li>目标 eCPI：优先按同应用、同平台、同媒体源的有效关键词 P40 计算，再用同平台中位数做上限钳制。</li>
                           <li>极端低效且已进入 pause_candidate 的关键词，才会给出暂停建议。</li>
                         </ul>
@@ -738,6 +740,39 @@
                         <span class="hint">表示花费相对起点至少上涨多少才算明显上行。例如 0.15 代表约上涨 15%。</span>
                       </label>
                       <label class="filter-field">
+                        <span class="field-label">默认上调幅度</span>
+                        <input
+                          id="recommendationPolicyDefaultIncreaseRatioInput"
+                          name="defaultIncreaseRatio"
+                          type="number"
+                          min="0"
+                          step="0.01"
+                        />
+                        <span class="hint">普通放量建议默认按这个比例加预算。0.2 表示上调 20%。</span>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">默认下调幅度</span>
+                        <input
+                          id="recommendationPolicyDefaultDecreaseRatioInput"
+                          name="defaultDecreaseRatio"
+                          type="number"
+                          min="0"
+                          step="0.01"
+                        />
+                        <span class="hint">普通降量建议默认按这个比例减预算。0.2 表示下调 20%。</span>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">高花费扩量幅度</span>
+                        <input
+                          id="recommendationPolicyHighSpendIncreaseRatioInput"
+                          name="highSpendUptrendIncreaseRatio"
+                          type="number"
+                          min="0"
+                          step="0.01"
+                        />
+                        <span class="hint">当高量级且持续上涨时，如果建议扩量，会优先使用这个更高的放量比例。</span>
+                      </label>
+                      <label class="filter-field">
                         <span class="field-label">保存后是否立即生效</span>
                         <select id="recommendationPolicyEnabledSelect" name="enabled">
                           <option value="true">立即生效</option>
@@ -872,8 +907,9 @@
                     <th>量级</th>
                     <th>当前表现</th>
                     <th>目标表现</th>
-                    <th>建议动作</th>
-                    <th>调整比例</th>
+                    <th>预算动作</th>
+                    <th>调幅</th>
+                    <th>执行动作</th>
                     <th>可信度</th>
                     <th>处理状态</th>
                     <th>执行状态</th>
@@ -1610,9 +1646,12 @@
           <p><strong>目标 eCPI：</strong><span id="budgetDetailTargetEcpi">-</span></p>
           <p><strong>当前 ROAS：</strong><span id="budgetDetailCurrentRoas">-</span></p>
           <p><strong>目标 ROAS：</strong><span id="budgetDetailTargetRoas">-</span></p>
+          <p><strong>预算动作：</strong><span id="budgetDetailBudgetAction">-</span></p>
+          <p><strong>执行动作：</strong><span id="budgetDetailExecutionActions">-</span></p>
+          <p><strong>场景标签：</strong><span id="budgetDetailScenarioTags">-</span></p>
           <p><strong>当前成本：</strong><span id="budgetDetailCurrentCost">-</span></p>
           <p><strong>建议预算：</strong><span id="budgetDetailSuggestedBudget">-</span></p>
-          <p><strong>调整比例：</strong><span id="budgetDetailChangeRatio">-</span></p>
+          <p><strong>调幅：</strong><span id="budgetDetailChangeRatio">-</span></p>
           <p><strong>执行状态：</strong><span id="budgetDetailExecutionStatus">-</span></p>
           <p><strong>是否采纳：</strong><span id="budgetDetailIsAdopted">-</span></p>
           <p><strong>反馈回读时间：</strong><span id="budgetDetailFeedbackSyncedAt">-</span></p>
@@ -1725,58 +1764,259 @@
       </div>
     </div>
 
-    <aside id="aiDock" class="ai-dock" aria-label="AI 功能入口">
-      <div class="ai-dock-ambient ai-dock-ambient-1" aria-hidden="true"></div>
-      <div class="ai-dock-ambient ai-dock-ambient-2" aria-hidden="true"></div>
-      <div class="ai-dock-ambient ai-dock-ambient-3" aria-hidden="true"></div>
+    <aside id="aiDock" class="ai-dock" aria-label="AI 对话助手">
+      <div id="aiDockBackdrop" class="ai-dock-backdrop hidden"></div>
+
+      <div class="ai-dock-fab-shell">
+        <div class="ai-dock-ambient ai-dock-ambient-1" aria-hidden="true"></div>
+        <div class="ai-dock-ambient ai-dock-ambient-2" aria-hidden="true"></div>
+        <div class="ai-dock-ambient ai-dock-ambient-3" aria-hidden="true"></div>
+        <button
+          id="aiDockToggle"
+          class="ai-dock-toggle"
+          type="button"
+          aria-label="打开 AI 功能舱"
+          aria-expanded="false"
+          aria-controls="aiDockPanel"
+        >
+          <span class="ai-dock-core" aria-hidden="true">
+            <span class="ai-dock-core-ring ai-dock-core-ring-1"></span>
+            <span class="ai-dock-core-ring ai-dock-core-ring-2"></span>
+            <span class="ai-dock-core-ring ai-dock-core-ring-3"></span>
+            <span class="ai-dock-core-symbol">G</span>
+          </span>
+          <span class="ai-dock-toggle-copy">
+            <strong>Guru Ads Agent</strong>
+            <small>集成式AI助手</small>
+          </span>
+        </button>
+      </div>
+
       <div id="aiDockPanel" class="ai-dock-panel hidden" aria-hidden="true">
-        <div class="ai-dock-panel-shell">
-          <div class="ai-dock-panel-head">
+        <div
+          id="aiChatDialog"
+          class="ai-chat-shell"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="aiChatDialogTitle"
+          tabindex="-1"
+        >
+          <div class="ai-chat-head">
             <div>
-              <p class="ai-dock-kicker">Control Surface</p>
-              <h3>未来功能舱</h3>
+              <p class="ai-dock-kicker">Realtime AI Surface</p>
+              <h3 id="aiChatDialogTitle">Guru Ads Agent</h3>
             </div>
-            <span class="ai-dock-status">Gemini 已接入</span>
+            <div class="ai-chat-head-actions">
+              <span class="ai-dock-status">Guru Ads Agent · Qwen 3.5</span>
+              <button id="aiChatCloseBtn" class="btn btn-ghost" type="button">关闭</button>
+            </div>
           </div>
-          <p class="ai-dock-copy">先放一个 Gemini 官方入口，后续会继续接入诊断助手、投放 Copilot、日报快读等 AI 工作流。</p>
-          <div class="ai-dock-actions">
-            <a
-              class="ai-dock-action ai-dock-action-primary"
-              href="https://gemini.google.com/"
-              target="_blank"
-              rel="noreferrer noopener"
-              data-role="gemini-link"
-            >
-              <span class="ai-dock-action-glow" aria-hidden="true"></span>
-              <span class="ai-dock-action-label">打开 Gemini 官网</span>
-              <span class="ai-dock-action-meta">Google AI Workspace</span>
-            </a>
-            <button class="ai-dock-action ai-dock-action-placeholder" type="button" disabled>
-              <span class="ai-dock-action-label">更多功能预留</span>
-              <span class="ai-dock-action-meta">即将解锁更多 AI 模块</span>
-            </button>
+
+          <div id="aiChatBody" class="ai-chat-body">
+            <section class="ai-chat-intro">
+              <div class="ai-chat-subhead">
+                <p class="ai-chat-copy">围绕当前控制台上下文发起对话。多轮会话、图片分析、数据库聚合包，都从同一套工具面板进入。</p>
+              </div>
+
+              <div class="ai-chat-toolbar">
+                <div class="ai-chat-toolbar-group">
+                  <button
+                    id="aiChatAddContextBtn"
+                    class="btn btn-secondary"
+                    type="button"
+                    aria-controls="aiChatContextMenu"
+                    aria-expanded="false"
+                  >
+                    工具面板
+                  </button>
+                  <button id="aiChatAddImageBtn" class="btn btn-ghost" type="button">上传图片</button>
+                </div>
+                <button id="aiChatClearBtn" class="btn btn-ghost" type="button">清空会话</button>
+              </div>
+            </section>
+
+            <section class="ai-chat-tools">
+              <div id="aiChatContextMenu" class="ai-chat-context-menu hidden">
+                <details class="ai-chat-fold ai-chat-fold-primary" data-ai-tool-section="database" open>
+                  <summary class="ai-chat-fold-summary">
+                    <span class="ai-chat-fold-title">
+                      <strong>数据库上下文</strong>
+                      <small>推荐入口 / 核心数据包 / 自定义模板</small>
+                    </span>
+                  </summary>
+
+                  <div class="ai-chat-fold-body">
+                    <details class="ai-chat-subfold" data-ai-tool-subsection="recommended" open>
+                      <summary class="ai-chat-subfold-summary">
+                        <span>当前模块推荐</span>
+                        <small>根据你正在看的页面给出最近手的上下文入口</small>
+                      </summary>
+                      <div class="ai-chat-subfold-body">
+                        <div id="aiChatRecommendedPacks" class="ai-chat-pack-grid"></div>
+                      </div>
+                    </details>
+
+                    <details class="ai-chat-subfold" data-ai-tool-subsection="core">
+                      <summary class="ai-chat-subfold-summary">
+                        <span>核心数据包</span>
+                        <small>固定提供指标时序、预算建议、ASA 关键词三类聚合包</small>
+                      </summary>
+                      <div class="ai-chat-subfold-body">
+                        <div id="aiChatCorePacks" class="ai-chat-pack-grid"></div>
+                      </div>
+                    </details>
+
+                    <details class="ai-chat-subfold" data-ai-tool-subsection="custom">
+                      <summary class="ai-chat-subfold-summary">
+                        <span>自定义模板</span>
+                        <small>按预置维度模板自定义应用、平台和日期范围</small>
+                      </summary>
+                      <div class="ai-chat-subfold-body">
+                        <div class="form-grid ai-chat-builder-grid">
+                          <label class="field">
+                            <span class="field-label">数据包类型</span>
+                            <select id="aiChatPackTypeSelect">
+                              <option value="metrics_trend">指标时序包</option>
+                              <option value="budget_summary">预算建议包</option>
+                              <option value="asa_keyword_summary">ASA 关键词包</option>
+                            </select>
+                          </label>
+                          <label class="field">
+                            <span class="field-label">维度模板</span>
+                            <select id="aiChatPackTemplateSelect"></select>
+                          </label>
+                          <label class="field">
+                            <span class="field-label">应用</span>
+                            <select id="aiChatPackAppSelect"></select>
+                          </label>
+                          <label class="field">
+                            <span class="field-label">平台</span>
+                            <select id="aiChatPackPlatformSelect">
+                              <option value="">全部平台</option>
+                              <option value="ios">iOS</option>
+                              <option value="android">Android</option>
+                              <option value="unknown">未知</option>
+                            </select>
+                          </label>
+                          <label class="field">
+                            <span class="field-label">开始日期</span>
+                            <input id="aiChatPackFromInput" type="date" />
+                          </label>
+                          <label class="field">
+                            <span class="field-label">结束日期</span>
+                            <input id="aiChatPackToInput" type="date" />
+                          </label>
+                          <label id="aiChatPackSourceField" class="field">
+                            <span class="field-label">指标来源</span>
+                            <select id="aiChatPackSourceSelect">
+                              <option value="pull">广告日报（日级）</option>
+                              <option value="push">实时回传（小时级）</option>
+                            </select>
+                          </label>
+                          <label id="aiChatPackMetricField" class="field">
+                            <span class="field-label">指标</span>
+                            <select id="aiChatPackMetricSelect"></select>
+                          </label>
+                          <label id="aiChatPackEventNameField" class="field">
+                            <span class="field-label">事件名（仅事件次数）</span>
+                            <input id="aiChatPackEventNameInput" placeholder="例如 purchase" />
+                          </label>
+                          <label id="aiChatPackStageField" class="field hidden">
+                            <span class="field-label">阶段筛选</span>
+                            <select id="aiChatPackStageSelect">
+                              <option value="">全部阶段</option>
+                              <option value="rising">rising</option>
+                              <option value="stable">stable</option>
+                            </select>
+                          </label>
+                        </div>
+
+                        <div id="aiChatPackBuilderPreview" class="ai-chat-builder-preview"></div>
+                        <div id="aiChatPackBuilderHint" class="hint">当前会生成一个预置维度模板，不会上传原始明细。</div>
+                        <div class="ai-chat-context-actions">
+                          <button id="aiChatAttachCustomPackBtn" class="btn btn-primary" type="button">附加自定义数据包</button>
+                        </div>
+                      </div>
+                    </details>
+                  </div>
+                </details>
+
+                <details class="ai-chat-fold" data-ai-tool-section="images">
+                  <summary class="ai-chat-fold-summary">
+                    <span class="ai-chat-fold-title">
+                      <strong>图片附件</strong>
+                      <small>上传截图、报表或可视化图像，让模型结合画面判断</small>
+                    </span>
+                  </summary>
+                  <div class="ai-chat-fold-body">
+                    <button id="aiChatImageUploaderInline" class="btn btn-secondary ai-chat-inline-action" type="button">选择本地图片</button>
+                  </div>
+                </details>
+
+                <details class="ai-chat-fold" data-ai-tool-section="external">
+                  <summary class="ai-chat-fold-summary">
+                    <span class="ai-chat-fold-title">
+                      <strong>外部工具</strong>
+                      <small>保留外部协作入口，不占用主对话空间</small>
+                    </span>
+                  </summary>
+                  <div class="ai-chat-fold-body">
+                    <a
+                      class="ai-chat-external-link"
+                      href="https://gemini.google.com/"
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      data-role="gemini-link"
+                    >
+                      打开 Gemini 官网
+                    </a>
+                  </div>
+                </details>
+              </div>
+            </section>
+
+            <div id="aiChatMessages" class="ai-chat-messages">
+              <div id="aiChatEmptyState" class="ai-chat-empty">
+                <div class="ai-chat-empty-orbit" aria-hidden="true"></div>
+                <p class="ai-chat-empty-kicker">Ready for Context</p>
+                <h4>从当前工作台发起一段有上下文的对话</h4>
+                <p>可以直接提问，也可以先附带数据库聚合包或截图，让模型围绕当前业务面板给出分析。</p>
+              </div>
+            </div>
           </div>
+
+          <form id="aiChatForm" class="ai-chat-form">
+            <input
+              id="aiChatFileInput"
+              class="hidden"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+            />
+            <div id="aiChatAttachmentStrip" class="ai-chat-attachment-strip hidden">
+              <div class="ai-chat-strip-section">
+                <p class="ai-chat-strip-title">当前已附加图片</p>
+                <div id="aiChatImageList" class="ai-chat-chip-list"></div>
+              </div>
+              <div class="ai-chat-strip-section">
+                <p class="ai-chat-strip-title">当前已附加数据包</p>
+                <div id="aiChatContextPackList" class="ai-chat-chip-list"></div>
+              </div>
+            </div>
+            <label class="ai-chat-input-shell" for="aiChatInput">
+              <textarea
+                id="aiChatInput"
+                rows="1"
+                placeholder="例如：结合我附带的预算建议聚合包，判断当前最值得优先处理的媒体源。"
+              ></textarea>
+            </label>
+            <div class="ai-chat-form-foot">
+              <p class="hint">支持页面内多轮对话。刷新页面会清空会话；图片最多 4 张，每张不超过 5MB。</p>
+              <button id="aiChatSendBtn" class="btn btn-primary" type="submit">发送到 Guru Ads Agent</button>
+            </div>
+          </form>
         </div>
       </div>
-      <button
-        id="aiDockToggle"
-        class="ai-dock-toggle"
-        type="button"
-        aria-label="打开 AI 功能舱"
-        aria-expanded="false"
-        aria-controls="aiDockPanel"
-      >
-        <span class="ai-dock-core" aria-hidden="true">
-          <span class="ai-dock-core-ring ai-dock-core-ring-1"></span>
-          <span class="ai-dock-core-ring ai-dock-core-ring-2"></span>
-          <span class="ai-dock-core-ring ai-dock-core-ring-3"></span>
-          <span class="ai-dock-core-symbol">G</span>
-        </span>
-        <span class="ai-dock-toggle-copy">
-          <strong>Gemini</strong>
-          <small>AI 功能舱</small>
-        </span>
-      </button>
     </aside>
 
     <div id="toast" class="toast hidden"></div>

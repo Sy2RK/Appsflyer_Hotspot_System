@@ -42,6 +42,69 @@ Response:
 ### `GET /ui`
 内置 Web 控制台（配置管理 + 告警与指标可视化）。
 
+### `POST /api/ai/chat`
+`Guru Ads Agent` 对话接口，当前供 WebUI 右下角 AI 抽屉调用。
+
+请求要求：
+- `content-type` 必须为 `multipart/form-data`
+
+表单字段：
+- `message`
+  - 用户输入文本，可空
+- `history_json`
+  - 最近多轮对话，JSON 数组
+  - 每项格式：`{ "role": "user|assistant", "content": "..." }`
+- `context_packs_json`
+  - 已附加的数据库聚合上下文包，JSON 数组
+- `images`
+  - 图片文件，可重复传多个
+
+限制：
+- `images` 最多 4 张
+- 图片类型仅支持：`image/png`、`image/jpeg`、`image/webp`
+- 单张最大 5MB
+- `context_packs_json` 最多 3 个
+- `message / images / context_packs_json` 三者至少要有一个
+
+返回重点字段：
+- `reply`
+- `attachments_used`
+- `warnings`
+- `usage`
+
+常见错误：
+- `multipart_form_data_required`
+- `message_or_attachment_required`
+- `too_many_images`
+- `too_many_context_packs`
+- `unsupported_image_type`
+- `image_too_large`
+
+### `POST /api/ai/context-packs/preview`
+预构建数据库聚合上下文包，用于前端调试或未来的预览能力。
+
+Request:
+```json
+{
+  "contextPacks": [
+    {
+      "type": "metrics_trend",
+      "templateId": "media_source",
+      "appKey": "demo-app",
+      "platform": "ios",
+      "from": "2026-03-01",
+      "to": "2026-03-14"
+    }
+  ]
+}
+```
+
+限制：
+- `contextPacks` 至少 1 个，最多 3 个
+
+返回重点字段：
+- 每个上下文包的标题、筛选条件、摘要文本、是否截断
+
 ### `GET /api/apps`
 返回 app 列表（不返回 push token），包含：
 - `display_name`

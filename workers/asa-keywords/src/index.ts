@@ -2,10 +2,12 @@ import crypto from 'crypto';
 import { env } from '@shared/config/env.js';
 import { logger } from '@api/common/logger/logger.js';
 import { runAsaKeywordCycle } from '@shared/utils/asaKeywords.js';
+import { startJobLockHeartbeat } from '@shared/utils/jobLockHeartbeat.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 import { getDefaultPullReadinessReportDate, isPullReportReadyForDownstream } from '@shared/utils/pullReadiness.js';
 import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { getTzParts, hasReachedDailyTime, nextDailyTimeLocalString } from '@shared/utils/schedule.js';
+import { isScheduledWorkerTimeoutError, withScheduledWorkerTimeout } from '@shared/utils/scheduledWorkerTimeout.js';
 import {
   completeScheduledWorkerRun,
   failScheduledWorkerRun,
@@ -20,7 +22,7 @@ let lastRetryBlockMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
 const ASA_KEYWORD_WORKER_NAME = 'worker.asa_keywords';
 const ASA_KEYWORD_JOB_LOCK = 'worker:asa_keywords:cycle';
-const ASA_KEYWORD_JOB_LOCK_TTL_MS = 3 * 60 * 60 * 1000;
+const ASA_KEYWORD_JOB_LOCK_TTL_MS = 5 * 60 * 1000;
 const MAX_DAILY_RETRY_ATTEMPTS = 3;
 const RETRY_COOLDOWN_MS = 15 * 60 * 1000;
 const RETRY_POLICY = {
@@ -50,7 +52,9 @@ async function tick(reportDate: string, runMarker: string): Promise<boolean> {
   }
   running = true;
   let lockOwnerId = '';
+  let stopLockHeartbeat: (() => void) | null = null;
   let attemptClaimed = false;
+  let shouldExitAfterTimeout = false;
   try {
     lockOwnerId = crypto.randomUUID();
     const lockAcquired = await tryAcquireJobLock(ASA_KEYWORD_JOB_LOCK, lockOwnerId, ASA_KEYWORD_JOB_LOCK_TTL_MS);
@@ -58,6 +62,13 @@ async function tick(reportDate: string, runMarker: string): Promise<boolean> {
       logger.warn('asa_keyword_cycle_skip_distributed_overlap');
       return false;
     }
+    stopLockHeartbeat = startJobLockHeartbeat({
+      lockName: ASA_KEYWORD_JOB_LOCK,
+      ownerId: lockOwnerId,
+      ttlMs: ASA_KEYWORD_JOB_LOCK_TTL_MS,
+      logger,
+      logPrefix: 'asa_keyword'
+    });
     const claimDecision = await tryClaimScheduledWorkerRunAttempt(ASA_KEYWORD_WORKER_NAME, runMarker, RETRY_POLICY);
     if (!claimDecision.allowed) {
       logger.info('asa_keyword_attempt_claim_skipped', {
@@ -70,7 +81,11 @@ async function tick(reportDate: string, runMarker: string): Promise<boolean> {
       return false;
     }
     attemptClaimed = true;
-    const result = await runAsaKeywordCycle(env.asaKeywordBackfillDays, logger);
+    const result = await withScheduledWorkerTimeout(
+      ASA_KEYWORD_WORKER_NAME,
+      env.scheduledWorkerMaxRuntimeMs,
+      () => runAsaKeywordCycle(env.asaKeywordBackfillDays, logger)
+    );
     logger.info('asa_keyword_cycle_result', { report_date: reportDate, ...result });
     const completed = didAsaKeywordCycleComplete(result);
     if (completed) {
@@ -103,6 +118,7 @@ async function tick(reportDate: string, runMarker: string): Promise<boolean> {
     );
     return completed;
   } catch (error) {
+    shouldExitAfterTimeout = isScheduledWorkerTimeoutError(error);
     if (attemptClaimed) {
       await failScheduledWorkerRun(
         ASA_KEYWORD_WORKER_NAME,
@@ -131,10 +147,18 @@ async function tick(reportDate: string, runMarker: string): Promise<boolean> {
     );
     return false;
   } finally {
+    stopLockHeartbeat?.();
     if (lockOwnerId) {
       await releaseJobLock(ASA_KEYWORD_JOB_LOCK, lockOwnerId);
     }
     running = false;
+    if (shouldExitAfterTimeout) {
+      logger.error('asa_keyword_process_exit_after_timeout', {
+        report_date: reportDate,
+        timeout_ms: env.scheduledWorkerMaxRuntimeMs
+      });
+      process.exit(1);
+    }
   }
 }
 

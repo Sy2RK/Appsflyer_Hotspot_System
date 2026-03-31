@@ -5,6 +5,7 @@ import {
   AsaKeywordRecommendationRow,
   AsaKeywordRouteRecord,
   AsaKeywordStateRow,
+  BudgetExecutionAction,
   BitableExportConfigRecord,
   BitableExportDailyTableRecord,
   BitableExportRecordRefRecord,
@@ -198,6 +199,20 @@ export async function releasePullCycleLock(name: string, ownerId: string): Promi
   await pgQuery(`DELETE FROM pull_cycle_locks WHERE name = $1 AND owner_id = $2`, [name, ownerId]);
 }
 
+export async function renewPullCycleLock(name: string, ownerId: string, ttlMs: number): Promise<boolean> {
+  const result = await pgQuery<{ name: string }>(
+    `UPDATE pull_cycle_locks
+        SET expires_at = NOW() + ($3 * INTERVAL '1 millisecond'),
+            updated_at = NOW()
+      WHERE name = $1
+        AND owner_id = $2
+      RETURNING name`,
+    [name, ownerId, Math.max(1000, Math.floor(ttlMs))]
+  );
+
+  return (result.rowCount ?? 0) > 0;
+}
+
 export async function getActivePullCycleLock(name: string): Promise<PullCycleLockRecord | null> {
   const result = await pgQuery<PullCycleLockRecord>(
     `SELECT name, owner_id, expires_at, created_at, updated_at
@@ -219,6 +234,10 @@ export async function releaseJobLock(name: string, ownerId: string): Promise<voi
   await releasePullCycleLock(name, ownerId);
 }
 
+export async function renewJobLock(name: string, ownerId: string, ttlMs: number): Promise<boolean> {
+  return renewPullCycleLock(name, ownerId, ttlMs);
+}
+
 export async function getActiveJobLock(name: string): Promise<PullCycleLockRecord | null> {
   return getActivePullCycleLock(name);
 }
@@ -231,6 +250,7 @@ let ensureFeedbackSkillVersionsSchemaPromise: Promise<void> | null = null;
 let ensurePullReportReadinessSchemaPromise: Promise<void> | null = null;
 let ensureScheduledWorkerRunsSchemaPromise: Promise<void> | null = null;
 let ensureRecommendationPolicyConfigsSchemaPromise: Promise<void> | null = null;
+let ensureBudgetRecommendationsSchemaPromise: Promise<void> | null = null;
 
 async function ensurePullReportReadinessSchema(): Promise<void> {
   if (!ensurePullReportReadinessSchemaPromise) {
@@ -260,6 +280,27 @@ async function ensurePullReportReadinessSchema(): Promise<void> {
       });
   }
   await ensurePullReportReadinessSchemaPromise;
+}
+
+export async function ensureBudgetRecommendationsSchema(): Promise<void> {
+  if (!ensureBudgetRecommendationsSchemaPromise) {
+    ensureBudgetRecommendationsSchemaPromise = (async () => {
+      await pgQuery(
+        `ALTER TABLE budget_recommendations
+            ADD COLUMN IF NOT EXISTS execution_actions JSONB NOT NULL DEFAULT '[]'::jsonb`
+      );
+      await pgQuery(
+        `ALTER TABLE budget_recommendations
+            ADD COLUMN IF NOT EXISTS scenario_tags JSONB NOT NULL DEFAULT '[]'::jsonb`
+      );
+    })()
+      .then(() => undefined)
+      .catch((error) => {
+        ensureBudgetRecommendationsSchemaPromise = null;
+        throw error;
+      });
+  }
+  await ensureBudgetRecommendationsSchemaPromise;
 }
 
 async function ensureScheduledWorkerRunsSchema(): Promise<void> {
@@ -1300,21 +1341,24 @@ export interface UpsertBudgetRecommendationInput {
   confidence: number;
   reason_code: string;
   llm_summary: unknown;
+  execution_actions: BudgetExecutionAction[];
+  scenario_tags: string[];
   status?: BudgetRecommendationStatus;
 }
 
 export async function upsertBudgetRecommendation(
   input: UpsertBudgetRecommendationInput
 ): Promise<BudgetRecommendationRow> {
+  await ensureBudgetRecommendationsSchema();
   const result = await pgQuery<BudgetRecommendationRow>(
     `INSERT INTO budget_recommendations (
       app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
       current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas,
-      volume_tier, expected_installs_delta, confidence, reason_code, llm_summary, status
+      volume_tier, expected_installs_delta, confidence, reason_code, llm_summary, execution_actions, scenario_tags, status
     ) VALUES (
       $1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10,
       $11, $12, $13, $14, $15, $16,
-      $17, $18, $19, $20, $21, COALESCE($22, 'pending')
+      $17, $18, $19, $20, $21, $22, $23, COALESCE($24, 'pending')
     )
     ON CONFLICT (app_key, platform, media_source, keyword, match_type, date) DO UPDATE SET
       action = EXCLUDED.action,
@@ -1332,6 +1376,8 @@ export async function upsertBudgetRecommendation(
       confidence = EXCLUDED.confidence,
       reason_code = EXCLUDED.reason_code,
       llm_summary = EXCLUDED.llm_summary,
+      execution_actions = EXCLUDED.execution_actions,
+      scenario_tags = EXCLUDED.scenario_tags,
       status = CASE
         WHEN budget_recommendations.status IN ('applied', 'rejected') THEN budget_recommendations.status
         ELSE EXCLUDED.status
@@ -1339,7 +1385,7 @@ export async function upsertBudgetRecommendation(
       updated_at = NOW()
     RETURNING id, app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
               current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, volume_tier,
-              expected_installs_delta, confidence, reason_code, llm_summary, status,
+              expected_installs_delta, confidence, reason_code, llm_summary, execution_actions, scenario_tags, status,
               NULL::text AS execution_status, FALSE AS is_adopted, NULL::text AS validation_result,
               NULL::text AS feedback_synced_at, created_at, updated_at`,
     [
@@ -1364,6 +1410,8 @@ export async function upsertBudgetRecommendation(
       input.confidence,
       input.reason_code,
       JSON.stringify(input.llm_summary ?? {}),
+      JSON.stringify(input.execution_actions ?? []),
+      JSON.stringify(input.scenario_tags ?? []),
       input.status ?? 'pending'
     ]
   );
@@ -1373,7 +1421,7 @@ export async function upsertBudgetRecommendation(
 export async function queryBudgetRecommendations(
   filter: BudgetRecommendationFilter
 ): Promise<PagedResult<BudgetRecommendationRow>> {
-  await ensureRecommendationExecutionFeedbacksSchema();
+  await Promise.all([ensureRecommendationExecutionFeedbacksSchema(), ensureBudgetRecommendationsSchema()]);
   const pageSize = Math.min(100, Math.max(1, filter.pageSize ?? 20));
   const page = Math.max(1, filter.page ?? 1);
   const values: unknown[] = [];
@@ -1437,7 +1485,7 @@ export async function queryBudgetRecommendations(
     `SELECT br.id, br.app_key, br.platform, br.media_source, br.keyword, br.match_type, br.date, br.action, br.change_ratio,
             br.suggested_budget, br.current_cost, br.current_ecpi, br.target_ecpi, br.primary_metric, br.metric_mode,
             br.current_roas, br.target_roas, br.volume_tier, br.expected_installs_delta, br.confidence, br.reason_code,
-            br.llm_summary, br.status,
+            br.llm_summary, br.execution_actions, br.scenario_tags, br.status,
             ref.execution_status,
             COALESCE(ref.is_adopted, FALSE) AS is_adopted,
             ref.validation_result,
@@ -1465,6 +1513,7 @@ export async function setBudgetRecommendationStatus(
   id: number,
   status: BudgetRecommendationStatus
 ): Promise<BudgetRecommendationRow | null> {
+  await ensureBudgetRecommendationsSchema();
   const result = await pgQuery<BudgetRecommendationRow>(
     `UPDATE budget_recommendations
         SET status = $1,
@@ -1472,7 +1521,7 @@ export async function setBudgetRecommendationStatus(
       WHERE id = $2
       RETURNING id, app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
                 current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, volume_tier,
-                expected_installs_delta, confidence, reason_code, llm_summary, status,
+                expected_installs_delta, confidence, reason_code, llm_summary, execution_actions, scenario_tags, status,
                 NULL::text AS execution_status, FALSE AS is_adopted, NULL::text AS validation_result,
                 NULL::text AS feedback_synced_at, created_at, updated_at`,
     [status, id]

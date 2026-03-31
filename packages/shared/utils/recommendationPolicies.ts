@@ -1,5 +1,8 @@
 import type {
+  BudgetExecutionAction,
+  BudgetExecutionActionCode,
   RecommendationPolicyActionPlaybook,
+  RecommendationPolicyAdjustmentConfig,
   RecommendationPolicyConfigRecord,
   RecommendationPolicyEngine,
   RecommendationPolicyMaturityWindow,
@@ -42,6 +45,7 @@ export interface SpendScenarioEvaluationInput {
 
 export interface SpendScenarioEvaluationResult {
   scenarioTags: string[];
+  executionActionCodes: BudgetExecutionActionCode[];
   actionItems: string[];
 }
 
@@ -60,6 +64,27 @@ export interface RelativeCompareDecisionResult {
 
 const DEFAULT_CONTEXT_WINDOW_DAYS = [7, 14, 21];
 const DEFAULT_MEDIA_SOURCE = 'apple search ads';
+const BUDGET_EXECUTION_ACTION_DEFINITIONS: Record<
+  BudgetExecutionActionCode,
+  Pick<BudgetExecutionAction, 'label' | 'priority'>
+> = {
+  iterate_creative: {
+    label: '迭代素材',
+    priority: 10
+  },
+  increase_spend_capacity: {
+    label: '提升跑量能力',
+    priority: 20
+  },
+  raise_roas_target: {
+    label: '提高 ROAS 目标',
+    priority: 10
+  },
+  scale_gradually: {
+    label: '稳步扩量',
+    priority: 20
+  }
+};
 
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -195,6 +220,15 @@ function normalizeSpendPolicy(value: unknown): RecommendationPolicySpendConfig {
   };
 }
 
+function normalizeAdjustmentPolicy(value: unknown): RecommendationPolicyAdjustmentConfig {
+  const raw = asObject(value);
+  return {
+    default_increase_ratio: toPositiveNumber(raw.default_increase_ratio, 0.2, 0, 10),
+    default_decrease_ratio: toPositiveNumber(raw.default_decrease_ratio, 0.2, 0, 10),
+    high_spend_uptrend_increase_ratio: toPositiveNumber(raw.high_spend_uptrend_increase_ratio, 0.3, 0, 10)
+  };
+}
+
 function normalizeScenarioRule(value: unknown, fallbackTags: string[]): RecommendationPolicyScenarioRule {
   const raw = asObject(value);
   return {
@@ -240,6 +274,7 @@ export function defaultRecommendationPolicyRule(): RecommendationPolicyRuleJson 
     maturity_window: normalizeMaturityWindow({}),
     targets: normalizeTargets({}),
     spend_policy: normalizeSpendPolicy({}),
+    adjustment_policy: normalizeAdjustmentPolicy({}),
     action_playbook: normalizeActionPlaybook({}),
     relative_compare: normalizeRelativeCompare({})
   };
@@ -265,6 +300,7 @@ export function normalizeRecommendationPolicyRule(value: unknown): Recommendatio
     maturity_window: normalizeMaturityWindow(raw.maturity_window),
     targets: normalizeTargets(raw.targets),
     spend_policy: normalizeSpendPolicy(raw.spend_policy),
+    adjustment_policy: normalizeAdjustmentPolicy(raw.adjustment_policy),
     action_playbook: normalizeActionPlaybook(raw.action_playbook),
     relative_compare: normalizeRelativeCompare(raw.relative_compare)
   };
@@ -283,6 +319,7 @@ export function validateRecommendationPolicyRule(value: unknown): Recommendation
     'maturity_window',
     'targets',
     'spend_policy',
+    'adjustment_policy',
     'action_playbook',
     'relative_compare'
   ]);
@@ -339,6 +376,22 @@ export function validateRecommendationPolicyRule(value: unknown): Recommendation
     'trend_lookback_days',
     'uptrend_min_ratio'
   ]);
+
+  const adjustmentPolicy = asObject(raw.adjustment_policy);
+  assertNoUnknownKeys('ruleJson.adjustment_policy', adjustmentPolicy, [
+    'default_increase_ratio',
+    'default_decrease_ratio',
+    'high_spend_uptrend_increase_ratio'
+  ]);
+  for (const [key, entry] of Object.entries(adjustmentPolicy)) {
+    const parsed = Number(entry);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new RecommendationPolicyValidationError(
+        'invalid_rule_json',
+        `ruleJson.adjustment_policy.${key} 必须是大于等于 0 的数字`
+      );
+    }
+  }
 
   const actionPlaybook = asObject(raw.action_playbook);
   assertNoUnknownKeys('ruleJson.action_playbook', actionPlaybook, [
@@ -450,6 +503,26 @@ function percentile(values: number[], ratio: number): number {
   return items[lower] * (1 - weight) + items[upper] * weight;
 }
 
+function defaultExecutionActionCodesForTag(tag: string): BudgetExecutionActionCode[] {
+  if (tag === 'low_spend_signal_weak') {
+    return ['iterate_creative', 'increase_spend_capacity'];
+  }
+  if (tag === 'high_spend_uptrend_expandable') {
+    return ['raise_roas_target', 'scale_gradually'];
+  }
+  return [];
+}
+
+function resolveScenarioExecutionActionCodes(
+  tag: string,
+  configuredTags: string[] | undefined
+): BudgetExecutionActionCode[] {
+  const configuredCodes = normalizeStringArray(configuredTags).filter(
+    (item): item is BudgetExecutionActionCode => item in BUDGET_EXECUTION_ACTION_DEFINITIONS
+  );
+  return configuredCodes.length > 0 ? configuredCodes : defaultExecutionActionCodesForTag(tag);
+}
+
 function defaultActionItemsForTag(tag: string): string[] {
   if (tag === 'low_spend_signal_weak') {
     return ['优先迭代素材，先提升跑量能力。', '当前量级过低，短期 ROAS 波动不宜直接作为强动作依据。'];
@@ -462,6 +535,7 @@ function defaultActionItemsForTag(tag: string): string[] {
 
 export function evaluateSpendScenarios(input: SpendScenarioEvaluationInput): SpendScenarioEvaluationResult {
   const scenarioTags: string[] = [];
+  const executionActionCodes = new Set<BudgetExecutionActionCode>();
   const actionItems = new Set<string>();
   const lowSpendThreshold = input.spendPolicy.low_spend_threshold_usd;
   const highSpendThreshold = input.spendPolicy.high_spend_threshold_usd;
@@ -472,6 +546,12 @@ export function evaluateSpendScenarios(input: SpendScenarioEvaluationInput): Spe
     input.avgDailySpend <= lowSpendThreshold
   ) {
     scenarioTags.push('low_spend_signal_weak');
+    for (const item of resolveScenarioExecutionActionCodes(
+      'low_spend_signal_weak',
+      input.actionPlaybook.low_spend_signal_weak.action_tags
+    )) {
+      executionActionCodes.add(item);
+    }
     for (const item of defaultActionItemsForTag('low_spend_signal_weak')) {
       actionItems.add(item);
     }
@@ -493,6 +573,12 @@ export function evaluateSpendScenarios(input: SpendScenarioEvaluationInput): Spe
     const thresholdRatio = 1 + Math.max(0, input.spendPolicy.uptrend_min_ratio);
     if (firstAvg > 0 && secondAvg >= firstAvg * thresholdRatio) {
       scenarioTags.push('high_spend_uptrend_expandable');
+      for (const item of resolveScenarioExecutionActionCodes(
+        'high_spend_uptrend_expandable',
+        input.actionPlaybook.high_spend_uptrend_expandable.action_tags
+      )) {
+        executionActionCodes.add(item);
+      }
       for (const item of defaultActionItemsForTag('high_spend_uptrend_expandable')) {
         actionItems.add(item);
       }
@@ -501,8 +587,30 @@ export function evaluateSpendScenarios(input: SpendScenarioEvaluationInput): Spe
 
   return {
     scenarioTags,
+    executionActionCodes: Array.from(executionActionCodes),
     actionItems: Array.from(actionItems)
   };
+}
+
+export function buildBudgetExecutionActions(
+  codes: BudgetExecutionActionCode[],
+  source: BudgetExecutionAction['source']
+): BudgetExecutionAction[] {
+  return Array.from(new Set(codes))
+    .map((code) => {
+      const definition = BUDGET_EXECUTION_ACTION_DEFINITIONS[code];
+      if (!definition) {
+        return null;
+      }
+      return {
+        code,
+        label: definition.label,
+        source,
+        priority: definition.priority
+      };
+    })
+    .filter((item): item is BudgetExecutionAction => Boolean(item))
+    .sort((left, right) => left.priority - right.priority || left.label.localeCompare(right.label));
 }
 
 export function evaluateRelativeCompareMetrics(
@@ -553,7 +661,14 @@ export function summarizeRecommendationPolicySupport(
   engine: RecommendationPolicyEngine,
   rule: RecommendationPolicyRuleJson
 ): RecommendationPolicyValidationResult['effective_support'] {
-  const supportedFeatures = ['traffic_scope', 'windowing', 'thresholds', 'manual_prompt_markdown', 'spend_scenarios'];
+  const supportedFeatures = [
+    'traffic_scope',
+    'windowing',
+    'thresholds',
+    'manual_prompt_markdown',
+    'spend_scenarios',
+    'adjustment_policy'
+  ];
   const notes: string[] = [];
   let automationLevel: 'full' | 'partial' = 'full';
 

@@ -1,0 +1,8 @@
+<clickhouse>
+    <!--
+      Temporary recovery override:
+      disable system logs whose outdated parts are currently crashing startup.
+    -->
+    <part_log remove="1" />
+    <asynchronous_metric_log remove="1" />
+</clickhouse>
