@@ -27,6 +27,11 @@ import { getDailyBriefDefaultReportDate } from './dailyBrief.js';
 import { getPushScheduleTarget } from './runtimeSchedule.js';
 import { getTzParts } from './schedule.js';
 import { buildPreviousDateList } from './businessDate.js';
+import {
+  AppsflyerRequestError,
+  fetchAppsflyerText,
+  type AppsflyerRequestFailureKind
+} from './appsflyerRequest.js';
 import type {
   AppConfigRecord,
   AsaKeywordRecommendationRow,
@@ -197,6 +202,10 @@ export interface AsaCycleResult {
   state_rows: number;
   recommendation_rows: number;
   app_targets: number;
+  failed_slice_count: number;
+  retryable_failed_slice_count: number;
+  terminal_failed_slice_count: number;
+  recovered_slice_count: number;
 }
 
 export interface ScheduledAsaKeywordBriefRunSummary {
@@ -214,6 +223,7 @@ const ASA_KEYWORD_METRICS_TABLE = 'asa_keyword_daily_metrics_v2';
 const ASA_SLICE_SNAPSHOT_TABLE = 'asa_slice_snapshots';
 const ASA_KEYWORD_BRIEF_SEND_LOCK_PREFIX = 'asa_keyword_brief:send';
 const ASA_KEYWORD_BRIEF_SEND_LOCK_TTL_MS = 30 * 60 * 1000;
+const ASA_FETCH_REVIEW_RETRY_DELAY_MS = 30 * 1000;
 
 function buildAsaKeywordBriefSendLockName(
   reportDate: string,
@@ -511,18 +521,38 @@ function asaTargets(apps: AppConfigRecord[]): Array<{ app: AppConfigRecord; plat
   return targets;
 }
 
+interface AsaSliceFetchFailure {
+  app_key: string;
+  platform: string;
+  date: string;
+  error: string;
+  failure_kind: AppsflyerRequestFailureKind;
+  retryable: boolean;
+}
+
+function normalizeAsaRequestError(error: unknown): AppsflyerRequestError {
+  if (error instanceof AppsflyerRequestError) {
+    return error;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return new AppsflyerRequestError({
+    message,
+    kind: 'unknown',
+    immediateRetryable: true,
+    scheduledRetryable: true
+  });
+}
+
 async function fetchRawCsv(appId: string, report: 'installs' | 'events', date: string): Promise<CsvRow[]> {
   const template = report === 'installs' ? env.rawInstallsEndpointTemplate : env.rawEventsEndpointTemplate;
   const url = template.replace('{app_id}', encodeURIComponent(appId));
-  const response = await fetch(`${url}?from=${encodeURIComponent(date)}&to=${encodeURIComponent(date)}`, {
+  const body = await fetchAppsflyerText(`${url}?from=${encodeURIComponent(date)}&to=${encodeURIComponent(date)}`, {
     headers: {
       Authorization: `Bearer ${env.rawDataToken}`
-    }
+    },
+    timeoutMs: env.asaKeywordRequestTimeoutMs,
+    label: 'raw_api'
   });
-  const body = await response.text();
-  if (!response.ok) {
-    throw new Error(`raw_api_failed status=${response.status} body=${body.slice(0, 200)}`);
-  }
   return parseCsv(body);
 }
 
@@ -553,15 +583,16 @@ async function fetchMasterKeywordMetrics(appId: string, appKey: string, platform
     currency: 'preferred',
     format: 'json'
   });
-  const response = await fetch(`https://hq1.appsflyer.com/api/master-agg-data/v4/app/${encodeURIComponent(appId)}?${params.toString()}`, {
+  const body = await fetchAppsflyerText(
+    `https://hq1.appsflyer.com/api/master-agg-data/v4/app/${encodeURIComponent(appId)}?${params.toString()}`,
+    {
     headers: {
       Authorization: `Bearer ${env.masterApiToken}`
+    },
+      timeoutMs: env.asaMasterApiTimeoutMs,
+      label: 'master_api'
     }
-  });
-  const body = await response.text();
-  if (!response.ok) {
-    throw new Error(`master_api_failed status=${response.status} body=${body.slice(0, 200)}`);
-  }
+  );
   let payload: unknown;
   try {
     payload = JSON.parse(body);
@@ -588,6 +619,52 @@ async function fetchMasterKeywordMetrics(appId: string, appKey: string, platform
       average_ecpi: toNumber(firstNonEmptyObject(row, ['Average eCPI', 'average_ecpi']))
     }))
     .filter((row) => row.keyword.length > 0);
+}
+
+async function fetchAsaSliceInputsWithRetry(
+  target: { app: AppConfigRecord; platform: string; appId: string },
+  date: string,
+  logger?: LoggerLike
+): Promise<{
+  installsCsv: CsvRow[];
+  eventsCsv: CsvRow[];
+  masterMetrics: AsaMasterMetricRow[];
+  recoveredByRetry: boolean;
+}> {
+  const runAttempt = async () =>
+    Promise.all([
+      fetchRawCsv(target.appId, 'installs', date),
+      fetchRawCsv(target.appId, 'events', date),
+      fetchMasterKeywordMetrics(target.appId, target.app.app_key, target.platform, date)
+    ]);
+
+  try {
+    const [installsCsv, eventsCsv, masterMetrics] = await runAttempt();
+    return { installsCsv, eventsCsv, masterMetrics, recoveredByRetry: false };
+  } catch (error) {
+    const requestError = normalizeAsaRequestError(error);
+    if (!requestError.immediateRetryable) {
+      throw requestError;
+    }
+
+    logWarn(logger, 'asa_keyword_slice_retry_scheduled', {
+      app_key: target.app.app_key,
+      date,
+      platform: target.platform,
+      failure_kind: requestError.kind,
+      wait_ms: ASA_FETCH_REVIEW_RETRY_DELAY_MS
+    });
+    await sleep(ASA_FETCH_REVIEW_RETRY_DELAY_MS);
+
+    const [installsCsv, eventsCsv, masterMetrics] = await runAttempt();
+    logInfo(logger, 'asa_keyword_slice_retry_recovered', {
+      app_key: target.app.app_key,
+      date,
+      platform: target.platform,
+      failure_kind: requestError.kind
+    });
+    return { installsCsv, eventsCsv, masterMetrics, recoveredByRetry: true };
+  }
 }
 
 function isAsaRow(row: CsvRow): boolean {
@@ -1221,14 +1298,43 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
   let installRowCount = 0;
   let eventRowCount = 0;
   let metricRowCount = 0;
+  let recoveredSliceCount = 0;
+  const sliceFailures: AsaSliceFetchFailure[] = [];
 
   for (const target of targets) {
     for (const date of dates) {
-      const [installsCsv, eventsCsv, masterMetrics] = await Promise.all([
-        fetchRawCsv(target.appId, 'installs', date),
-        fetchRawCsv(target.appId, 'events', date),
-        fetchMasterKeywordMetrics(target.appId, target.app.app_key, target.platform, date)
-      ]);
+      let installsCsv: CsvRow[] = [];
+      let eventsCsv: CsvRow[] = [];
+      let masterMetrics: AsaMasterMetricRow[] = [];
+      try {
+        const payload = await fetchAsaSliceInputsWithRetry(target, date, logger);
+        installsCsv = payload.installsCsv;
+        eventsCsv = payload.eventsCsv;
+        masterMetrics = payload.masterMetrics;
+        if (payload.recoveredByRetry) {
+          recoveredSliceCount += 1;
+        }
+      } catch (error) {
+        const requestError = normalizeAsaRequestError(error);
+        sliceFailures.push({
+          app_key: target.app.app_key,
+          platform: target.platform,
+          date,
+          error: requestError.message,
+          failure_kind: requestError.kind,
+          retryable: requestError.scheduledRetryable
+        });
+        logError(logger, 'asa_keyword_slice_failed', {
+          app_key: target.app.app_key,
+          date,
+          platform: target.platform,
+          failure_kind: requestError.kind,
+          retryable: requestError.scheduledRetryable,
+          error: requestError.message
+        });
+        continue;
+      }
+
       const installRows = toAsaInstallRows(target.app, target.platform, installsCsv);
       const eventRows = toAsaEventRows(target.app, target.platform, eventsCsv);
       const metricRows = aggregateDailyMetrics(installRows, eventRows, masterMetrics);
@@ -1257,6 +1363,8 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
   const { stateRows, recommendationRows } = await rebuildAsaKeywordStatesAndRecommendations(backfillDays, logger);
 
   const endedAt = new Date();
+  const retryableFailedSliceCount = sliceFailures.filter((item) => item.retryable).length;
+  const terminalFailedSliceCount = sliceFailures.filter((item) => !item.retryable).length;
   return {
     started_at: startedAt.toISOString(),
     ended_at: endedAt.toISOString(),
@@ -1267,7 +1375,11 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
     metric_rows: metricRowCount,
     state_rows: stateRows,
     recommendation_rows: recommendationRows,
-    app_targets: targets.length
+    app_targets: targets.length,
+    failed_slice_count: sliceFailures.length,
+    retryable_failed_slice_count: retryableFailedSliceCount,
+    terminal_failed_slice_count: terminalFailedSliceCount,
+    recovered_slice_count: recoveredSliceCount
   };
 }
 

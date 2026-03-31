@@ -101,6 +101,7 @@ export const env = {
   pullerBackfillDays: optionalNumber('PULLER_BACKFILL_DAYS', 3),
   pullerRunOnBoot: (process.env.PULLER_RUN_ON_BOOT ?? 'false').toLowerCase() === 'true',
   pullerRequestIntervalMs: optionalNumber('PULLER_REQUEST_INTERVAL_MS', 1000),
+  pullerRequestTimeoutMs: optionalNumber('PULLER_REQUEST_TIMEOUT_MS', 20 * 1000),
   pullerLockTtlMs: optionalNumber('PULLER_LOCK_TTL_MS', 15 * 60 * 1000),
   pullerSameContentCooldownRecentMs: optionalNumber(
     'PULLER_SAME_CONTENT_COOLDOWN_RECENT_MS',
@@ -121,9 +122,14 @@ export const env = {
   asaKeywordBackfillDays: optionalNumber('ASA_KEYWORD_BACKFILL_DAYS', 14),
   asaKeywordRunOnBoot: (process.env.ASA_KEYWORD_RUN_ON_BOOT ?? 'false').toLowerCase() === 'true',
   asaKeywordRequestIntervalMs: optionalNumber('ASA_KEYWORD_REQUEST_INTERVAL_MS', 1200),
+  asaKeywordRequestTimeoutMs: optionalNumber('ASA_KEYWORD_REQUEST_TIMEOUT_MS', 20 * 1000),
   asaMasterApiRequestIntervalMs: optionalNumber(
     'ASA_MASTER_API_REQUEST_INTERVAL_MS',
     optionalNumber('ASA_KEYWORD_REQUEST_INTERVAL_MS', 1200)
+  ),
+  asaMasterApiTimeoutMs: optionalNumber(
+    'ASA_MASTER_API_TIMEOUT_MS',
+    optionalNumber('ASA_KEYWORD_REQUEST_TIMEOUT_MS', 20 * 1000)
   ),
   asaDailyBriefEnabled: (process.env.ASA_DAILY_BRIEF_ENABLED ?? 'true').toLowerCase() !== 'false',
   asaDailyBriefIntervalMs: optionalNumber('ASA_DAILY_BRIEF_INTERVAL_MS', 60 * 60 * 1000),

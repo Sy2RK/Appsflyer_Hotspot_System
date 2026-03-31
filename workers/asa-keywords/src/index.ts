@@ -28,6 +28,21 @@ const RETRY_POLICY = {
   retry_cooldown_ms: RETRY_COOLDOWN_MS
 } as const;
 
+function didAsaKeywordCycleComplete(result: {
+  failed_slice_count: number;
+  retryable_failed_slice_count?: number;
+}): boolean {
+  const retryableFailedCount =
+    typeof result.retryable_failed_slice_count === 'number'
+      ? result.retryable_failed_slice_count
+      : result.failed_slice_count;
+  return retryableFailedCount === 0;
+}
+
+function summarizeAsaKeywordCycleStatus(result: { failed_slice_count: number }): 'success' | 'failed' {
+  return result.failed_slice_count === 0 ? 'success' : 'failed';
+}
+
 async function tick(reportDate: string, runMarker: string): Promise<boolean> {
   if (running) {
     logger.warn('asa_keyword_cycle_skip_overlap');
@@ -57,23 +72,36 @@ async function tick(reportDate: string, runMarker: string): Promise<boolean> {
     attemptClaimed = true;
     const result = await runAsaKeywordCycle(env.asaKeywordBackfillDays, logger);
     logger.info('asa_keyword_cycle_result', { report_date: reportDate, ...result });
-    await completeScheduledWorkerRun(ASA_KEYWORD_WORKER_NAME, runMarker);
+    const completed = didAsaKeywordCycleComplete(result);
+    if (completed) {
+      await completeScheduledWorkerRun(ASA_KEYWORD_WORKER_NAME, runMarker);
+    } else {
+      await failScheduledWorkerRun(
+        ASA_KEYWORD_WORKER_NAME,
+        runMarker,
+        `asa_keyword_retryable_failed_slices=${result.retryable_failed_slice_count}`
+      );
+    }
     await writeOperationLog(
       {
         source: 'worker.asa_keywords',
         action: 'scheduled_asa_keyword_cycle',
         target_type: 'asa_keyword_cycle',
         target_key: reportDate,
-        status: 'success',
-        summary: `定时重算 ASA 关键词链路完成 ${reportDate}，回算 ${env.asaKeywordBackfillDays} 天`,
+        status: summarizeAsaKeywordCycleStatus(result),
+        summary:
+          result.failed_slice_count === 0
+            ? `定时重算 ASA 关键词链路完成 ${reportDate}，回算 ${env.asaKeywordBackfillDays} 天`
+            : `定时重算 ASA 关键词链路未完全完成 ${reportDate}，回算 ${env.asaKeywordBackfillDays} 天`,
         detail_json: {
           report_date: reportDate,
+          completed,
           ...result
         }
       },
       logger
     );
-    return true;
+    return completed;
   } catch (error) {
     if (attemptClaimed) {
       await failScheduledWorkerRun(

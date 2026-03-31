@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import {
+  classifyAppsflyerHttpFailure,
+  classifyAppsflyerTransportFailure
+} from '../packages/shared/utils/appsflyerRequest.js';
 import { resolveManualBitableExportHttpResult, type BitableExportRunResult } from '../packages/shared/utils/bitableExport.js';
 import { shouldUpsertFeedbackRow } from '../packages/shared/utils/recommendationFeedback.js';
 import { evaluateScheduledWorkerRunDecision } from '../packages/shared/utils/scheduledWorkerRun.js';
@@ -216,6 +220,30 @@ async function main(): Promise<void> {
     undefined
   );
   assert.equal(inserted, true);
+
+  const timeoutFailure = classifyAppsflyerTransportFailure(
+    'pull_api',
+    Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }),
+    20_000
+  );
+  assert.equal(timeoutFailure.kind, 'timeout');
+  assert.equal(timeoutFailure.immediateRetryable, true);
+  assert.equal(timeoutFailure.scheduledRetryable, true);
+
+  const authFailure = classifyAppsflyerHttpFailure('pull_api', 401, 'Unauthorized');
+  assert.equal(authFailure.kind, 'auth');
+  assert.equal(authFailure.immediateRetryable, false);
+  assert.equal(authFailure.scheduledRetryable, false);
+
+  const rateLimitFailure = classifyAppsflyerHttpFailure('pull_api', 403, 'Limit reached for daily-report');
+  assert.equal(rateLimitFailure.kind, 'rate_limit');
+  assert.equal(rateLimitFailure.immediateRetryable, false);
+  assert.equal(rateLimitFailure.scheduledRetryable, true);
+
+  const serverFailure = classifyAppsflyerHttpFailure('raw_api', 502, 'Bad gateway');
+  assert.equal(serverFailure.kind, 'server');
+  assert.equal(serverFailure.immediateRetryable, true);
+  assert.equal(serverFailure.scheduledRetryable, true);
 
   const shanghaiAfterMidnight = getSevenDayLaterTodayDateString(new Date('2026-03-27T16:30:00.000Z'));
   assert.equal(shanghaiAfterMidnight, '2026-03-28');

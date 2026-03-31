@@ -11,6 +11,11 @@ import {
 import { chExec, chInsertJSON, chQuery } from './clickhouse.js';
 import { md5Hex } from './hash.js';
 import { buildPreviousDateList, getPreviousDateString } from './businessDate.js';
+import {
+  AppsflyerRequestError,
+  fetchAppsflyerText,
+  type AppsflyerRequestFailureKind
+} from './appsflyerRequest.js';
 
 interface CsvRow {
   [key: string]: string;
@@ -74,6 +79,8 @@ export interface PullCycleDetail {
   rows: number;
   metrics_rows: number;
   error?: string;
+  failure_kind?: AppsflyerRequestFailureKind;
+  retryable?: boolean;
   attempts?: number;
   recovered_by_retry?: boolean;
 }
@@ -87,6 +94,8 @@ export interface PullCycleResult {
   apps: number;
   success_count: number;
   failed_count: number;
+  retryable_failed_count: number;
+  terminal_failed_count: number;
   skipped_count: number;
   details: PullCycleDetail[];
 }
@@ -113,6 +122,9 @@ interface PullAttemptResult {
   rows: number;
   metricsRows: number;
   error?: string;
+  failureKind?: AppsflyerRequestFailureKind;
+  immediateRetryable: boolean;
+  scheduledRetryable: boolean;
   rateLimited: boolean;
 }
 
@@ -657,24 +669,13 @@ async function pullAppDaily(
   platformHint: string
 ): Promise<{ rows: number; metricsRows: number; signature: string }> {
   const url = buildPullUrl(appKey, pullAppId, date);
-
-  const response = await fetch(url, {
+  const csv = await fetchAppsflyerText(url, {
     headers: {
       Authorization: `Bearer ${env.pullToken}`
-    }
+    },
+    timeoutMs: env.pullerRequestTimeoutMs,
+    label: 'pull_api'
   });
-
-  if (!response.ok) {
-    const errorBody = (await response.text().catch(() => ''))
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 120);
-    throw new Error(
-      errorBody ? `pull_api_failed status=${response.status} body=${errorBody}` : `pull_api_failed status=${response.status}`
-    );
-  }
-
-  const csv = await response.text();
   const parsedRows = parseCsv(csv);
   const pullRows = toPullRows({ appKey, date, rows: parsedRows, platformHint });
   const signature = buildPullContentSignature(pullRows);
@@ -696,23 +697,13 @@ async function executePullAttempt(params: {
   const url = buildPullUrl(params.appKey, params.pullAppId, params.date);
 
   try {
-    const response = await fetch(url, {
+    const csv = await fetchAppsflyerText(url, {
       headers: {
         Authorization: `Bearer ${env.pullToken}`
-      }
+      },
+      timeoutMs: env.pullerRequestTimeoutMs,
+      label: 'pull_api'
     });
-
-    if (!response.ok) {
-      const errorBody = (await response.text().catch(() => ''))
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 120);
-      throw new Error(
-        errorBody ? `pull_api_failed status=${response.status} body=${errorBody}` : `pull_api_failed status=${response.status}`
-      );
-    }
-
-    const csv = await response.text();
     const parsedRows = parseCsv(csv);
     const pullRows = toPullRows({
       appKey: params.appKey,
@@ -740,6 +731,8 @@ async function executePullAttempt(params: {
         status: 'skipped_same_content_cooldown',
         rows: 0,
         metricsRows: 0,
+        immediateRetryable: false,
+        scheduledRetryable: false,
         rateLimited: false
       };
     }
@@ -769,10 +762,21 @@ async function executePullAttempt(params: {
       status: 'ok',
       rows: pullRows.length,
       metricsRows: metricRows.length,
+      immediateRetryable: false,
+      scheduledRetryable: false,
       rateLimited: false
     };
   } catch (error) {
     const errorText = error instanceof Error ? error.message : String(error);
+    const requestError =
+      error instanceof AppsflyerRequestError
+        ? error
+        : new AppsflyerRequestError({
+            message: errorText,
+            kind: 'unknown',
+            immediateRetryable: true,
+            scheduledRetryable: true
+          });
     await upsertPullContentGuard({
       app_key: params.appKey,
       platform: params.platform,
@@ -789,7 +793,10 @@ async function executePullAttempt(params: {
       rows: 0,
       metricsRows: 0,
       error: errorText,
-      rateLimited: isRateLimitError(errorText)
+      failureKind: requestError.kind,
+      immediateRetryable: requestError.immediateRetryable,
+      scheduledRetryable: requestError.scheduledRetryable,
+      rateLimited: requestError.kind === 'rate_limit' || isRateLimitError(errorText)
     };
   }
 }
@@ -817,6 +824,8 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
       apps: apps.length,
       success_count: 0,
       failed_count: 0,
+      retryable_failed_count: 0,
+      terminal_failed_count: 0,
       skipped_count: 1,
       details: [
         {
@@ -972,21 +981,28 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
               rows: 0,
               metrics_rows: 0,
               error: attempt.error,
+              failure_kind: attempt.failureKind,
+              retryable: attempt.scheduledRetryable,
               attempts: 1,
               recovered_by_retry: false
             });
-            reviewQueue.push({
-              detailIndex: details.length - 1,
-              appKey: app.app_key,
-              pullAppId: target.pullAppId,
-              date,
-              platform
-            });
+            if (attempt.immediateRetryable) {
+              reviewQueue.push({
+                detailIndex: details.length - 1,
+                appKey: app.app_key,
+                pullAppId: target.pullAppId,
+                date,
+                platform
+              });
+            }
             logError(logger, 'puller_app_day_failed', {
               app_key: app.app_key,
               date,
               platform,
-              error: attempt.error
+              error: attempt.error,
+              failure_kind: attempt.failureKind,
+              review_retry: attempt.immediateRetryable,
+              scheduled_retry: attempt.scheduledRetryable
             });
           }
 
@@ -1030,13 +1046,17 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
           });
         } else {
           detail.error = retry.error;
+          detail.failure_kind = retry.failureKind;
+          detail.retryable = retry.scheduledRetryable;
           detail.attempts = 2;
           detail.recovered_by_retry = false;
           logError(logger, 'puller_review_retry_failed', {
             app_key: candidate.appKey,
             date: candidate.date,
             platform: candidate.platform,
-            error: retry.error
+            error: retry.error,
+            failure_kind: retry.failureKind,
+            scheduled_retry: retry.scheduledRetryable
           });
         }
 
@@ -1048,6 +1068,8 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
     const endedAtIso = endedAt.toISOString();
     const successCount = details.filter((item) => item.status === 'ok').length;
     const failedCount = details.filter((item) => item.status === 'failed').length;
+    const retryableFailedCount = details.filter((item) => item.status === 'failed' && item.retryable).length;
+    const terminalFailedCount = details.filter((item) => item.status === 'failed' && item.retryable !== true).length;
     const skippedCount = details.filter((item) => item.status.startsWith('skipped_')).length;
 
     await finalizePullReadiness(dates, details, expectedTargets, startedAtIso, endedAtIso);
@@ -1061,6 +1083,8 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
       apps: apps.length,
       success_count: successCount,
       failed_count: failedCount,
+      retryable_failed_count: retryableFailedCount,
+      terminal_failed_count: terminalFailedCount,
       skipped_count: skippedCount,
       details
     };
@@ -1071,6 +1095,8 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
       dates,
       success_count: successCount,
       failed_count: failedCount,
+      retryable_failed_count: retryableFailedCount,
+      terminal_failed_count: terminalFailedCount,
       skipped_count: skippedCount,
       duration_ms: summary.duration_ms
     });

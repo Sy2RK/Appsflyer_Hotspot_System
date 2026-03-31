@@ -41,8 +41,12 @@ function summarizePullCycleStatus(result: { success_count: number; failed_count:
   return 'info';
 }
 
-function didPullCycleComplete(result: { failed_count: number }): boolean {
-  return Number(result.failed_count) === 0;
+function didPullCycleComplete(result: { retryable_failed_count?: number; failed_count: number }): boolean {
+  const retryableFailedCount =
+    typeof result.retryable_failed_count === 'number'
+      ? result.retryable_failed_count
+      : result.failed_count;
+  return Number(retryableFailedCount) === 0;
 }
 
 async function tick(runMarker: string): Promise<boolean> {
