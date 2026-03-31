@@ -360,6 +360,32 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function mapWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  if (items.length === 0) {
+    return;
+  }
+
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  let nextIndex = 0;
+
+  await Promise.all(
+    Array.from({ length: limit }, async () => {
+      while (true) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        if (currentIndex >= items.length) {
+          return;
+        }
+        await worker(items[currentIndex], currentIndex);
+      }
+    })
+  );
+}
+
 function parseCsvRows(csv: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -772,6 +798,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
   const stageConfigs = await listProductStageConfigs();
   const appByKey = new Map((await listApps()).map((app) => [app.app_key, app]));
   const stageMap = new Map(stageConfigs.filter((item) => item.enabled).map((item) => [`${item.app_key}|${item.platform}`, item.stage]));
+  const peerStatsByDate = new Map<string, { ecpi: number[]; cpp: number[]; roas: number[] }>();
 
   const grouped = new Map<string, AsaKeywordDailyMetricInsertRow[]>();
   for (const row of metrics) {
@@ -779,6 +806,18 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     const bucket = grouped.get(key) ?? [];
     bucket.push(row);
     grouped.set(key, bucket);
+
+    if (Number(row.installs || 0) >= 1) {
+      const peerKey = `${row.app_key}|${row.platform}|${row.date}`;
+      const peerStats = peerStatsByDate.get(peerKey) ?? { ecpi: [], cpp: [], roas: [] };
+      const ecpi = Number(row.ecpi || 0);
+      const cpp = Number(row.cpp || 0);
+      const roas = Number(row.d7_roas || 0);
+      if (ecpi > 0) peerStats.ecpi.push(ecpi);
+      if (cpp > 0) peerStats.cpp.push(cpp);
+      if (roas > 0) peerStats.roas.push(roas);
+      peerStatsByDate.set(peerKey, peerStats);
+    }
   }
 
   const scopesByApp = new Map<string, Array<{ keyword: string; campaign: string; adset: string }>>();
@@ -812,6 +851,20 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
   let stateRows = 0;
   let recommendationRows = 0;
   const recommendationScopes = new Set<string>();
+  const pendingLlmUpdates: Array<{
+    current: AsaKeywordDailyMetricInsertRow;
+    action: 'increase' | 'decrease' | 'hold';
+    stage: ProductStage;
+    currentEcpi: number;
+    currentCpp: number;
+    currentD7Roas: number;
+    targetEcpi: number;
+    targetCpp: number;
+    targetD7Roas: number;
+    totalCost7d: number;
+    installs7d: number;
+    last3Installs: number;
+  }> = [];
   for (const rows of grouped.values()) {
     rows.sort((a, b) => a.date.localeCompare(b.date));
     const current = rows[rows.length - 1];
@@ -831,16 +884,14 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     const currentCpp = purchaseCount7d > 0 ? totalCost7d / purchaseCount7d : 0;
     const currentD7Roas = totalCost7d > 0 ? revenueD7Window / totalCost7d : 0;
 
-    const peerRows = metrics.filter(
-      (item) =>
-        item.app_key === current.app_key &&
-        item.platform === current.platform &&
-        item.date === current.date &&
-        Number(item.installs || 0) >= 1
-    );
-    const peerEcpi = peerRows.map((item) => Number(item.ecpi || 0)).filter((item) => item > 0);
-    const peerCpp = peerRows.map((item) => Number(item.cpp || 0)).filter((item) => item > 0);
-    const peerRoas = peerRows.map((item) => Number(item.d7_roas || 0)).filter((item) => item > 0);
+    const peerStats = peerStatsByDate.get(`${current.app_key}|${current.platform}|${current.date}`) ?? {
+      ecpi: [],
+      cpp: [],
+      roas: []
+    };
+    const peerEcpi = peerStats.ecpi;
+    const peerCpp = peerStats.cpp;
+    const peerRoas = peerStats.roas;
     const targetEcpi = Math.max(0.01, percentile(peerEcpi, 0.4) || median(peerEcpi) || currentEcpi || 0.01);
     const targetCpp = Math.max(0.01, percentile(peerCpp, 0.4) || median(peerCpp) || currentCpp || 0.01);
     const targetD7Roas = Math.max(0.01, percentile(peerRoas, 0.6) || median(peerRoas) || currentD7Roas || 0.01);
@@ -903,34 +954,55 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       status: 'pending'
     });
     recommendationRows += 1;
-
-    const llmCall = await explainBudgetRecommendationWithLlm({
-      appKey: current.app_key,
-      platform: current.platform,
-      mediaSource: 'Apple Search Ads',
-      primaryMetric: stage === 'stable' ? 'roas' : 'ecpi',
-      metricMode: stage === 'stable' ? 'active' : 'active',
-      keyword: current.keyword,
-      matchType: 'asa',
-      action: action as 'increase' | 'decrease' | 'hold' | 'pause',
-      changeRatio: action === 'hold' ? 0 : 0.2,
-      currentCost: totalCost7d,
-      suggestedBudget: action === 'increase' ? totalCost7d * 1.2 : action === 'decrease' ? totalCost7d * 0.8 : totalCost7d,
-      confidence: stage === 'stable' ? 0.88 : 0.82,
-      reasonCode: stage === 'stable' ? 'stable_dual_metric' : 'rising_ecpi',
+    pendingLlmUpdates.push({
+      current,
+      action,
       stage,
-      lastCpi: currentEcpi,
-      lastInstalls: installs7d,
-      lastClicks: installs7d,
       currentEcpi,
+      currentCpp,
+      currentD7Roas,
       targetEcpi,
-      volumeTier: installs7d >= 30 ? 'high' : installs7d >= 15 ? 'medium' : 'low',
-      last3Installs: rows.slice(-3).reduce((sum, row) => sum + Number(row.installs || 0), 0),
-      last7Installs: installs7d
+      targetCpp,
+      targetD7Roas,
+      totalCost7d,
+      installs7d,
+      last3Installs: rows.slice(-3).reduce((sum, row) => sum + Number(row.installs || 0), 0)
+    });
+  }
+
+  await mapWithConcurrency(pendingLlmUpdates, 4, async (item) => {
+    const llmCall = await explainBudgetRecommendationWithLlm({
+      appKey: item.current.app_key,
+      platform: item.current.platform,
+      mediaSource: 'Apple Search Ads',
+      primaryMetric: item.stage === 'stable' ? 'roas' : 'ecpi',
+      metricMode: 'active',
+      keyword: item.current.keyword,
+      matchType: 'asa',
+      action: item.action,
+      changeRatio: item.action === 'hold' ? 0 : 0.2,
+      currentCost: item.totalCost7d,
+      suggestedBudget:
+        item.action === 'increase'
+          ? item.totalCost7d * 1.2
+          : item.action === 'decrease'
+            ? item.totalCost7d * 0.8
+            : item.totalCost7d,
+      confidence: item.stage === 'stable' ? 0.88 : 0.82,
+      reasonCode: item.stage === 'stable' ? 'stable_dual_metric' : 'rising_ecpi',
+      stage: item.stage,
+      lastCpi: item.currentEcpi,
+      lastInstalls: item.installs7d,
+      lastClicks: item.installs7d,
+      currentEcpi: item.currentEcpi,
+      targetEcpi: item.targetEcpi,
+      volumeTier: item.installs7d >= 30 ? 'high' : item.installs7d >= 15 ? 'medium' : 'low',
+      last3Installs: item.last3Installs,
+      last7Installs: item.installs7d
     });
     await insertLlmAuditLog({
       biz_type: 'asa_keyword_recommendation',
-      biz_id: `${current.app_key}|${current.platform}|${current.keyword}|${current.campaign}|${current.adset}|${current.date}`,
+      biz_id: `${item.current.app_key}|${item.current.platform}|${item.current.keyword}|${item.current.campaign}|${item.current.adset}|${item.current.date}`,
       model: llmCall.model,
       prompt_hash: llmCall.promptHash,
       response_json: llmCall.raw,
@@ -938,26 +1010,26 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       success: llmCall.ok
     });
     await upsertAsaKeywordRecommendation({
-      app_key: current.app_key,
-      platform: current.platform,
-      keyword: current.keyword,
-      campaign: current.campaign,
-      adset: current.adset,
-      date: current.date,
-      action,
-      change_ratio: action === 'hold' ? 0 : 0.2,
-      primary_metric: stage === 'stable' ? 'd7_roas_cpp' : 'ecpi',
-      current_ecpi: currentEcpi,
-      current_cpp: currentCpp,
-      current_d7_roas: currentD7Roas,
-      target_ecpi: targetEcpi,
-      target_cpp: targetCpp,
-      target_d7_roas: targetD7Roas,
-      reason_code: stage === 'stable' ? 'stable_dual_metric' : 'rising_ecpi',
+      app_key: item.current.app_key,
+      platform: item.current.platform,
+      keyword: item.current.keyword,
+      campaign: item.current.campaign,
+      adset: item.current.adset,
+      date: item.current.date,
+      action: item.action,
+      change_ratio: item.action === 'hold' ? 0 : 0.2,
+      primary_metric: item.stage === 'stable' ? 'd7_roas_cpp' : 'ecpi',
+      current_ecpi: item.currentEcpi,
+      current_cpp: item.currentCpp,
+      current_d7_roas: item.currentD7Roas,
+      target_ecpi: item.targetEcpi,
+      target_cpp: item.targetCpp,
+      target_d7_roas: item.targetD7Roas,
+      reason_code: item.stage === 'stable' ? 'stable_dual_metric' : 'rising_ecpi',
       llm_summary: llmCall.output,
       status: 'pending'
     });
-  }
+  });
 
   logInfo(logger, 'asa_keyword_state_cycle_done', { state_rows: stateRows, recommendation_rows: recommendationRows });
   return { stateRows, recommendationRows };
