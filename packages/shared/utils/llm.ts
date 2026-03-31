@@ -35,6 +35,7 @@ export interface BudgetLlmInput {
   structuredPolicy?: Record<string, unknown>;
   computedContext?: Record<string, unknown>;
   manualPromptMarkdown?: string | null;
+  feedbackScope?: 'budget' | 'asa';
 }
 
 export interface LlmCallResult {
@@ -131,7 +132,7 @@ function normalizeExplain(raw: unknown, input: BudgetLlmInput): LlmExplainResult
 
 export async function explainBudgetRecommendationWithLlm(input: BudgetLlmInput): Promise<LlmCallResult> {
   const fallback = fallbackExplain(input);
-  const feedbackSkillPrompt = await loadLatestFeedbackSkillPrompt('budget');
+  const feedbackSkillPrompt = await loadLatestFeedbackSkillPrompt(input.feedbackScope ?? 'budget');
   const promptPayload = {
     task: 'budget_recommendation_explain',
     locale: 'zh-CN',

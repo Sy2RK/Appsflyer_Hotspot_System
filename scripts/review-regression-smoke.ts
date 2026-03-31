@@ -1,10 +1,21 @@
 import assert from 'node:assert/strict';
+import type { AddressInfo } from 'node:net';
+import express from 'express';
+import recommendationPoliciesRouter from '../apps/api/src/modules/recommendationPolicies/recommendationPolicies.routes.js';
 import {
   classifyAppsflyerHttpFailure,
   classifyAppsflyerTransportFailure
 } from '../packages/shared/utils/appsflyerRequest.js';
 import { resolveManualBitableExportHttpResult, type BitableExportRunResult } from '../packages/shared/utils/bitableExport.js';
 import { shouldUpsertFeedbackRow } from '../packages/shared/utils/recommendationFeedback.js';
+import { buildAsaContextWindow, buildAsaDecisionWindow } from '../packages/shared/utils/asaKeywords.js';
+import {
+  evaluateRelativeCompareMetrics,
+  RecommendationPolicyValidationError,
+  resolveRecommendationTarget,
+  summarizeRecommendationPolicySupport,
+  validateRecommendationPolicyRule
+} from '../packages/shared/utils/recommendationPolicies.js';
 import { evaluateScheduledWorkerRunDecision } from '../packages/shared/utils/scheduledWorkerRun.js';
 import { getSevenDayLaterTodayDateString } from '../packages/shared/utils/sevenDayLaterData.js';
 import type { RecommendationExecutionFeedbackRecord } from '../packages/shared/types/models.js';
@@ -72,6 +83,32 @@ function buildScheduledWorkerRun(
     updated_at: '2026-03-27T01:00:00.000Z',
     ...overrides
   };
+}
+
+async function withRecommendationPoliciesApi<T>(
+  run: (baseUrl: string) => Promise<T>
+): Promise<T> {
+  const app = express();
+  app.use(express.json());
+  app.use(recommendationPoliciesRouter);
+
+  const server = await new Promise<import('node:http').Server>((resolve) => {
+    const instance = app.listen(0, () => resolve(instance));
+  });
+  try {
+    const address = server.address() as AddressInfo;
+    return await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
 }
 
 async function main(): Promise<void> {
@@ -247,6 +284,142 @@ async function main(): Promise<void> {
 
   const shanghaiAfterMidnight = getSevenDayLaterTodayDateString(new Date('2026-03-27T16:30:00.000Z'));
   assert.equal(shanghaiAfterMidnight, '2026-03-28');
+
+  const validatedPolicy = validateRecommendationPolicyRule({
+    metric_family: 'relative_compare',
+    decision_mode: 'hybrid',
+    traffic_scope: 'media_sources',
+    media_sources: ['Apple Search Ads'],
+    maturity_window: {
+      exclude_recent_days: 7,
+      decision_window_days: 14,
+      context_window_days: [7, 14, 21]
+    },
+    targets: {
+      global_targets: { ecpi_max: 3 },
+      country_targets: {
+        US: { ecpi_max: 2.5 }
+      },
+      media_targets: {
+        'Apple Search Ads': { ecpi_max: 2.8 }
+      }
+    },
+    relative_compare: {
+      compare_granularity: 'campaign',
+      metrics: ['cpi', 'roas'],
+      min_peer_count: 3,
+      underperform_ratio: 0.2,
+      min_failed_metrics: 2
+    }
+  }).rule;
+
+  assert.equal(resolveRecommendationTarget(validatedPolicy, { country: 'US', mediaSource: 'Apple Search Ads' }).ecpi_max, 2.5);
+  assert.equal(resolveRecommendationTarget(validatedPolicy, { country: 'BR', mediaSource: 'Apple Search Ads' }).ecpi_max, 2.8);
+  assert.equal(resolveRecommendationTarget(validatedPolicy, { country: 'BR', mediaSource: 'Meta' }).ecpi_max, 3);
+
+  const relativeCompareDecision = evaluateRelativeCompareMetrics(
+    [
+      { metric: 'cpi', current: 12, peers: [5, 6, 7, 8] },
+      { metric: 'roas', current: 0.2, peers: [0.4, 0.45, 0.5, 0.55] },
+      { metric: 'ctr', current: 0.08, peers: [0.03, 0.04, 0.05, 0.06] }
+    ],
+    {
+      minPeerCount: 3,
+      underperformRatio: 0.2
+    }
+  );
+  assert.deepEqual(relativeCompareDecision.failedMetrics.sort(), ['cpi', 'roas']);
+  assert.deepEqual(relativeCompareDecision.strongMetrics, ['ctr']);
+
+  const asaDecisionWindow = buildAsaDecisionWindow('2026-03-31', validatedPolicy);
+  assert.deepEqual(asaDecisionWindow, {
+    from: '2026-03-11',
+    to: '2026-03-24'
+  });
+  const asaContextWindow = buildAsaContextWindow('2026-03-31', validatedPolicy);
+  assert.deepEqual(asaContextWindow, {
+    from: '2026-03-11',
+    to: '2026-03-31'
+  });
+
+  const supportSummary = summarizeRecommendationPolicySupport('budget', validatedPolicy);
+  assert.equal(supportSummary.automation_level, 'partial');
+  assert.ok(supportSummary.notes.some((note) => note.includes('relative_compare 已接入 evaluator')));
+  assert.ok(supportSummary.notes.some((note) => note.includes('国家级 eCPI 阈值判断')));
+  assert.ok(!supportSummary.notes.some((note) => note.includes('主要用于解释上下文')));
+
+  assert.throws(
+    () =>
+      validateRecommendationPolicyRule({
+        metric_family: 'ecpi',
+        decision_mode: 'deterministic',
+        traffic_scope: 'all',
+        unexpected_field: true
+      }),
+    (error: unknown) =>
+      error instanceof RecommendationPolicyValidationError &&
+      error.code === 'invalid_rule_json' &&
+      error.message.includes('unexpected_field')
+  );
+
+  assert.throws(
+    () =>
+      validateRecommendationPolicyRule({
+        metric_family: 'ecpi',
+        decision_mode: 'deterministic',
+        traffic_scope: 'media_sources',
+        media_sources: []
+      }),
+    (error: unknown) =>
+      error instanceof RecommendationPolicyValidationError && error.code === 'invalid_media_sources'
+  );
+
+  await withRecommendationPoliciesApi(async (baseUrl) => {
+    const invalidPlatformResponse = await fetch(`${baseUrl}/api/recommendation-policies`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        appKey: 'demo',
+        platform: 'web',
+        engine: 'budget',
+        ruleJson: {
+          metric_family: 'ecpi',
+          decision_mode: 'deterministic',
+          traffic_scope: 'all'
+        }
+      })
+    });
+    assert.equal(invalidPlatformResponse.status, 400);
+    assert.deepEqual(await invalidPlatformResponse.json(), {
+      ok: false,
+      error: 'invalid_platform'
+    });
+
+    const invalidRuleResponse = await fetch(`${baseUrl}/api/recommendation-policies`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        appKey: 'demo',
+        platform: 'ios',
+        engine: 'budget',
+        ruleJson: {
+          metric_family: 'ecpi',
+          decision_mode: 'deterministic',
+          traffic_scope: 'all',
+          unexpected_field: true
+        }
+      })
+    });
+    assert.equal(invalidRuleResponse.status, 400);
+    const invalidRulePayload = await invalidRuleResponse.json();
+    assert.equal(invalidRulePayload.ok, false);
+    assert.equal(invalidRulePayload.error, 'invalid_rule_json');
+    assert.match(invalidRulePayload.message, /unexpected_field/);
+  });
 
   console.log('review_regression_smoke_passed');
 }

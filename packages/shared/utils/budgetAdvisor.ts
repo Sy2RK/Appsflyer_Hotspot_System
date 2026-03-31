@@ -3,7 +3,6 @@ import { env } from '../config/env.js';
 import { explainBudgetRecommendationWithLlm } from './llm.js';
 import { getDateStringInTimezone, shiftDateString } from './businessDate.js';
 import {
-  getRecommendationPolicyConfig,
   expirePendingBudgetRecommendationsForDate,
   insertLlmAuditLog,
   listApps,
@@ -11,16 +10,13 @@ import {
   listRecommendationPolicyConfigs,
   upsertBudgetRecommendation
 } from './repositories.js';
-import {
-  KeywordLifecycleStateRow,
-  RecommendationPolicyConfigRecord,
-  RecommendationPolicyRuleJson
-} from '../types/models.js';
+import { KeywordLifecycleStateRow, RecommendationPolicyRuleJson } from '../types/models.js';
 import {
   buildRecommendationPolicyKey,
   buildRecommendationPolicyMap,
   defaultRecommendationPolicyRule,
   evaluateSpendScenarios,
+  evaluateRelativeCompareMetrics,
   isRecommendationPolicyEnabledForMedia,
   normalizeRecommendationPolicyRule,
   resolveRecommendationTarget
@@ -98,6 +94,18 @@ interface BudgetValueFact {
   cpi: number;
   cpp: number;
   d7_roas: number;
+}
+
+interface BudgetCountryFact {
+  platform: string;
+  media_source: string;
+  keyword: string;
+  match_type: string;
+  country: string;
+  last3_installs: number;
+  last7_installs: number;
+  last7_cost: number;
+  current_ecpi: number;
 }
 
 type VolumeTier = 'low' | 'medium' | 'high';
@@ -182,8 +190,8 @@ function shouldCreateRecommendation(action: 'increase' | 'decrease' | 'hold' | '
 }
 
 function resolvePrimaryMetric(
-  appKey: string,
-  platform: string,
+  _appKey: string,
+  _platform: string,
   policy: RecommendationPolicyRuleJson | null
 ): { primaryMetric: PrimaryMetric; metricMode: MetricMode } {
   if (policy?.metric_family === 'd7_roas_cpp') {
@@ -192,14 +200,14 @@ function resolvePrimaryMetric(
       metricMode: 'active'
     };
   }
-  const normalizedPlatform = String(platform || '').trim().toLowerCase();
-  const overrideKey = `${appKey}/${normalizedPlatform}`;
-  const override = env.budgetPrimaryMetricOverrides[overrideKey];
-  if (override) {
-    return {
-      primaryMetric: override.primaryMetric,
-      metricMode: override.metricMode
-    };
+  if (policy?.metric_family === 'relative_compare') {
+    const relativeMetrics = new Set(policy.relative_compare.metrics || []);
+    if (relativeMetrics.has('roas') && !relativeMetrics.has('cpi')) {
+      return {
+        primaryMetric: 'roas',
+        metricMode: 'active'
+      };
+    }
   }
   return {
     primaryMetric: 'ecpi',
@@ -532,6 +540,55 @@ async function queryBudgetKeywordSpendSeries(
   return result;
 }
 
+async function queryBudgetCountryFacts(appKey: string, reportDate: string): Promise<BudgetCountryFact[]> {
+  const last3From = shiftDateString(reportDate, -2);
+  const last7From = shiftDateString(reportDate, -6);
+  const rows = await chQuery<Record<string, unknown>>(
+    `SELECT
+        platform,
+        media_source,
+        keyword,
+        match_type,
+        country,
+        sumIf(toFloat64(installs), date >= toDate({last3_from:String}) AND date <= toDate({report_date:String})) AS last3_installs,
+        sumIf(toFloat64(installs), date >= toDate({last7_from:String}) AND date <= toDate({report_date:String})) AS last7_installs,
+        sumIf(toFloat64(total_cost), date >= toDate({last7_from:String}) AND date <= toDate({report_date:String})) AS last7_cost,
+        if(
+          sumIf(toFloat64(installs), date >= toDate({last3_from:String}) AND date <= toDate({report_date:String})) > 0,
+          sumIf(toFloat64(af_average_ecpi) * toFloat64(installs), date >= toDate({last3_from:String}) AND date <= toDate({report_date:String}))
+            / sumIf(toFloat64(installs), date >= toDate({last3_from:String}) AND date <= toDate({report_date:String})),
+          if(
+            sumIf(toFloat64(installs), date >= toDate({last7_from:String}) AND date <= toDate({report_date:String})) > 0,
+            sumIf(toFloat64(af_average_ecpi) * toFloat64(installs), date >= toDate({last7_from:String}) AND date <= toDate({report_date:String}))
+              / sumIf(toFloat64(installs), date >= toDate({last7_from:String}) AND date <= toDate({report_date:String})),
+            0
+          )
+        ) AS current_ecpi
+      FROM keyword_daily_metrics FINAL
+      WHERE app_key = {app_key:String}
+        AND date >= toDate({last7_from:String})
+        AND date <= toDate({report_date:String})
+      GROUP BY platform, media_source, keyword, match_type, country`,
+    {
+      app_key: appKey,
+      last3_from: last3From,
+      last7_from: last7From,
+      report_date: reportDate
+    }
+  );
+  return rows.map((row) => ({
+    platform: String(row.platform || 'unknown').toLowerCase(),
+    media_source: String(row.media_source || 'unknown'),
+    keyword: String(row.keyword || ''),
+    match_type: String(row.match_type || 'unknown'),
+    country: String(row.country || 'unknown'),
+    last3_installs: safeNumber(row.last3_installs),
+    last7_installs: safeNumber(row.last7_installs),
+    last7_cost: safeNumber(row.last7_cost),
+    current_ecpi: safeNumber(row.current_ecpi)
+  }));
+}
+
 async function queryBudgetValueFacts(appKey: string, from: string, to: string): Promise<BudgetValueFact[]> {
   try {
     const rows = await chQuery<Record<string, unknown>>(
@@ -589,6 +646,109 @@ function windowAverage(values: number[]): number {
     return 0;
   }
   return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
+}
+
+function averageOrNull(values: number[]): number | null {
+  const filtered = values.filter((value) => Number.isFinite(value) && value > 0);
+  if (filtered.length === 0) {
+    return null;
+  }
+  return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
+}
+
+function buildRelativeCompareDecision(input: {
+  state: KeywordLifecycleStateRow;
+  volumeTier: VolumeTier;
+  metrics: Array<'ctr' | 'cvr' | 'cpi' | 'roas'>;
+  underperformRatio: number;
+  minPeerCount: number;
+  minFailedMetrics: number;
+  currentMetrics: {
+    ctr: number | null;
+    cvr: number | null;
+    cpi: number | null;
+    roas: number | null;
+  };
+  peerMetrics: {
+    ctr: number[];
+    cvr: number[];
+    cpi: number[];
+    roas: number[];
+  };
+}): {
+  action: 'increase' | 'decrease' | 'hold' | 'pause';
+  changeRatio: number;
+  confidence: number;
+  reasonCode: string;
+  volumeTier: VolumeTier;
+  failedMetrics: string[];
+  strongMetrics: string[];
+} {
+  const compareResult = evaluateRelativeCompareMetrics(
+    input.metrics.map((metric) => ({
+      metric,
+      current: input.currentMetrics[metric],
+      peers: input.peerMetrics[metric]
+    })),
+    {
+      minPeerCount: input.minPeerCount,
+      underperformRatio: input.underperformRatio
+    }
+  );
+
+  if (compareResult.availableMetrics.length < input.minFailedMetrics) {
+    return {
+      action: 'hold',
+      changeRatio: 0,
+      confidence: 0.44,
+      reasonCode: 'relative_compare_peer_insufficient',
+      volumeTier: input.volumeTier,
+      failedMetrics: compareResult.failedMetrics,
+      strongMetrics: compareResult.strongMetrics
+    };
+  }
+
+  if (compareResult.failedMetrics.length >= input.minFailedMetrics) {
+    return {
+      action:
+        input.state.current_stage === 'pause_candidate' &&
+        compareResult.failedMetrics.length === compareResult.availableMetrics.length
+          ? 'pause'
+          : 'decrease',
+      changeRatio:
+        input.state.current_stage === 'pause_candidate' &&
+        compareResult.failedMetrics.length === compareResult.availableMetrics.length
+          ? -1
+          : -0.2,
+      confidence: clamp(0.7 + compareResult.failedMetrics.length * 0.06, 0.7, 0.94),
+      reasonCode: 'relative_compare_underperform',
+      volumeTier: input.volumeTier,
+      failedMetrics: compareResult.failedMetrics,
+      strongMetrics: compareResult.strongMetrics
+    };
+  }
+
+  if (compareResult.strongMetrics.length >= input.minFailedMetrics && input.volumeTier !== 'low') {
+    return {
+      action: 'increase',
+      changeRatio: 0.2,
+      confidence: clamp(0.68 + compareResult.strongMetrics.length * 0.05, 0.68, 0.9),
+      reasonCode: 'relative_compare_outperform',
+      volumeTier: input.volumeTier,
+      failedMetrics: compareResult.failedMetrics,
+      strongMetrics: compareResult.strongMetrics
+    };
+  }
+
+  return {
+    action: 'hold',
+    changeRatio: 0,
+    confidence: 0.5,
+    reasonCode: 'relative_compare_neutral_hold',
+    volumeTier: input.volumeTier,
+    failedMetrics: compareResult.failedMetrics,
+    strongMetrics: compareResult.strongMetrics
+  };
 }
 
 function buildPlatformFallbackTarget(states: KeywordLifecycleStateRow[]): number {
@@ -693,13 +853,16 @@ export async function runBudgetAdvisorCycle(
       const appPolicies = policyRows
         .filter((row) => row.app_key === app.app_key)
         .map((row) => ({ ...row, rule_json: normalizeRecommendationPolicyRule(row.rule_json) }));
-      const needsValueFacts = appPolicies.some((row) => row.rule_json.metric_family === 'd7_roas_cpp');
+      const needsValueFacts = appPolicies.some((row) =>
+        ['d7_roas_cpp', 'relative_compare'].includes(row.rule_json.metric_family)
+      );
       const valueFactFrom = shiftDateString(date, -45);
-      const [states, facts, spendSeriesMap, valueFacts] = await Promise.all([
+      const [states, facts, spendSeriesMap, valueFacts, countryFacts] = await Promise.all([
         listKeywordLifecycleStatesByApp(app.app_key),
         queryBudgetKeywordFacts(app.app_key, date),
         queryBudgetKeywordSpendSeries(app.app_key, date, maxTrendLookbackDays),
-        needsValueFacts ? queryBudgetValueFacts(app.app_key, valueFactFrom, date) : Promise.resolve([])
+        needsValueFacts ? queryBudgetValueFacts(app.app_key, valueFactFrom, date) : Promise.resolve([]),
+        queryBudgetCountryFacts(app.app_key, date)
       ]);
       const filteredStates = states.filter((state) => String(state.last_seen_date || '') >= lookbackStartDate);
       await expirePendingBudgetRecommendationsForDate(app.app_key, date);
@@ -754,6 +917,8 @@ export async function runBudgetAdvisorCycle(
         spendSeries: number[];
         scenarioTags: string[];
         presetActionItems: string[];
+        failedMetrics: string[];
+        strongMetrics: string[];
         decision: ReturnType<typeof buildDeterministicDecision> | ReturnType<typeof buildValueWindowDecision>;
         metricSettings: { primaryMetric: PrimaryMetric; metricMode: MetricMode };
       }> = [];
@@ -763,6 +928,13 @@ export async function runBudgetAdvisorCycle(
         const bucket = valueFactsByKey.get(key) ?? [];
         bucket.push(row);
         valueFactsByKey.set(key, bucket);
+      }
+      const countryFactsByKey = new Map<string, BudgetCountryFact[]>();
+      for (const row of countryFacts) {
+        const key = factKey(row.platform, row.media_source, row.keyword, row.match_type);
+        const bucket = countryFactsByKey.get(key) ?? [];
+        bucket.push(row);
+        countryFactsByKey.set(key, bucket);
       }
 
       for (const fact of facts) {
@@ -799,18 +971,88 @@ export async function runBudgetAdvisorCycle(
         const relevantValueFacts = (valueFactsByKey.get(factKey(fact.platform, fact.media_source, fact.keyword, fact.match_type)) ?? []).filter(
           (row) => row.date >= policyWindow.from && row.date <= policyWindow.to
         );
+        const relevantCountryFacts = (countryFactsByKey.get(
+          factKey(fact.platform, fact.media_source, fact.keyword, fact.match_type)
+        ) ?? []).filter((row) => policy?.targets.country_targets?.[row.country]);
         const totalValueCost = relevantValueFacts.reduce((sum, row) => sum + row.total_cost, 0);
         const totalValueRevenue = relevantValueFacts.reduce((sum, row) => sum + row.revenue_d7, 0);
         const totalValuePurchases = relevantValueFacts.reduce((sum, row) => sum + row.purchase_count, 0);
         const currentRoas = totalValueCost > 0 ? totalValueRevenue / totalValueCost : null;
         const currentCpp = totalValuePurchases > 0 ? totalValueCost / totalValuePurchases : null;
+        const currentCtr = averageOrNull(relevantValueFacts.map((row) => row.ctr));
+        const currentCvr = fact.last7_clicks > 0 ? fact.last7_installs / fact.last7_clicks : null;
+        const currentCpi = fact.current_ecpi > 0 ? fact.current_ecpi : null;
+        const countryBreaches = relevantCountryFacts.flatMap((row) => {
+          const targets = resolveRecommendationTarget(policy, {
+            country: row.country,
+            mediaSource: fact.media_source
+          });
+          return targets.ecpi_max != null && row.current_ecpi > targets.ecpi_max
+            ? [{ country: row.country, currentEcpi: row.current_ecpi, targetEcpi: targets.ecpi_max }]
+            : [];
+        });
+        const worstCountryBreach =
+          countryBreaches.length > 0
+            ? countryBreaches.sort((a, b) => b.currentEcpi / b.targetEcpi - a.currentEcpi / a.targetEcpi)[0]
+            : null;
+        const effectiveTargetEcpi = worstCountryBreach?.targetEcpi ?? thresholdTargets.ecpi_max ?? targetEcpi;
 
         const valueDriven =
           policy?.metric_family === 'd7_roas_cpp' &&
           relevantValueFacts.length > 0 &&
           ((thresholdTargets.roas_min ?? 0) > 0 || (thresholdTargets.cpp_max ?? 0) > 0);
+        const relativeCompareDriven = policy?.metric_family === 'relative_compare';
+        const peerFacts = (factsByPlatformMedia.get(`${fact.platform}|${fact.media_source}`) ?? []).filter(
+          (peer) => !(peer.keyword === fact.keyword && peer.match_type === fact.match_type)
+        );
+        const peerRoasValues = peerFacts
+          .map((peer) => {
+            const peerValueRows = (valueFactsByKey.get(
+              factKey(peer.platform, peer.media_source, peer.keyword, peer.match_type)
+            ) ?? []).filter((row) => row.date >= policyWindow.from && row.date <= policyWindow.to);
+            const peerCost = peerValueRows.reduce((sum, row) => sum + row.total_cost, 0);
+            const peerRevenue = peerValueRows.reduce((sum, row) => sum + row.revenue_d7, 0);
+            return peerCost > 0 ? peerRevenue / peerCost : NaN;
+          })
+          .filter((value) => Number.isFinite(value)) as number[];
+        const peerCtrValues = peerFacts
+          .map((peer) =>
+            averageOrNull(
+              ((valueFactsByKey.get(factKey(peer.platform, peer.media_source, peer.keyword, peer.match_type)) ?? []).filter(
+                (row) => row.date >= policyWindow.from && row.date <= policyWindow.to
+              )).map((row) => row.ctr)
+            )
+          )
+          .filter((value) => value != null) as number[];
+        const peerCvrValues = peerFacts
+          .map((peer) => (peer.last7_clicks > 0 ? peer.last7_installs / peer.last7_clicks : null))
+          .filter((value) => value != null) as number[];
+        const peerCpiValues = peerFacts.map((peer) => peer.current_ecpi).filter((value) => value > 0);
+        const relativeDecision = relativeCompareDriven
+          ? buildRelativeCompareDecision({
+              state,
+              volumeTier,
+              metrics: policy?.relative_compare.metrics ?? ['ctr', 'cvr', 'cpi', 'roas'],
+              underperformRatio: policy?.relative_compare.underperform_ratio ?? 0.2,
+              minPeerCount: policy?.relative_compare.min_peer_count ?? 3,
+              minFailedMetrics: policy?.relative_compare.min_failed_metrics ?? 2,
+              currentMetrics: {
+                ctr: currentCtr,
+                cvr: currentCvr,
+                cpi: currentCpi,
+                roas: currentRoas
+              },
+              peerMetrics: {
+                ctr: peerCtrValues,
+                cvr: peerCvrValues,
+                cpi: peerCpiValues,
+                roas: peerRoasValues
+              }
+            })
+          : null;
+        const relativeTargetEcpi = relativeCompareDriven && peerCpiValues.length > 0 ? median(peerCpiValues) : effectiveTargetEcpi;
 
-        const decision = valueDriven
+        let decision = valueDriven
           ? buildValueWindowDecision({
               state,
               currentRoas: currentRoas ?? 0,
@@ -824,15 +1066,26 @@ export async function runBudgetAdvisorCycle(
               volumeTier,
               avgDailySpend
             })
-          : buildDeterministicDecision({
+          : relativeDecision ??
+            buildDeterministicDecision({
               state,
               currentEcpi: fact.current_ecpi,
-              targetEcpi: thresholdTargets.ecpi_max ?? targetEcpi,
+              targetEcpi: effectiveTargetEcpi,
               volumeTier,
               last3Installs: fact.last3_installs,
               last7Installs: fact.last7_installs,
               last7Cost: fact.last7_cost
             });
+
+        if (worstCountryBreach && !valueDriven && !relativeCompareDriven && decision.action === 'hold') {
+          decision = {
+            action: state.current_stage === 'pause_candidate' ? 'pause' : 'decrease',
+            changeRatio: state.current_stage === 'pause_candidate' ? -1 : -0.2,
+            confidence: state.current_stage === 'pause_candidate' ? 0.86 : 0.74,
+            reasonCode: 'policy_country_ecpi_breach',
+            volumeTier
+          };
+        }
         if (!shouldCreateRecommendation(decision.action)) {
           continue;
         }
@@ -841,18 +1094,22 @@ export async function runBudgetAdvisorCycle(
           fact,
           state,
           policy,
-          targetEcpi: thresholdTargets.ecpi_max ?? targetEcpi,
+          targetEcpi: relativeTargetEcpi,
           volumeTier,
           currentRoas,
           targetRoas:
             policy?.metric_family === 'd7_roas_cpp'
               ? thresholdTargets.roas_good ?? thresholdTargets.roas_min ?? null
-              : null,
+              : policy?.metric_family === 'relative_compare'
+                ? (peerRoasValues.length > 0 ? median(peerRoasValues) : null)
+                : null,
           currentCpp,
           targetCpp: policy?.metric_family === 'd7_roas_cpp' ? thresholdTargets.cpp_max ?? null : null,
           spendSeries,
           scenarioTags: scenarioEvaluation.scenarioTags,
           presetActionItems: scenarioEvaluation.actionItems,
+          failedMetrics: relativeDecision?.failedMetrics ?? [],
+          strongMetrics: relativeDecision?.strongMetrics ?? [],
           decision,
           metricSettings: resolvePrimaryMetric(app.app_key, fact.platform, policy)
         });
@@ -874,7 +1131,9 @@ export async function runBudgetAdvisorCycle(
           currentCpp,
           targetCpp,
           scenarioTags,
-          presetActionItems
+          presetActionItems,
+          failedMetrics,
+          strongMetrics
         } = candidate;
         const currentCost = Math.max(0, fact.last7_cost);
         const suggestedBudget = Math.max(0, currentCost * (1 + decision.changeRatio));
@@ -925,7 +1184,8 @@ export async function runBudgetAdvisorCycle(
             target_roas: targetRoas
           },
           manualPromptMarkdown:
-            policyMap.get(buildRecommendationPolicyKey(app.app_key, fact.platform, 'budget'))?.manual_prompt_markdown ?? null
+            policyMap.get(buildRecommendationPolicyKey(app.app_key, fact.platform, 'budget'))?.manual_prompt_markdown ?? null,
+          feedbackScope: 'budget'
         });
 
         await insertLlmAuditLog({
@@ -974,7 +1234,9 @@ export async function runBudgetAdvisorCycle(
             current_cpp: currentCpp,
             target_cpp: targetCpp,
             scenario_tags: scenarioTags,
-            metric_family: policy?.metric_family ?? 'ecpi'
+            metric_family: policy?.metric_family ?? 'ecpi',
+            failed_metrics: failedMetrics,
+            strong_metrics: strongMetrics
           },
           status: 'pending'
         });

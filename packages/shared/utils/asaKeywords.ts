@@ -27,12 +27,13 @@ import { resolveProductViewName } from './displayName.js';
 import { getDailyBriefDefaultReportDate } from './dailyBrief.js';
 import { getPushScheduleTarget } from './runtimeSchedule.js';
 import { getTzParts } from './schedule.js';
-import { buildPreviousDateList } from './businessDate.js';
+import { buildPreviousDateList, shiftDateString } from './businessDate.js';
 import {
   buildRecommendationPolicyKey,
   buildRecommendationPolicyMap,
   defaultRecommendationPolicyRule,
   evaluateSpendScenarios,
+  evaluateRelativeCompareMetrics,
   normalizeRecommendationPolicyRule,
   resolveRecommendationTarget
 } from './recommendationPolicies.js';
@@ -947,6 +948,102 @@ function average(values: number[]): number {
   return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
 }
 
+export function buildAsaDecisionWindow(
+  reportDate: string,
+  policy: RecommendationPolicyRuleJson | null
+): { from: string; to: string } {
+  const maturityWindow = policy?.maturity_window ?? defaultRecommendationPolicyRule().maturity_window;
+  const excludeRecentDays = Math.max(0, Math.floor(maturityWindow.exclude_recent_days || 0));
+  const decisionWindowDays = Math.max(1, Math.floor(maturityWindow.decision_window_days || 7));
+  const to = shiftDateString(reportDate, -excludeRecentDays);
+  const from = shiftDateString(to, -(decisionWindowDays - 1));
+  return { from, to };
+}
+
+export function buildAsaContextWindow(
+  reportDate: string,
+  policy: RecommendationPolicyRuleJson | null
+): { from: string; to: string } {
+  const maturityWindow = policy?.maturity_window ?? defaultRecommendationPolicyRule().maturity_window;
+  const maxContextDays = Math.max(...(maturityWindow.context_window_days || [14]), 14);
+  return {
+    from: shiftDateString(reportDate, -(maxContextDays - 1)),
+    to: reportDate
+  };
+}
+
+function buildAsaRelativeCompareDecision(input: {
+  stage: ProductStage;
+  currentEcpi: number;
+  currentD7Roas: number;
+  peerEcpi: number[];
+  peerRoas: number[];
+  policy: RecommendationPolicyRuleJson;
+}): {
+  action: 'increase' | 'decrease' | 'hold';
+  reasonCode: string;
+  failedMetrics: string[];
+  strongMetrics: string[];
+  targetEcpi: number;
+  targetD7Roas: number;
+} {
+  const relativeSamples: Array<{ metric: 'cpi' | 'roas'; current: number; peers: number[] }> = [];
+  for (const metric of input.policy.relative_compare.metrics || []) {
+    if (metric === 'cpi') {
+      relativeSamples.push({ metric, current: input.currentEcpi, peers: input.peerEcpi });
+      continue;
+    }
+    if (metric === 'roas') {
+      relativeSamples.push({ metric, current: input.currentD7Roas, peers: input.peerRoas });
+    }
+  }
+  const relativeResult = evaluateRelativeCompareMetrics(relativeSamples, {
+    minPeerCount: input.policy.relative_compare.min_peer_count,
+    underperformRatio: input.policy.relative_compare.underperform_ratio
+  });
+
+  const targetEcpi = Math.max(0.01, median(input.peerEcpi) || input.currentEcpi || 0.01);
+  const targetD7Roas = Math.max(0.01, median(input.peerRoas) || input.currentD7Roas || 0.01);
+  if (relativeResult.availableMetrics.length < input.policy.relative_compare.min_failed_metrics) {
+    return {
+      action: 'hold',
+      reasonCode: 'relative_compare_peer_insufficient',
+      failedMetrics: relativeResult.failedMetrics,
+      strongMetrics: relativeResult.strongMetrics,
+      targetEcpi,
+      targetD7Roas
+    };
+  }
+  if (relativeResult.failedMetrics.length >= input.policy.relative_compare.min_failed_metrics) {
+    return {
+      action: 'decrease',
+      reasonCode: 'relative_compare_underperform',
+      failedMetrics: relativeResult.failedMetrics,
+      strongMetrics: relativeResult.strongMetrics,
+      targetEcpi,
+      targetD7Roas
+    };
+  }
+  if (relativeResult.strongMetrics.length >= input.policy.relative_compare.min_failed_metrics && input.stage !== 'rising') {
+    return {
+      action: 'increase',
+      reasonCode: 'relative_compare_outperform',
+      failedMetrics: relativeResult.failedMetrics,
+      strongMetrics: relativeResult.strongMetrics,
+      targetEcpi,
+      targetD7Roas
+    };
+  }
+  return {
+    action: 'hold',
+    reasonCode: 'relative_compare_neutral_hold',
+    failedMetrics: relativeResult.failedMetrics,
+    strongMetrics: relativeResult.strongMetrics,
+    targetEcpi,
+    targetD7Roas
+  };
+}
+
 async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, logger?: LoggerLike): Promise<{
   stateRows: number;
   recommendationRows: number;
@@ -1048,6 +1145,8 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     spendSeries: number[];
     scenarioTags: string[];
     presetActionItems: string[];
+    failedMetrics: string[];
+    strongMetrics: string[];
   }> = [];
   for (const rows of grouped.values()) {
     rows.sort((a, b) => a.date.localeCompare(b.date));
@@ -1065,11 +1164,15 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
         ? 'stable'
         : 'rising'
       : stageMap.get(`${current.app_key}|${current.platform}`) ?? 'rising';
-    const window7 = rows.slice(-7);
-    const installs7d = window7.reduce((sum, row) => sum + Number(row.installs || 0), 0);
-    const totalCost7d = window7.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
-    const purchaseCount7d = window7.reduce((sum, row) => sum + Number(row.purchase_count || 0), 0);
-    const revenueD7Window = window7.reduce((sum, row) => sum + Number(row.revenue_d7 || 0), 0);
+    const decisionWindow = buildAsaDecisionWindow(current.date, policy);
+    const contextWindow = buildAsaContextWindow(current.date, policy);
+    const decisionRows = rows.filter((row) => row.date >= decisionWindow.from && row.date <= decisionWindow.to);
+    const contextRows = rows.filter((row) => row.date >= contextWindow.from && row.date <= contextWindow.to);
+    const effectiveDecisionRows = decisionRows.length > 0 ? decisionRows : rows.slice(-7);
+    const installs7d = effectiveDecisionRows.reduce((sum, row) => sum + Number(row.installs || 0), 0);
+    const totalCost7d = effectiveDecisionRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
+    const purchaseCount7d = effectiveDecisionRows.reduce((sum, row) => sum + Number(row.purchase_count || 0), 0);
+    const revenueD7Window = effectiveDecisionRows.reduce((sum, row) => sum + Number(row.revenue_d7 || 0), 0);
     const currentEcpi = installs7d > 0 ? totalCost7d / installs7d : Number(current.ecpi || 0);
     const currentCpp = purchaseCount7d > 0 ? totalCost7d / purchaseCount7d : 0;
     const currentD7Roas = totalCost7d > 0 ? revenueD7Window / totalCost7d : 0;
@@ -1095,7 +1198,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       0.01,
       thresholdTargets.roas_min ?? (percentile(peerRoas, 0.6) || median(peerRoas) || currentD7Roas || 0.01)
     );
-    const spendSeries = window7.map((row) => Number(row.total_cost || 0));
+    const spendSeries = contextRows.map((row) => Number(row.total_cost || 0));
     const scenarioEvaluation = evaluateSpendScenarios({
       avgDailySpend: average(spendSeries),
       spendSeries,
@@ -1104,7 +1207,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     });
     const countryRows = (
       countryStatsByKeyword.get([current.app_key, current.platform, current.keyword, current.campaign, current.adset].join('|')) ?? []
-    ).filter((row) => window7.some((metricRow) => metricRow.date === row.date));
+    ).filter((row) => effectiveDecisionRows.some((metricRow) => metricRow.date === row.date));
     const countryBreaches = Object.entries(policy?.targets.country_targets ?? {}).flatMap(([country, target]) => {
       const relevantRows = countryRows.filter((row) => row.country === country);
       const installs = relevantRows.reduce((sum, row) => sum + Number(row.installs || 0), 0);
@@ -1116,6 +1219,19 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       const worstBreach = countryBreaches.sort((a, b) => b.ecpi / b.targetEcpi - a.ecpi / a.targetEcpi)[0];
       targetEcpi = worstBreach.targetEcpi;
     }
+    const relativeDecision =
+      policy?.metric_family === 'relative_compare'
+        ? buildAsaRelativeCompareDecision({
+            stage,
+            currentEcpi,
+            currentD7Roas,
+            peerEcpi,
+            peerRoas,
+            policy
+          })
+        : null;
+    const effectiveTargetEcpi = relativeDecision?.targetEcpi ?? targetEcpi;
+    const effectiveTargetD7Roas = relativeDecision?.targetD7Roas ?? targetD7Roas;
 
     await upsertAsaKeywordState({
       app_key: current.app_key,
@@ -1130,21 +1246,24 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       current_ecpi: currentEcpi,
       current_cpp: currentCpp,
       current_d7_roas: currentD7Roas,
-      target_ecpi: targetEcpi,
+      target_ecpi: effectiveTargetEcpi,
       target_cpp: targetCpp,
-      target_d7_roas: targetD7Roas,
+      target_d7_roas: effectiveTargetD7Roas,
       installs_7d: installs7d,
       total_cost_7d: totalCost7d,
       purchase_count_7d: purchaseCount7d,
       revenue_d7_7d: revenueD7Window,
-      trend_json: buildTrendJson(rows.slice(-14))
+      trend_json: buildTrendJson(contextRows.length > 0 ? contextRows : rows.slice(-14))
     });
     stateRows += 1;
     const action =
+      relativeDecision
+        ? relativeDecision.action
+        : 
       stage === 'stable'
-        ? currentD7Roas < targetD7Roas * 0.85 || (currentCpp > 0 && currentCpp > (thresholdTargets.cpp_pause_threshold ?? targetCpp * 1.15))
+        ? currentD7Roas < effectiveTargetD7Roas * 0.85 || (currentCpp > 0 && currentCpp > (thresholdTargets.cpp_pause_threshold ?? targetCpp * 1.15))
           ? 'decrease'
-          : currentD7Roas >= (thresholdTargets.roas_good ?? targetD7Roas) && (currentCpp === 0 || currentCpp <= targetCpp)
+          : currentD7Roas >= (thresholdTargets.roas_good ?? effectiveTargetD7Roas) && (currentCpp === 0 || currentCpp <= targetCpp)
             ? 'increase'
             : 'hold'
         : countryBreaches.length > 0 || currentEcpi > targetEcpi * 1.15
@@ -1154,6 +1273,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
             : 'hold';
 
     const reasonCode =
+      relativeDecision?.reasonCode ??
       stage === 'stable'
         ? 'stable_dual_metric'
         : countryBreaches.length > 0
@@ -1172,13 +1292,18 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       date: current.date,
       action,
       change_ratio: action === 'hold' ? 0 : 0.2,
-      primary_metric: stage === 'stable' ? 'd7_roas_cpp' : 'ecpi',
+      primary_metric:
+        policy?.metric_family === 'd7_roas_cpp'
+          ? 'd7_roas_cpp'
+          : policy?.metric_family === 'relative_compare' && effectiveTargetD7Roas > 0
+            ? 'd7_roas_cpp'
+            : 'ecpi',
       current_ecpi: currentEcpi,
       current_cpp: currentCpp,
       current_d7_roas: currentD7Roas,
-      target_ecpi: targetEcpi,
+      target_ecpi: effectiveTargetEcpi,
       target_cpp: targetCpp,
-      target_d7_roas: targetD7Roas,
+      target_d7_roas: effectiveTargetD7Roas,
       reason_code: reasonCode,
       llm_summary: llmResult,
       status: 'pending'
@@ -1194,24 +1319,32 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       currentEcpi,
       currentCpp,
       currentD7Roas,
-      targetEcpi,
+      targetEcpi: effectiveTargetEcpi,
       targetCpp,
-      targetD7Roas,
+      targetD7Roas: effectiveTargetD7Roas,
       totalCost7d,
       installs7d,
-      last3Installs: rows.slice(-3).reduce((sum, row) => sum + Number(row.installs || 0), 0),
+      last3Installs: effectiveDecisionRows.slice(-3).reduce((sum, row) => sum + Number(row.installs || 0), 0),
       spendSeries,
       scenarioTags: scenarioEvaluation.scenarioTags,
-      presetActionItems: scenarioEvaluation.actionItems
+      presetActionItems: scenarioEvaluation.actionItems,
+      failedMetrics: relativeDecision?.failedMetrics ?? [],
+      strongMetrics: relativeDecision?.strongMetrics ?? []
     });
   }
 
   await mapWithConcurrency(pendingLlmUpdates, 4, async (item) => {
+    const primaryMetric =
+      item.policy?.metric_family === 'd7_roas_cpp'
+        ? 'roas'
+        : item.policy?.metric_family === 'relative_compare' && item.targetD7Roas > 0
+          ? 'roas'
+          : 'ecpi';
     const llmCall = await explainBudgetRecommendationWithLlm({
       appKey: item.current.app_key,
       platform: item.current.platform,
       mediaSource: 'Apple Search Ads',
-      primaryMetric: item.stage === 'stable' ? 'roas' : 'ecpi',
+      primaryMetric,
       metricMode: 'active',
       keyword: item.current.keyword,
       matchType: 'asa',
@@ -1247,9 +1380,12 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
         current_cpp: item.currentCpp,
         target_cpp: item.targetCpp,
         current_roas: item.currentD7Roas,
-        target_roas: item.targetD7Roas
+        target_roas: item.targetD7Roas,
+        failed_metrics: item.failedMetrics,
+        strong_metrics: item.strongMetrics
       },
-      manualPromptMarkdown: item.manualPromptMarkdown
+      manualPromptMarkdown: item.manualPromptMarkdown,
+      feedbackScope: 'asa'
     });
     await insertLlmAuditLog({
       biz_type: 'asa_keyword_recommendation',
@@ -1269,7 +1405,12 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       date: item.current.date,
       action: item.action,
       change_ratio: item.action === 'hold' ? 0 : 0.2,
-      primary_metric: item.stage === 'stable' ? 'd7_roas_cpp' : 'ecpi',
+      primary_metric:
+        item.policy?.metric_family === 'd7_roas_cpp'
+          ? 'd7_roas_cpp'
+          : item.policy?.metric_family === 'relative_compare' && item.targetD7Roas > 0
+            ? 'd7_roas_cpp'
+            : 'ecpi',
       current_ecpi: item.currentEcpi,
       current_cpp: item.currentCpp,
       current_d7_roas: item.currentD7Roas,

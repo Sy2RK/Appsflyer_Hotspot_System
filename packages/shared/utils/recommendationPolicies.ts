@@ -23,6 +23,16 @@ export interface RecommendationPolicyValidationResult {
   };
 }
 
+export class RecommendationPolicyValidationError extends Error {
+  code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+    this.name = 'RecommendationPolicyValidationError';
+  }
+}
+
 export interface SpendScenarioEvaluationInput {
   avgDailySpend: number;
   spendSeries: number[];
@@ -35,11 +45,35 @@ export interface SpendScenarioEvaluationResult {
   actionItems: string[];
 }
 
+export interface RelativeCompareMetricSample {
+  metric: 'ctr' | 'cvr' | 'cpi' | 'roas';
+  current: number | null;
+  peers: number[];
+}
+
+export interface RelativeCompareDecisionResult {
+  availableMetrics: string[];
+  failedMetrics: string[];
+  strongMetrics: string[];
+  peerCounts: Record<string, number>;
+}
+
 const DEFAULT_CONTEXT_WINDOW_DAYS = [7, 14, 21];
 const DEFAULT_MEDIA_SOURCE = 'apple search ads';
 
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function assertNoUnknownKeys(scope: string, value: Record<string, unknown>, allowedKeys: string[]): void {
+  const allowed = new Set(allowedKeys);
+  const unknownKeys = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknownKeys.length > 0) {
+    throw new RecommendationPolicyValidationError(
+      'invalid_rule_json',
+      `${scope} 包含未支持字段: ${unknownKeys.join(', ')}`
+    );
+  }
 }
 
 function toPositiveNumber(value: unknown, fallback: number, min = 0, max = Number.MAX_SAFE_INTEGER): number {
@@ -103,6 +137,27 @@ function normalizeThresholdMap(value: unknown): Record<string, RecommendationThr
     normalized[normalizedKey] = normalizeThresholdTargets(target);
   }
   return normalized;
+}
+
+function validateThresholdTargets(scope: string, value: unknown): void {
+  const raw = asObject(value);
+  assertNoUnknownKeys(scope, raw, ['ecpi_max', 'roas_min', 'roas_good', 'cpp_max', 'cpp_pause_threshold']);
+  for (const [key, entry] of Object.entries(raw)) {
+    const parsed = Number(entry);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new RecommendationPolicyValidationError('invalid_rule_json', `${scope}.${key} 必须是大于等于 0 的数字`);
+    }
+  }
+}
+
+function validateThresholdMap(scope: string, value: unknown): void {
+  const raw = asObject(value);
+  for (const [targetKey, targetValue] of Object.entries(raw)) {
+    if (!String(targetKey || '').trim()) {
+      throw new RecommendationPolicyValidationError('invalid_rule_json', `${scope} 不能包含空键名`);
+    }
+    validateThresholdTargets(`${scope}.${targetKey}`, targetValue);
+  }
 }
 
 function normalizeMaturityWindow(value: unknown): RecommendationPolicyMaturityWindow {
@@ -215,6 +270,112 @@ export function normalizeRecommendationPolicyRule(value: unknown): Recommendatio
   };
 }
 
+export function validateRecommendationPolicyRule(value: unknown): RecommendationPolicyValidationResult {
+  const raw = asObject(value);
+  if (Object.keys(raw).length === 0) {
+    throw new RecommendationPolicyValidationError('invalid_rule_json', 'ruleJson 不能为空');
+  }
+  assertNoUnknownKeys('ruleJson', raw, [
+    'metric_family',
+    'decision_mode',
+    'traffic_scope',
+    'media_sources',
+    'maturity_window',
+    'targets',
+    'spend_policy',
+    'action_playbook',
+    'relative_compare'
+  ]);
+
+  if (!['ecpi', 'd7_roas_cpp', 'relative_compare'].includes(String(raw.metric_family || ''))) {
+    throw new RecommendationPolicyValidationError('invalid_metric_family', 'metric_family 非法');
+  }
+  if (!['deterministic', 'hybrid'].includes(String(raw.decision_mode || ''))) {
+    throw new RecommendationPolicyValidationError('invalid_decision_mode', 'decision_mode 非法');
+  }
+  if (!['all', 'asa_only', 'media_sources'].includes(String(raw.traffic_scope || ''))) {
+    throw new RecommendationPolicyValidationError('invalid_traffic_scope', 'traffic_scope 非法');
+  }
+
+  const mediaSources = normalizeStringArray(raw.media_sources);
+  if (String(raw.traffic_scope) === 'media_sources' && mediaSources.length === 0) {
+    throw new RecommendationPolicyValidationError(
+      'invalid_media_sources',
+      'traffic_scope=media_sources 时必须提供至少一个媒体源'
+    );
+  }
+
+  const maturityWindow = asObject(raw.maturity_window);
+  assertNoUnknownKeys('ruleJson.maturity_window', maturityWindow, [
+    'exclude_recent_days',
+    'decision_window_days',
+    'context_window_days'
+  ]);
+  if (!Number.isFinite(Number(maturityWindow.exclude_recent_days ?? 7)) || Number(maturityWindow.exclude_recent_days ?? 7) < 0) {
+    throw new RecommendationPolicyValidationError('invalid_window', 'exclude_recent_days 必须是大于等于 0 的数字');
+  }
+  if (!Number.isFinite(Number(maturityWindow.decision_window_days ?? 14)) || Number(maturityWindow.decision_window_days ?? 14) <= 0) {
+    throw new RecommendationPolicyValidationError('invalid_window', 'decision_window_days 必须是大于 0 的数字');
+  }
+  if (
+    maturityWindow.context_window_days !== undefined &&
+    !Array.isArray(maturityWindow.context_window_days) &&
+    typeof maturityWindow.context_window_days !== 'string'
+  ) {
+    throw new RecommendationPolicyValidationError('invalid_window', 'context_window_days 必须是数组或逗号分隔字符串');
+  }
+
+  const targets = asObject(raw.targets);
+  assertNoUnknownKeys('ruleJson.targets', targets, ['global_targets', 'country_targets', 'media_targets']);
+  validateThresholdTargets('ruleJson.targets.global_targets', targets.global_targets);
+  validateThresholdMap('ruleJson.targets.country_targets', targets.country_targets);
+  validateThresholdMap('ruleJson.targets.media_targets', targets.media_targets);
+
+  const spendPolicy = asObject(raw.spend_policy);
+  assertNoUnknownKeys('ruleJson.spend_policy', spendPolicy, [
+    'daily_budget_cap_usd',
+    'low_spend_threshold_usd',
+    'high_spend_threshold_usd',
+    'trend_lookback_days',
+    'uptrend_min_ratio'
+  ]);
+
+  const actionPlaybook = asObject(raw.action_playbook);
+  assertNoUnknownKeys('ruleJson.action_playbook', actionPlaybook, [
+    'low_spend_signal_weak',
+    'high_spend_uptrend_expandable'
+  ]);
+  for (const [key, scenario] of Object.entries(actionPlaybook)) {
+    const rawScenario = asObject(scenario);
+    assertNoUnknownKeys(`ruleJson.action_playbook.${key}`, rawScenario, ['enabled', 'action_tags']);
+  }
+
+  const relativeCompare = asObject(raw.relative_compare);
+  assertNoUnknownKeys('ruleJson.relative_compare', relativeCompare, [
+    'compare_granularity',
+    'metrics',
+    'min_peer_count',
+    'underperform_ratio',
+    'min_failed_metrics'
+  ]);
+  if (
+    relativeCompare.compare_granularity !== undefined &&
+    String(relativeCompare.compare_granularity) !== 'campaign'
+  ) {
+    throw new RecommendationPolicyValidationError('invalid_relative_compare', 'compare_granularity 目前仅支持 campaign');
+  }
+  const relativeMetrics = normalizeStringArray(relativeCompare.metrics);
+  if (relativeMetrics.some((metric) => !['ctr', 'cvr', 'cpi', 'roas'].includes(metric))) {
+    throw new RecommendationPolicyValidationError('invalid_relative_compare', 'relative_compare.metrics 包含未支持指标');
+  }
+
+  const rule = normalizeRecommendationPolicyRule(raw);
+  return {
+    rule,
+    effective_support: summarizeRecommendationPolicySupport('budget', rule)
+  };
+}
+
 export function isRecommendationPolicyEnabledForMedia(
   rule: RecommendationPolicyRuleJson | null | undefined,
   mediaSource: string
@@ -272,6 +433,20 @@ function average(values: number[]): number {
   return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
 }
 
+function percentile(values: number[], ratio: number): number {
+  const items = values.filter((item) => Number.isFinite(item)).sort((a, b) => a - b);
+  if (items.length === 0) return 0;
+  if (items.length === 1) return items[0];
+  const index = (items.length - 1) * Math.min(Math.max(ratio, 0), 1);
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
+  if (lower === upper) {
+    return items[lower];
+  }
+  const weight = index - lower;
+  return items[lower] * (1 - weight) + items[upper] * weight;
+}
+
 function defaultActionItemsForTag(tag: string): string[] {
   if (tag === 'low_spend_signal_weak') {
     return ['优先迭代素材，先提升跑量能力。', '当前量级过低，短期 ROAS 波动不宜直接作为强动作依据。'];
@@ -327,6 +502,50 @@ export function evaluateSpendScenarios(input: SpendScenarioEvaluationInput): Spe
   };
 }
 
+export function evaluateRelativeCompareMetrics(
+  samples: RelativeCompareMetricSample[],
+  options: { minPeerCount: number; underperformRatio: number }
+): RelativeCompareDecisionResult {
+  const availableMetrics: string[] = [];
+  const failedMetrics: string[] = [];
+  const strongMetrics: string[] = [];
+  const peerCounts: Record<string, number> = {};
+
+  for (const sample of samples) {
+    const peers = sample.peers.filter((value) => Number.isFinite(value) && value > 0);
+    peerCounts[sample.metric] = peers.length;
+    if (sample.current == null || !Number.isFinite(sample.current) || peers.length < options.minPeerCount) {
+      continue;
+    }
+    const peerMedian = percentile(peers, 0.5);
+    if (!Number.isFinite(peerMedian) || peerMedian <= 0) {
+      continue;
+    }
+    availableMetrics.push(sample.metric);
+    const threshold = Math.max(0, options.underperformRatio);
+    if (sample.metric === 'cpi') {
+      if (sample.current > peerMedian * (1 + threshold)) {
+        failedMetrics.push(sample.metric);
+      } else if (sample.current < peerMedian * (1 - threshold)) {
+        strongMetrics.push(sample.metric);
+      }
+      continue;
+    }
+    if (sample.current < peerMedian * (1 - threshold)) {
+      failedMetrics.push(sample.metric);
+    } else if (sample.current > peerMedian * (1 + threshold)) {
+      strongMetrics.push(sample.metric);
+    }
+  }
+
+  return {
+    availableMetrics,
+    failedMetrics,
+    strongMetrics,
+    peerCounts
+  };
+}
+
 export function summarizeRecommendationPolicySupport(
   engine: RecommendationPolicyEngine,
   rule: RecommendationPolicyRuleJson
@@ -346,14 +565,13 @@ export function summarizeRecommendationPolicySupport(
   if (rule.metric_family === 'relative_compare') {
     automationLevel = 'partial';
     supportedFeatures.push('relative_compare');
-    notes.push('relative_compare 目前按 campaign 代理比较，CTR 仍依赖后续素材级事实补齐。');
+    notes.push('relative_compare 已接入 evaluator，当前按 campaign 代理比较，CTR 仍依赖后续素材级事实补齐。');
   }
 
   if (Object.keys(rule.targets.country_targets).length > 0) {
     supportedFeatures.push('country_targets');
     if (engine === 'budget') {
-      automationLevel = 'partial';
-      notes.push('budget 引擎的国家阈值目前主要用于解释上下文，核心动作仍以可用聚合口径为准。');
+      notes.push('budget 引擎会在国家聚合口径可用时参与国家级 eCPI 阈值判断。');
     } else {
       notes.push('ASA 引擎会优先读取国家级 eCPI 阈值。');
     }

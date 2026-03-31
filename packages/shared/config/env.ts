@@ -25,23 +25,6 @@ function optionalNumber(name: string, fallback: number): number {
   return parsed;
 }
 
-function optionalJson<T>(name: string, fallback: T): T {
-  const raw = process.env[name];
-  if (!raw) {
-    return fallback;
-  }
-  try {
-    return JSON.parse(raw) as T;
-  } catch (error) {
-    throw new Error(`Invalid JSON env ${name}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-interface BudgetMetricOverrideConfig {
-  primaryMetric: 'ecpi' | 'roas';
-  metricMode: 'active' | 'roas_pending_revenue';
-}
-
 export const env = {
   nodeEnv,
   port: optionalNumber('PORT', 3000),
@@ -143,7 +126,6 @@ export const env = {
   dailyBriefReportHour: optionalNumber('DAILY_BRIEF_REPORT_HOUR', 10),
   dailyBriefTitlePrefix: process.env.DAILY_BRIEF_TITLE_PREFIX ?? 'Hotspot 每日简报',
   detectorLockTtlMs: optionalNumber('DETECTOR_LOCK_TTL_MS', 30 * 60 * 1000),
-  budgetPrimaryMetricOverrides: optionalJson<Record<string, BudgetMetricOverrideConfig>>('BUDGET_PRIMARY_METRIC_OVERRIDES', {}),
 
   qwen: {
     baseUrl: process.env.QWEN_BASE_URL ?? '',

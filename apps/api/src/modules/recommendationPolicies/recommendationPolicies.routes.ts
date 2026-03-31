@@ -5,7 +5,9 @@ import {
 } from '@shared/utils/repositories.js';
 import {
   normalizeRecommendationPolicyRule,
-  summarizeRecommendationPolicySupport
+  RecommendationPolicyValidationError,
+  summarizeRecommendationPolicySupport,
+  validateRecommendationPolicyRule
 } from '@shared/utils/recommendationPolicies.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 import { logger } from '../../common/logger/logger.js';
@@ -53,8 +55,12 @@ router.post('/api/recommendation-policies', async (req, res, next) => {
     if (!appKey || !platform || !engine) {
       return res.status(400).json({ ok: false, error: 'appKey_platform_engine_required' });
     }
+    if (!['ios', 'android', 'unknown'].includes(platform)) {
+      return res.status(400).json({ ok: false, error: 'invalid_platform' });
+    }
 
-    const rule = normalizeRecommendationPolicyRule(body.ruleJson);
+    const validation = validateRecommendationPolicyRule(body.ruleJson);
+    const rule = validation.rule;
     const row = await upsertRecommendationPolicyConfig({
       app_key: appKey,
       platform,
@@ -91,6 +97,9 @@ router.post('/api/recommendation-policies', async (req, res, next) => {
       }
     });
   } catch (error) {
+    if (error instanceof RecommendationPolicyValidationError) {
+      return res.status(400).json({ ok: false, error: error.code, message: error.message });
+    }
     return next(error);
   }
 });
