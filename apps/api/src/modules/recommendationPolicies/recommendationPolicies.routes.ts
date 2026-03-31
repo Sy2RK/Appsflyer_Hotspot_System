@@ -27,6 +27,22 @@ const defaultDeps: RecommendationPoliciesRouteDeps = {
   writeOperationLog
 };
 
+function appSupportsRecommendationPlatform(
+  app: Awaited<ReturnType<typeof getAppByKey>>,
+  platform: string
+): boolean {
+  if (!app) {
+    return false;
+  }
+  if (platform === 'ios') {
+    return Boolean(app.ios_pull_app_id);
+  }
+  if (platform === 'android') {
+    return Boolean(app.android_pull_app_id);
+  }
+  return Boolean(app.pull_app_id);
+}
+
 export function createRecommendationPoliciesRouter(
   deps: RecommendationPoliciesRouteDeps = defaultDeps
 ): Router {
@@ -71,15 +87,34 @@ export function createRecommendationPoliciesRouter(
       const platform = typeof body.platform === 'string' ? body.platform.trim().toLowerCase() : '';
       const engine = body.engine === 'asa' ? 'asa' : body.engine === 'budget' ? 'budget' : '';
       if (!appKey || !platform || !engine) {
-        return res.status(400).json({ ok: false, error: 'appKey_platform_engine_required' });
+        return res.status(400).json({
+          ok: false,
+          error: 'appKey_platform_engine_required',
+          message: '请先选择应用、平台和建议类型。'
+        });
       }
       if (!['ios', 'android', 'unknown'].includes(platform)) {
-        return res.status(400).json({ ok: false, error: 'invalid_platform' });
+        return res.status(400).json({
+          ok: false,
+          error: 'invalid_platform',
+          message: '当前平台无效，请重新选择平台。'
+        });
       }
 
       const app = await deps.getAppByKey(appKey);
       if (!app) {
-        return res.status(404).json({ ok: false, error: 'app_not_found' });
+        return res.status(404).json({
+          ok: false,
+          error: 'app_not_found',
+          message: '未找到对应应用，请先检查应用是否已在应用设置里创建。'
+        });
+      }
+      if (!appSupportsRecommendationPlatform(app, platform)) {
+        return res.status(400).json({
+          ok: false,
+          error: 'app_platform_not_supported',
+          message: '当前应用不支持这个平台，请重新选择应用或平台。'
+        });
       }
 
       const validation = validateRecommendationPolicyRule(body.ruleJson);

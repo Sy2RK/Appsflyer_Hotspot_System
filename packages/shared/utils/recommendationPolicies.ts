@@ -368,6 +368,9 @@ export function validateRecommendationPolicyRule(value: unknown): Recommendation
   if (relativeMetrics.some((metric) => !['ctr', 'cvr', 'cpi', 'roas'].includes(metric))) {
     throw new RecommendationPolicyValidationError('invalid_relative_compare', 'relative_compare.metrics 包含未支持指标');
   }
+  if (String(raw.metric_family) === 'relative_compare' && relativeMetrics.length === 0) {
+    throw new RecommendationPolicyValidationError('invalid_relative_compare', '同类对比判断至少需要选择 1 个比较指标');
+  }
 
   const rule = normalizeRecommendationPolicyRule(raw);
   return {

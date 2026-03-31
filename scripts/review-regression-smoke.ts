@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
 import { createRecommendationPoliciesRouter } from '../apps/api/src/modules/recommendationPolicies/recommendationPolicies.routes.js';
+import {
+  createPolicyTemplate,
+  sanitizeRecommendationPolicyDraft,
+  mergeRecommendationPolicyRule,
+  buildRecommendationPolicyTableSummary,
+  getRecommendationPolicyErrorMessage
+} from '../apps/api/src/modules/ui/public/recommendationPolicyWizard.js';
 import { aggregateBudgetCountryWindowFacts } from '../packages/shared/utils/budgetAdvisor.js';
 import {
   classifyAppsflyerHttpFailure,
@@ -450,6 +457,140 @@ async function main(): Promise<void> {
       error instanceof RecommendationPolicyValidationError && error.code === 'invalid_media_sources'
   );
 
+  assert.throws(
+    () =>
+      validateRecommendationPolicyRule({
+        metric_family: 'relative_compare',
+        decision_mode: 'deterministic',
+        traffic_scope: 'all',
+        relative_compare: {
+          metrics: []
+        }
+      }),
+    (error: unknown) =>
+      error instanceof RecommendationPolicyValidationError && error.code === 'invalid_relative_compare'
+  );
+
+  const asaTemplate = createPolicyTemplate({ platform: 'ios', appKey: 'demo', engine: 'asa' }, 'recommended');
+  assert.equal(asaTemplate.trafficScope, 'asa_only');
+  assert.deepEqual(asaTemplate.contextWindowDays, [7, 14, 21]);
+
+  const mergedRule = mergeRecommendationPolicyRule(
+    {
+      metric_family: 'ecpi',
+      decision_mode: 'deterministic',
+      traffic_scope: 'all',
+      custom_branch: {
+        keep_me: true
+      },
+      targets: {
+        global_targets: {
+          ecpi_max: 6
+        }
+      }
+    },
+    {
+      ...createPolicyTemplate({ platform: 'ios', appKey: 'demo', engine: 'budget' }, 'blank'),
+      globalTargets: {
+        ecpi_max: '3',
+        roas_min: '',
+        roas_good: '',
+        cpp_max: '',
+        cpp_pause_threshold: ''
+      }
+    }
+  );
+  assert.equal(mergedRule.targets.global_targets.ecpi_max, 3);
+  assert.equal('roas_min' in mergedRule.targets.global_targets, false);
+  assert.deepEqual(mergedRule.custom_branch, { keep_me: true });
+
+  const sanitizedRelativeDraft = sanitizeRecommendationPolicyDraft(
+    {
+      ...createPolicyTemplate({ platform: 'ios', appKey: 'demo', engine: 'budget' }, 'recommended'),
+      metricFamily: 'relative_compare',
+      globalTargets: {
+        ecpi_max: '2.8',
+        roas_min: '0.3',
+        roas_good: '',
+        cpp_max: '40',
+        cpp_pause_threshold: ''
+      },
+      countryTargets: [
+        {
+          id: 'country_1',
+          key: 'US',
+          ecpi_max: '3',
+          roas_min: '0.3',
+          roas_good: '',
+          cpp_max: '',
+          cpp_pause_threshold: ''
+        }
+      ]
+    },
+    'relative_compare'
+  );
+  assert.deepEqual(sanitizedRelativeDraft.countryTargets, []);
+  assert.equal(sanitizedRelativeDraft.globalTargets.ecpi_max, '');
+  assert.equal(sanitizedRelativeDraft.globalTargets.roas_min, '');
+
+  const mergedRelativeRule = mergeRecommendationPolicyRule(
+    {
+      targets: {
+        global_targets: {
+          ecpi_max: 3
+        },
+        country_targets: {
+          US: {
+            ecpi_max: 3
+          }
+        }
+      }
+    },
+    {
+      ...createPolicyTemplate({ platform: 'ios', appKey: 'demo', engine: 'budget' }, 'blank'),
+      metricFamily: 'relative_compare',
+      relativeCompare: {
+        metrics: ['ctr'],
+        underperform_ratio: '0.2',
+        min_peer_count: '3',
+        min_failed_metrics: '2'
+      }
+    }
+  );
+  assert.deepEqual(mergedRelativeRule.targets.global_targets, {});
+  assert.equal('country_targets' in mergedRelativeRule.targets, false);
+  assert.deepEqual(mergedRelativeRule.relative_compare.metrics, ['ctr']);
+
+  const businessSummary = buildRecommendationPolicyTableSummary({
+    rule_json: {
+      metric_family: 'relative_compare',
+      traffic_scope: 'media_sources',
+      media_sources: ['Apple Search Ads', 'Meta'],
+      relative_compare: {
+        metrics: ['ctr', 'roas'],
+        underperform_ratio: 0.2,
+        min_peer_count: 3
+      }
+    },
+    effective_support: {
+      automation_level: 'partial',
+      notes: ['当前按 campaign 做同类对比']
+    }
+  });
+  assert.equal(businessSummary.objective, '按同类对比表现判断是否调控');
+  assert.match(businessSummary.scope, /Apple Search Ads/);
+  assert.equal(businessSummary.supportLabel, '部分支持');
+  assert.match(businessSummary.supportNote, /campaign/);
+
+  assert.equal(
+    getRecommendationPolicyErrorMessage('invalid_media_sources'),
+    '已选择指定媒体源，但媒体源列表为空，请至少添加一个媒体源。'
+  );
+  assert.equal(
+    getRecommendationPolicyErrorMessage('app_platform_not_supported'),
+    '当前应用不支持这个平台，请重新选择应用或平台。'
+  );
+
   const mockedPolicyRouter = createRecommendationPoliciesRouter({
     getAppByKey: async () =>
       ({
@@ -458,8 +599,8 @@ async function main(): Promise<void> {
         display_name: 'Demo',
         ios_display_name: null,
         android_display_name: null,
-        pull_app_id: null,
-        ios_pull_app_id: null,
+        pull_app_id: 'demo-ios-id',
+        ios_pull_app_id: 'demo-ios-id',
         android_pull_app_id: null,
         dataset: null,
         push_auth_token: null,
@@ -498,7 +639,8 @@ async function main(): Promise<void> {
     assert.equal(invalidPlatformResponse.status, 400);
     assert.deepEqual(await invalidPlatformResponse.json(), {
       ok: false,
-      error: 'invalid_platform'
+      error: 'invalid_platform',
+      message: '当前平台无效，请重新选择平台。'
     });
 
     const invalidRuleResponse = await fetch(`${baseUrl}/api/recommendation-policies`, {
@@ -523,6 +665,59 @@ async function main(): Promise<void> {
     assert.equal(invalidRulePayload.ok, false);
     assert.equal(invalidRulePayload.error, 'invalid_rule_json');
     assert.match(invalidRulePayload.message, /unexpected_field/);
+  });
+
+  const unsupportedPlatformRouter = createRecommendationPoliciesRouter({
+    getAppByKey: async () =>
+      ({
+        id: 2,
+        app_key: 'ios-only',
+        display_name: 'iOS Only',
+        ios_display_name: 'iOS Only',
+        android_display_name: null,
+        pull_app_id: '123',
+        ios_pull_app_id: '123',
+        android_pull_app_id: null,
+        dataset: null,
+        push_auth_token: null,
+        timezone: 'Asia/Shanghai',
+        notify_webhook_url: null,
+        notify_feishu_app_id: null,
+        notify_feishu_app_secret: null,
+        notify_feishu_chat_id: null,
+        created_at: '2026-03-01T00:00:00.000Z',
+        updated_at: '2026-03-01T00:00:00.000Z'
+      }) as never,
+    listRecommendationPolicyConfigs: async () => [],
+    upsertRecommendationPolicyConfig: (async () => {
+      throw new Error('upsert_should_not_be_called');
+    }) as never,
+    writeOperationLog: async () => undefined
+  } as never);
+
+  await withHttpApi(unsupportedPlatformRouter, async (baseUrl) => {
+    const unsupportedResponse = await fetch(`${baseUrl}/api/recommendation-policies`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        appKey: 'ios-only',
+        platform: 'android',
+        engine: 'budget',
+        ruleJson: {
+          metric_family: 'ecpi',
+          decision_mode: 'deterministic',
+          traffic_scope: 'all'
+        }
+      })
+    });
+    assert.equal(unsupportedResponse.status, 400);
+    assert.deepEqual(await unsupportedResponse.json(), {
+      ok: false,
+      error: 'app_platform_not_supported',
+      message: '当前应用不支持这个平台，请重新选择应用或平台。'
+    });
   });
 
   const missingAppRouter = createRecommendationPoliciesRouter({
@@ -554,7 +749,8 @@ async function main(): Promise<void> {
     assert.equal(appNotFoundResponse.status, 404);
     assert.deepEqual(await appNotFoundResponse.json(), {
       ok: false,
-      error: 'app_not_found'
+      error: 'app_not_found',
+      message: '未找到对应应用，请先检查应用是否已在应用设置里创建。'
     });
   });
 

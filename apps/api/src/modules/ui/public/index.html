@@ -421,141 +421,377 @@
             <section class="section-panel section-panel-inner">
               <div class="card-head card-head-compact">
                 <h4>应用级规则配置</h4>
-                <p>按应用、平台、引擎维护预算建议策略。结构化规则决定主动作，手写文档只补充 AI 说明与动作列表。</p>
+                <p>按应用、平台和建议类型分别维护调控规则。系统用结构化规则决定主动作，用补充说明帮助 AI 输出更贴近业务的执行建议。</p>
               </div>
-              <form id="recommendationPolicyForm" class="inline-form budget-form">
-                <label class="filter-field">
-                  <span class="field-label">应用</span>
-                  <select id="recommendationPolicyAppSelect" name="appKey"></select>
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">平台</span>
-                  <select id="recommendationPolicyPlatformSelect" name="platform">
-                    <option value="ios">iOS</option>
-                    <option value="android">Android</option>
-                    <option value="unknown">未知</option>
-                  </select>
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">引擎</span>
-                  <select id="recommendationPolicyEngineSelect" name="engine">
-                    <option value="budget">Budget</option>
-                    <option value="asa">ASA</option>
-                  </select>
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">指标族</span>
-                  <select id="recommendationPolicyMetricFamilySelect" name="metricFamily">
-                    <option value="ecpi">eCPI</option>
-                    <option value="d7_roas_cpp">D7 ROAS + CPP</option>
-                    <option value="relative_compare">Relative Compare</option>
-                  </select>
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">决策模式</span>
-                  <select id="recommendationPolicyDecisionModeSelect" name="decisionMode">
-                    <option value="deterministic">Deterministic</option>
-                    <option value="hybrid">Hybrid</option>
-                  </select>
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">流量范围</span>
-                  <select id="recommendationPolicyTrafficScopeSelect" name="trafficScope">
-                    <option value="all">全部流量</option>
-                    <option value="asa_only">仅 ASA</option>
-                    <option value="media_sources">指定媒体源</option>
-                  </select>
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">媒体源列表</span>
-                  <input id="recommendationPolicyMediaSourcesInput" name="mediaSources" placeholder="逗号分隔，例如 Apple Search Ads" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">排除最近天数</span>
-                  <input id="recommendationPolicyExcludeRecentInput" name="excludeRecentDays" type="number" min="0" step="1" value="7" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">决策窗口天数</span>
-                  <input id="recommendationPolicyDecisionWindowInput" name="decisionWindowDays" type="number" min="1" step="1" value="14" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">上下文窗口</span>
-                  <input id="recommendationPolicyContextWindowsInput" name="contextWindowDays" value="7,14,21" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">eCPI 上限</span>
-                  <input id="recommendationPolicyEcpiMaxInput" name="ecpiMax" type="number" min="0" step="0.01" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">ROAS 合格线</span>
-                  <input id="recommendationPolicyRoasMinInput" name="roasMin" type="number" min="0" step="0.01" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">ROAS 优秀线</span>
-                  <input id="recommendationPolicyRoasGoodInput" name="roasGood" type="number" min="0" step="0.01" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">CPP 上限</span>
-                  <input id="recommendationPolicyCppMaxInput" name="cppMax" type="number" min="0" step="0.01" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">CPP 暂停线</span>
-                  <input id="recommendationPolicyCppPauseInput" name="cppPauseThreshold" type="number" min="0" step="0.01" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">日预算上限</span>
-                  <input id="recommendationPolicyDailyCapInput" name="dailyBudgetCapUsd" type="number" min="0" step="0.01" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">低量级花费阈值</span>
-                  <input id="recommendationPolicyLowSpendInput" name="lowSpendThresholdUsd" type="number" min="0" step="0.01" value="10" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">高量级花费阈值</span>
-                  <input id="recommendationPolicyHighSpendInput" name="highSpendThresholdUsd" type="number" min="0" step="0.01" value="100" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">趋势回看天数</span>
-                  <input id="recommendationPolicyTrendLookbackInput" name="trendLookbackDays" type="number" min="3" step="1" value="7" />
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">上涨阈值</span>
-                  <input id="recommendationPolicyUptrendRatioInput" name="uptrendMinRatio" type="number" min="0" step="0.01" value="0.15" />
-                </label>
-                <label class="filter-field filter-field-wide">
-                  <span class="field-label">国家目标 JSON</span>
-                  <textarea id="recommendationPolicyCountryTargetsInput" name="countryTargets" rows="4" placeholder='{"US":{"ecpi_max":3},"BR":{"ecpi_max":1}}'></textarea>
-                </label>
-                <label class="filter-field filter-field-wide">
-                  <span class="field-label">媒体目标 JSON</span>
-                  <textarea id="recommendationPolicyMediaTargetsInput" name="mediaTargets" rows="4" placeholder='{"Apple Search Ads":{"ecpi_max":3}}'></textarea>
-                </label>
-                <label class="filter-field filter-field-wide">
-                  <span class="field-label">手写 AI 提示文档</span>
-                  <textarea id="recommendationPolicyPromptInput" name="manualPromptMarkdown" rows="6" placeholder="用 Markdown 记录调控师经验。"></textarea>
-                </label>
-                <label class="filter-field">
-                  <span class="field-label">启用</span>
-                  <select id="recommendationPolicyEnabledSelect" name="enabled">
-                    <option value="true">启用</option>
-                    <option value="false">停用</option>
-                  </select>
-                </label>
-                <div class="filter-actions">
-                  <button id="recommendationPolicySaveBtn" class="btn btn-primary" type="submit">保存策略</button>
+              <div id="recommendationPolicyEmptyState" class="policy-callout"></div>
+
+              <div class="policy-wizard-card">
+                <div class="policy-toolbar">
+                  <div class="policy-toolbar-main">
+                    <span id="recommendationPolicyStateBadge" class="policy-status-badge">未开始配置</span>
+                    <strong id="recommendationPolicyStatusTitle">先选择平台、应用和建议类型</strong>
+                    <p id="recommendationPolicyStatus" class="hint">保存时只会影响当前选择的应用、平台和建议类型，不会改动其他组合。</p>
+                  </div>
+                  <div class="chip-actions">
+                    <button id="recommendationPolicyUseRecommendedBtn" class="btn btn-secondary btn-compact" type="button">
+                      恢复推荐模板
+                    </button>
+                    <button id="recommendationPolicyUseBlankBtn" class="btn btn-ghost btn-compact" type="button">
+                      恢复为空白
+                    </button>
+                  </div>
                 </div>
-              </form>
-              <div id="recommendationPolicyStatus" class="hint">保存后会同时影响 Budget 与 ASA 的主动作判断和 AI 解释。</div>
+
+                <div id="recommendationPolicySteps" class="policy-stepper" role="tablist" aria-label="应用级规则配置步骤">
+                  <button class="policy-step is-active" type="button" data-policy-step-target="1">1 选择对象</button>
+                  <button class="policy-step" type="button" data-policy-step-target="2">2 优化目标</button>
+                  <button class="policy-step" type="button" data-policy-step-target="3">3 限制条件</button>
+                  <button class="policy-step" type="button" data-policy-step-target="4">4 确认保存</button>
+                </div>
+
+                <form id="recommendationPolicyForm" class="policy-wizard-form">
+                  <section class="policy-step-panel" data-policy-step-panel="1">
+                    <div class="policy-step-head">
+                      <h5>先确认这条规则要作用在哪个组合上</h5>
+                      <p>先选平台，再选应用，最后选建议类型。这样能避免误改到错误组合。</p>
+                    </div>
+                    <div class="policy-form-grid">
+                      <label class="filter-field">
+                        <span class="field-label">平台</span>
+                        <select id="recommendationPolicyPlatformSelect" name="platform">
+                          <option value="">请选择平台</option>
+                          <option value="ios">iOS</option>
+                          <option value="android">Android</option>
+                          <option value="unknown">未知</option>
+                        </select>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">应用</span>
+                        <select id="recommendationPolicyAppSelect" name="appKey">
+                          <option value="">请选择要配置的应用</option>
+                        </select>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">建议类型</span>
+                        <select id="recommendationPolicyEngineSelect" name="engine">
+                          <option value="">请选择建议类型</option>
+                          <option value="budget">常规预算建议</option>
+                          <option value="asa">ASA</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div class="policy-summary-grid">
+                      <div class="policy-summary-card">
+                        <span class="field-label">当前选择预览</span>
+                        <div id="recommendationPolicySelectionPreview" class="policy-selection-preview">
+                          还没有完整选择，请先选择平台、应用和建议类型。
+                        </div>
+                      </div>
+                      <div class="policy-summary-card">
+                        <span class="field-label">当前载入状态</span>
+                        <div id="recommendationPolicySourceSummary" class="policy-selection-preview">
+                          选择完成后会自动载入已保存规则或推荐模板。
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section class="policy-step-panel hidden" data-policy-step-panel="2">
+                    <div class="policy-step-head">
+                      <h5>先告诉系统你要重点控制什么</h5>
+                      <p>系统会根据这里的目标决定核心判断方式，再在下一步补充限制条件和例外说明。</p>
+                    </div>
+                    <div class="policy-form-grid">
+                      <label class="filter-field">
+                        <span class="field-label">核心指标</span>
+                        <select id="recommendationPolicyMetricFamilySelect" name="metricFamily">
+                          <option value="ecpi">eCPI</option>
+                          <option value="d7_roas_cpp">D7 ROAS + CPP</option>
+                          <option value="relative_compare">同类对比判断</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div id="recommendationPolicyEcpiGroup" class="policy-target-group">
+                      <div class="policy-target-group-head">
+                        <h6>eCPI 目标</h6>
+                        <p>适合安装成本驱动的应用。数值越小越严格，越容易触发降量或停投。</p>
+                      </div>
+                      <div class="policy-form-grid">
+                        <label class="filter-field">
+                          <span class="field-label">全局 eCPI 目标</span>
+                          <input id="recommendationPolicyEcpiMaxInput" name="ecpiMax" type="number" min="0" step="0.01" />
+                          <span class="hint">这是默认目标，没写国家或媒体单独阈值时会优先生效。常见做法是先填主市场目标。</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div id="recommendationPolicyRoasGroup" class="policy-target-group hidden">
+                      <div class="policy-target-group-head">
+                        <h6>D7 ROAS + CPP 目标</h6>
+                        <p>适合回收型产品。ROAS 越高要求越严格，CPP 越低要求越严格。</p>
+                      </div>
+                      <div class="policy-form-grid">
+                        <label class="filter-field">
+                          <span class="field-label">ROAS 合格线</span>
+                          <input id="recommendationPolicyRoasMinInput" name="roasMin" type="number" min="0" step="0.01" />
+                          <span class="hint">达到这条线才算基本合格。填得越高，系统越容易建议收紧投放。</span>
+                        </label>
+                        <label class="filter-field">
+                          <span class="field-label">ROAS 优秀线</span>
+                          <input id="recommendationPolicyRoasGoodInput" name="roasGood" type="number" min="0" step="0.01" />
+                          <span class="hint">达到这条线时，会更倾向认为素材或关键词具备扩量价值。</span>
+                        </label>
+                        <label class="filter-field">
+                          <span class="field-label">CPP 上限</span>
+                          <input id="recommendationPolicyCppMaxInput" name="cppMax" type="number" min="0" step="0.01" />
+                          <span class="hint">CPP 超过这条线时会偏向降量。填得越低，系统越容易判定成本偏贵。</span>
+                        </label>
+                        <label class="filter-field">
+                          <span class="field-label">CPP 暂停线</span>
+                          <input id="recommendationPolicyCppPauseInput" name="cppPauseThreshold" type="number" min="0" step="0.01" />
+                          <span class="hint">CPP 明显失控时可作为停投线。一般会高于 CPP 上限，用于更强动作。</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div id="recommendationPolicyRelativeGroup" class="policy-target-group hidden">
+                      <div class="policy-target-group-head">
+                        <h6>同类对比判断</h6>
+                        <p>适合横向比较素材或 campaign 的表现，判断是否显著落后于同类。</p>
+                      </div>
+                      <div class="policy-metric-grid">
+                        <label class="policy-metric-chip">
+                          <input type="checkbox" name="recommendationPolicyRelativeMetric" value="ctr" />
+                          <span>CTR</span>
+                        </label>
+                        <label class="policy-metric-chip">
+                          <input type="checkbox" name="recommendationPolicyRelativeMetric" value="cvr" />
+                          <span>CVR</span>
+                        </label>
+                        <label class="policy-metric-chip">
+                          <input type="checkbox" name="recommendationPolicyRelativeMetric" value="cpi" />
+                          <span>CPI</span>
+                        </label>
+                        <label class="policy-metric-chip">
+                          <input type="checkbox" name="recommendationPolicyRelativeMetric" value="roas" />
+                          <span>ROAS</span>
+                        </label>
+                      </div>
+                      <div class="policy-form-grid">
+                        <label class="filter-field">
+                          <span class="field-label">明显落后阈值</span>
+                          <input
+                            id="recommendationPolicyRelativeUnderperformInput"
+                            name="relativeUnderperformRatio"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                          />
+                          <span class="hint">表示比同类中位值差多少才算“明显落后”。例如 0.2 代表落后约 20%。</span>
+                        </label>
+                        <label class="filter-field">
+                          <span class="field-label">最少对比对象数</span>
+                          <input
+                            id="recommendationPolicyRelativePeerCountInput"
+                            name="relativeMinPeerCount"
+                            type="number"
+                            min="1"
+                            step="1"
+                          />
+                          <span class="hint">对比对象太少时，系统会认为样本不足，避免过度解读。</span>
+                        </label>
+                        <label class="filter-field">
+                          <span class="field-label">触发动作所需命中指标数</span>
+                          <input
+                            id="recommendationPolicyRelativeMinFailedInput"
+                            name="relativeMinFailedMetrics"
+                            type="number"
+                            min="1"
+                            step="1"
+                          />
+                          <span class="hint">需要同时有几个指标明显落后，系统才会触发调控动作。</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div id="recommendationPolicyTargetOverridesBlock" class="policy-target-group">
+                      <div class="policy-target-group-head">
+                        <h6>国家 / 媒体单独阈值</h6>
+                        <p>如果某些国家或媒体需要单独标准，可以在这里补充，不需要时可以留空。</p>
+                      </div>
+                      <div class="policy-target-layout">
+                        <div class="policy-target-panel">
+                          <div class="policy-target-panel-head">
+                            <strong>国家单独阈值</strong>
+                            <button id="recommendationPolicyAddCountryTargetBtn" class="btn btn-ghost btn-compact" type="button">
+                              添加国家
+                            </button>
+                          </div>
+                          <div id="recommendationPolicyCountryTargetsList" class="policy-target-list"></div>
+                        </div>
+                        <div class="policy-target-panel">
+                          <div class="policy-target-panel-head">
+                            <strong>媒体源单独阈值</strong>
+                            <button id="recommendationPolicyAddMediaTargetBtn" class="btn btn-ghost btn-compact" type="button">
+                              添加媒体源
+                            </button>
+                          </div>
+                          <div id="recommendationPolicyMediaTargetsList" class="policy-target-list"></div>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section class="policy-step-panel hidden" data-policy-step-panel="3">
+                    <div class="policy-step-head">
+                      <h5>补充限制条件和业务经验</h5>
+                      <p>这里控制流量范围、观察窗口和花费趋势。没有特殊需求时，用推荐模板就能直接开始。</p>
+                    </div>
+                    <div class="policy-form-grid">
+                      <label class="filter-field">
+                        <span class="field-label">判断方式</span>
+                        <select id="recommendationPolicyDecisionModeSelect" name="decisionMode">
+                          <option value="deterministic">按固定规则判断</option>
+                          <option value="hybrid">规则 + AI 辅助判断</option>
+                        </select>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">流量范围</span>
+                        <select id="recommendationPolicyTrafficScopeSelect" name="trafficScope">
+                          <option value="all">全部流量</option>
+                          <option value="asa_only">仅 ASA</option>
+                          <option value="media_sources">指定媒体源</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div id="recommendationPolicyMediaSourcesPanel" class="policy-token-block">
+                      <div class="policy-token-block-head">
+                        <div>
+                          <strong>媒体源过滤</strong>
+                          <p>只有在选择“指定媒体源”时才会参与判断。不需要手动输入逗号。</p>
+                        </div>
+                      </div>
+                      <div id="recommendationPolicyMediaSourcesChips" class="policy-chip-list"></div>
+                      <div class="policy-token-entry">
+                        <input id="recommendationPolicyMediaSourceDraftInput" type="text" placeholder="例如 Apple Search Ads" />
+                        <button id="recommendationPolicyAddMediaSourceBtn" class="btn btn-secondary btn-compact" type="button">
+                          添加媒体源
+                        </button>
+                      </div>
+                    </div>
+
+                    <div class="policy-form-grid">
+                      <label class="filter-field">
+                        <span class="field-label">排除最近天数</span>
+                        <input id="recommendationPolicyExcludeRecentInput" name="excludeRecentDays" type="number" min="0" step="1" />
+                        <span class="hint">用于避开最近还没回收成熟的数据。数值越大，系统看的数据越保守。</span>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">决策窗口天数</span>
+                        <input id="recommendationPolicyDecisionWindowInput" name="decisionWindowDays" type="number" min="1" step="1" />
+                        <span class="hint">系统真正用来算主动作的窗口。越大越稳，但对短期变化反应会更慢。</span>
+                      </label>
+                    </div>
+
+                    <div class="policy-token-block">
+                      <div class="policy-token-block-head">
+                        <div>
+                          <strong>上下文窗口</strong>
+                          <p>用于给 AI 和详情页补充趋势背景。推荐保留 7、14、21 天三个窗口。</p>
+                        </div>
+                      </div>
+                      <div id="recommendationPolicyContextWindowChips" class="policy-chip-list"></div>
+                      <div class="policy-token-entry">
+                        <input id="recommendationPolicyContextWindowDraftInput" type="number" min="1" step="1" placeholder="例如 14" />
+                        <button id="recommendationPolicyAddContextWindowBtn" class="btn btn-secondary btn-compact" type="button">
+                          添加窗口
+                        </button>
+                      </div>
+                    </div>
+
+                    <div class="policy-form-grid">
+                      <label class="filter-field">
+                        <span class="field-label">日预算上限</span>
+                        <input id="recommendationPolicyDailyCapInput" name="dailyBudgetCapUsd" type="number" min="0" step="0.01" />
+                        <span class="hint">用于描述这类应用大致的单日投入上限，不填也可以保存。</span>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">低量级花费阈值</span>
+                        <input id="recommendationPolicyLowSpendInput" name="lowSpendThresholdUsd" type="number" min="0" step="0.01" />
+                        <span class="hint">低于这条线时，系统更倾向认为量级偏小，ROAS 参考意义有限。</span>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">高量级花费阈值</span>
+                        <input id="recommendationPolicyHighSpendInput" name="highSpendThresholdUsd" type="number" min="0" step="0.01" />
+                        <span class="hint">高于这条线且持续走高时，系统会更关注是否具备扩量空间。</span>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">趋势回看天数</span>
+                        <input id="recommendationPolicyTrendLookbackInput" name="trendLookbackDays" type="number" min="3" step="1" />
+                        <span class="hint">用来判断花费是在上涨还是走平。通常看 7 天就够，太长会变钝。</span>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">上涨阈值</span>
+                        <input id="recommendationPolicyUptrendRatioInput" name="uptrendMinRatio" type="number" min="0" step="0.01" />
+                        <span class="hint">表示花费相对起点至少上涨多少才算明显上行。例如 0.15 代表约上涨 15%。</span>
+                      </label>
+                      <label class="filter-field">
+                        <span class="field-label">保存后是否立即生效</span>
+                        <select id="recommendationPolicyEnabledSelect" name="enabled">
+                          <option value="true">立即生效</option>
+                          <option value="false">先保存为停用状态</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <label class="filter-field filter-field-wide">
+                      <span class="field-label">补充说明（可选）</span>
+                      <textarea
+                        id="recommendationPolicyPromptInput"
+                        name="manualPromptMarkdown"
+                        rows="6"
+                        placeholder="用于补充特殊投放经验或例外处理规则，不写也可以保存。"
+                      ></textarea>
+                      <span class="hint">例如：某个国家低量级时先看跑量能力，不要只因为 1-2 天回收好就盲目扩量。</span>
+                    </label>
+                  </section>
+
+                  <section class="policy-step-panel hidden" data-policy-step-panel="4">
+                    <div class="policy-step-head">
+                      <h5>保存前再确认一遍影响范围</h5>
+                      <p>这里会用业务语言总结这条规则影响谁、看什么、以及关键阈值。</p>
+                    </div>
+                    <div class="policy-summary-grid">
+                      <div class="policy-summary-card">
+                        <span class="field-label">影响摘要</span>
+                        <dl id="recommendationPolicyImpactSummary" class="policy-impact-list"></dl>
+                      </div>
+                      <div class="policy-summary-card">
+                        <span class="field-label">规则摘要</span>
+                        <div id="recommendationPolicyReviewSummary" class="policy-review-list"></div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <div class="policy-wizard-footer">
+                    <button id="recommendationPolicyPrevBtn" class="btn btn-ghost" type="button">上一步</button>
+                    <button id="recommendationPolicyNextBtn" class="btn btn-secondary" type="button">下一步</button>
+                    <button id="recommendationPolicySaveBtn" class="btn btn-primary" type="submit">保存该应用规则</button>
+                  </div>
+                </form>
+              </div>
+
               <div class="table-wrap">
                 <table class="data-table">
                   <thead>
                     <tr>
-                      <th>应用</th>
-                      <th>平台</th>
-                      <th>引擎</th>
-                      <th>指标族</th>
-                      <th>流量范围</th>
-                      <th>支持情况</th>
+                      <th>配置对象</th>
+                      <th>优化目标</th>
+                      <th>生效范围</th>
+                      <th>关键阈值摘要</th>
+                      <th>当前支持程度</th>
                       <th>更新时间</th>
                       <th>操作</th>
                     </tr>

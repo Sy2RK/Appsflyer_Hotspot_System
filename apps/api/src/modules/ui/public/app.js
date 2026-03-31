@@ -1,3 +1,33 @@
+import {
+  POLICY_ENGINE_LABELS,
+  createPolicyTemplate,
+  buildPolicyDraftFromRow,
+  sanitizeRecommendationPolicyDraft,
+  mergeRecommendationPolicyRule,
+  buildRecommendationPolicySnapshot,
+  buildRecommendationPolicyTableSummary,
+  buildRecommendationPolicyReviewSummary,
+  getRecommendationPolicyErrorMessage,
+  createEmptyTargetRow
+} from './recommendationPolicyWizard.js';
+
+function createInitialRecommendationPolicyEditor() {
+  const draft = createPolicyTemplate({ platform: '', appKey: '', engine: '' }, 'blank');
+  return {
+    step: 1,
+    source: 'unselected',
+    selection: {
+      platform: '',
+      appKey: '',
+      engine: ''
+    },
+    originalRuleJson: {},
+    originalSnapshot: buildRecommendationPolicySnapshot(draft),
+    draft,
+    dirty: false
+  };
+}
+
 const state = {
   apps: [],
   alerts: [],
@@ -33,7 +63,8 @@ const state = {
   appFeishuEnabled: false,
   dailyBriefMediaSources: [],
   dailyBriefSelectedMediaSources: [],
-  rulesSectionExpanded: false
+  rulesSectionExpanded: false,
+  recommendationPolicyEditor: createInitialRecommendationPolicyEditor()
 };
 
 let budgetRecomputePollTimer = null;
@@ -187,33 +218,59 @@ const el = {
   budgetRecomputeProgressText: document.getElementById('budgetRecomputeProgressText'),
   budgetRecomputeProgressHint: document.getElementById('budgetRecomputeProgressHint'),
   budgetRuleHelpBtn: document.getElementById('budgetRuleHelpBtn'),
+  recommendationPolicyEmptyState: document.getElementById('recommendationPolicyEmptyState'),
+  recommendationPolicyStateBadge: document.getElementById('recommendationPolicyStateBadge'),
+  recommendationPolicyStatusTitle: document.getElementById('recommendationPolicyStatusTitle'),
+  recommendationPolicyStatus: document.getElementById('recommendationPolicyStatus'),
+  recommendationPolicyUseRecommendedBtn: document.getElementById('recommendationPolicyUseRecommendedBtn'),
+  recommendationPolicyUseBlankBtn: document.getElementById('recommendationPolicyUseBlankBtn'),
+  recommendationPolicySteps: document.getElementById('recommendationPolicySteps'),
   recommendationPolicyForm: document.getElementById('recommendationPolicyForm'),
   recommendationPolicyAppSelect: document.getElementById('recommendationPolicyAppSelect'),
   recommendationPolicyPlatformSelect: document.getElementById('recommendationPolicyPlatformSelect'),
   recommendationPolicyEngineSelect: document.getElementById('recommendationPolicyEngineSelect'),
+  recommendationPolicySelectionPreview: document.getElementById('recommendationPolicySelectionPreview'),
+  recommendationPolicySourceSummary: document.getElementById('recommendationPolicySourceSummary'),
   recommendationPolicyMetricFamilySelect: document.getElementById('recommendationPolicyMetricFamilySelect'),
+  recommendationPolicyEcpiGroup: document.getElementById('recommendationPolicyEcpiGroup'),
+  recommendationPolicyRoasGroup: document.getElementById('recommendationPolicyRoasGroup'),
+  recommendationPolicyRelativeGroup: document.getElementById('recommendationPolicyRelativeGroup'),
+  recommendationPolicyTargetOverridesBlock: document.getElementById('recommendationPolicyTargetOverridesBlock'),
   recommendationPolicyDecisionModeSelect: document.getElementById('recommendationPolicyDecisionModeSelect'),
   recommendationPolicyTrafficScopeSelect: document.getElementById('recommendationPolicyTrafficScopeSelect'),
-  recommendationPolicyMediaSourcesInput: document.getElementById('recommendationPolicyMediaSourcesInput'),
+  recommendationPolicyMediaSourcesPanel: document.getElementById('recommendationPolicyMediaSourcesPanel'),
+  recommendationPolicyMediaSourcesChips: document.getElementById('recommendationPolicyMediaSourcesChips'),
+  recommendationPolicyMediaSourceDraftInput: document.getElementById('recommendationPolicyMediaSourceDraftInput'),
+  recommendationPolicyAddMediaSourceBtn: document.getElementById('recommendationPolicyAddMediaSourceBtn'),
   recommendationPolicyExcludeRecentInput: document.getElementById('recommendationPolicyExcludeRecentInput'),
   recommendationPolicyDecisionWindowInput: document.getElementById('recommendationPolicyDecisionWindowInput'),
-  recommendationPolicyContextWindowsInput: document.getElementById('recommendationPolicyContextWindowsInput'),
+  recommendationPolicyContextWindowChips: document.getElementById('recommendationPolicyContextWindowChips'),
+  recommendationPolicyContextWindowDraftInput: document.getElementById('recommendationPolicyContextWindowDraftInput'),
+  recommendationPolicyAddContextWindowBtn: document.getElementById('recommendationPolicyAddContextWindowBtn'),
   recommendationPolicyEcpiMaxInput: document.getElementById('recommendationPolicyEcpiMaxInput'),
   recommendationPolicyRoasMinInput: document.getElementById('recommendationPolicyRoasMinInput'),
   recommendationPolicyRoasGoodInput: document.getElementById('recommendationPolicyRoasGoodInput'),
   recommendationPolicyCppMaxInput: document.getElementById('recommendationPolicyCppMaxInput'),
   recommendationPolicyCppPauseInput: document.getElementById('recommendationPolicyCppPauseInput'),
+  recommendationPolicyRelativeUnderperformInput: document.getElementById('recommendationPolicyRelativeUnderperformInput'),
+  recommendationPolicyRelativePeerCountInput: document.getElementById('recommendationPolicyRelativePeerCountInput'),
+  recommendationPolicyRelativeMinFailedInput: document.getElementById('recommendationPolicyRelativeMinFailedInput'),
+  recommendationPolicyCountryTargetsList: document.getElementById('recommendationPolicyCountryTargetsList'),
+  recommendationPolicyMediaTargetsList: document.getElementById('recommendationPolicyMediaTargetsList'),
+  recommendationPolicyAddCountryTargetBtn: document.getElementById('recommendationPolicyAddCountryTargetBtn'),
+  recommendationPolicyAddMediaTargetBtn: document.getElementById('recommendationPolicyAddMediaTargetBtn'),
   recommendationPolicyDailyCapInput: document.getElementById('recommendationPolicyDailyCapInput'),
   recommendationPolicyLowSpendInput: document.getElementById('recommendationPolicyLowSpendInput'),
   recommendationPolicyHighSpendInput: document.getElementById('recommendationPolicyHighSpendInput'),
   recommendationPolicyTrendLookbackInput: document.getElementById('recommendationPolicyTrendLookbackInput'),
   recommendationPolicyUptrendRatioInput: document.getElementById('recommendationPolicyUptrendRatioInput'),
-  recommendationPolicyCountryTargetsInput: document.getElementById('recommendationPolicyCountryTargetsInput'),
-  recommendationPolicyMediaTargetsInput: document.getElementById('recommendationPolicyMediaTargetsInput'),
   recommendationPolicyPromptInput: document.getElementById('recommendationPolicyPromptInput'),
   recommendationPolicyEnabledSelect: document.getElementById('recommendationPolicyEnabledSelect'),
+  recommendationPolicyImpactSummary: document.getElementById('recommendationPolicyImpactSummary'),
+  recommendationPolicyReviewSummary: document.getElementById('recommendationPolicyReviewSummary'),
+  recommendationPolicyPrevBtn: document.getElementById('recommendationPolicyPrevBtn'),
+  recommendationPolicyNextBtn: document.getElementById('recommendationPolicyNextBtn'),
   recommendationPolicySaveBtn: document.getElementById('recommendationPolicySaveBtn'),
-  recommendationPolicyStatus: document.getElementById('recommendationPolicyStatus'),
   recommendationPoliciesTableBody: document.getElementById('recommendationPoliciesTableBody'),
 
   asaStageForm: document.getElementById('asaStageForm'),
@@ -420,7 +477,9 @@ async function api(path, options = {}) {
     throw new Error('unauthorized');
   }
   if (!res.ok || body.ok === false) {
-    throw new Error(body.error || `request_failed_${res.status}`);
+    throw new Error(
+      body.message || getRecommendationPolicyErrorMessage(body.error) || body.error || `request_failed_${res.status}`
+    );
   }
   return body;
 }
@@ -1196,9 +1255,9 @@ function populateAppSelects() {
   el.asaKeywordAppSelect.innerHTML = options;
   el.asaBriefAppSelect.innerHTML = options;
   el.asaStageAppSelect.innerHTML = options;
-  el.recommendationPolicyAppSelect.innerHTML = state.apps
-    .map((a) => `<option value="${a.app_key}">${escapeHtml(displayNameOfApp(a))} (${a.app_key})</option>`)
-    .join('');
+  if (el.recommendationPolicyAppSelect) {
+    el.recommendationPolicyAppSelect.innerHTML = '<option value="">请选择要配置的应用</option>';
+  }
 
   const metricOptions = state.apps
     .map((a) => `<option value="${a.app_key}">${escapeHtml(displayNameOfApp(a))} (${a.app_key})</option>`)
@@ -1211,9 +1270,7 @@ function populateAppSelects() {
   if (state.apps[0] && !el.asaStageAppSelect.value) {
     el.asaStageAppSelect.value = state.apps[0].app_key;
   }
-  if (state.apps[0] && !el.recommendationPolicyAppSelect.value) {
-    el.recommendationPolicyAppSelect.value = state.apps[0].app_key;
-  }
+  renderRecommendationPolicySelectionFields();
 }
 
 function renderApps() {
@@ -1299,108 +1356,784 @@ function recommendationPolicyKey(row) {
   return [row.app_key, row.platform, row.engine].join('|');
 }
 
-function parsePolicyTargetsJson(text, fieldLabel) {
-  const raw = String(text || '').trim();
-  if (!raw) {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('需要是 JSON 对象');
-    }
-    return parsed;
-  } catch (error) {
-    throw new Error(`${fieldLabel}格式无效：${error.message || '请检查 JSON'}`);
-  }
+const RECOMMENDATION_POLICY_STEP_COUNT = 4;
+const RECOMMENDATION_POLICY_TARGET_FIELDS = {
+  ecpi: ['ecpi_max'],
+  d7_roas_cpp: ['roas_min', 'roas_good', 'cpp_max', 'cpp_pause_threshold'],
+  relative_compare: []
+};
+const RECOMMENDATION_POLICY_TARGET_FIELD_META = {
+  ecpi_max: { label: 'eCPI 目标', step: '0.01', placeholder: '例如 3' },
+  roas_min: { label: 'ROAS 合格线', step: '0.01', placeholder: '例如 0.3' },
+  roas_good: { label: 'ROAS 优秀线', step: '0.01', placeholder: '例如 0.5' },
+  cpp_max: { label: 'CPP 上限', step: '0.01', placeholder: '例如 40' },
+  cpp_pause_threshold: { label: 'CPP 暂停线', step: '0.01', placeholder: '例如 60' }
+};
+
+function cloneRecommendationPolicyDraft(draft) {
+  return JSON.parse(JSON.stringify(draft));
 }
 
-function resetRecommendationPolicyForm() {
-  if (!el.recommendationPolicyForm) {
-    return;
+function getRecommendationPolicyEditor() {
+  if (!state.recommendationPolicyEditor) {
+    state.recommendationPolicyEditor = createInitialRecommendationPolicyEditor();
   }
-  el.recommendationPolicyMetricFamilySelect.value = 'ecpi';
-  el.recommendationPolicyDecisionModeSelect.value = 'deterministic';
-  el.recommendationPolicyTrafficScopeSelect.value = 'all';
-  el.recommendationPolicyMediaSourcesInput.value = '';
-  el.recommendationPolicyExcludeRecentInput.value = '7';
-  el.recommendationPolicyDecisionWindowInput.value = '14';
-  el.recommendationPolicyContextWindowsInput.value = '7,14,21';
-  el.recommendationPolicyEcpiMaxInput.value = '';
-  el.recommendationPolicyRoasMinInput.value = '';
-  el.recommendationPolicyRoasGoodInput.value = '';
-  el.recommendationPolicyCppMaxInput.value = '';
-  el.recommendationPolicyCppPauseInput.value = '';
-  el.recommendationPolicyDailyCapInput.value = '';
-  el.recommendationPolicyLowSpendInput.value = '10';
-  el.recommendationPolicyHighSpendInput.value = '100';
-  el.recommendationPolicyTrendLookbackInput.value = '7';
-  el.recommendationPolicyUptrendRatioInput.value = '0.15';
-  el.recommendationPolicyCountryTargetsInput.value = '';
-  el.recommendationPolicyMediaTargetsInput.value = '';
-  el.recommendationPolicyPromptInput.value = '';
-  el.recommendationPolicyEnabledSelect.value = 'true';
+  return state.recommendationPolicyEditor;
 }
 
-function applyRecommendationPolicyToForm(row) {
-  const rule = safeJsonParse(row.rule_json, {});
-  const maturity = rule.maturity_window || {};
-  const targets = rule.targets || {};
-  const globalTargets = targets.global_targets || {};
-  const spendPolicy = rule.spend_policy || {};
-  el.recommendationPolicyAppSelect.value = row.app_key || '';
-  el.recommendationPolicyPlatformSelect.value = row.platform || 'ios';
-  el.recommendationPolicyEngineSelect.value = row.engine || 'budget';
-  el.recommendationPolicyMetricFamilySelect.value = rule.metric_family || 'ecpi';
-  el.recommendationPolicyDecisionModeSelect.value = rule.decision_mode || 'deterministic';
-  el.recommendationPolicyTrafficScopeSelect.value = rule.traffic_scope || 'all';
-  el.recommendationPolicyMediaSourcesInput.value = Array.isArray(rule.media_sources) ? rule.media_sources.join(', ') : '';
-  el.recommendationPolicyExcludeRecentInput.value = String(maturity.exclude_recent_days ?? 7);
-  el.recommendationPolicyDecisionWindowInput.value = String(maturity.decision_window_days ?? 14);
-  el.recommendationPolicyContextWindowsInput.value = Array.isArray(maturity.context_window_days)
-    ? maturity.context_window_days.join(',')
-    : '7,14,21';
-  el.recommendationPolicyEcpiMaxInput.value = globalTargets.ecpi_max == null ? '' : String(globalTargets.ecpi_max);
-  el.recommendationPolicyRoasMinInput.value = globalTargets.roas_min == null ? '' : String(globalTargets.roas_min);
-  el.recommendationPolicyRoasGoodInput.value = globalTargets.roas_good == null ? '' : String(globalTargets.roas_good);
-  el.recommendationPolicyCppMaxInput.value = globalTargets.cpp_max == null ? '' : String(globalTargets.cpp_max);
-  el.recommendationPolicyCppPauseInput.value =
-    globalTargets.cpp_pause_threshold == null ? '' : String(globalTargets.cpp_pause_threshold);
-  el.recommendationPolicyDailyCapInput.value =
-    spendPolicy.daily_budget_cap_usd == null ? '' : String(spendPolicy.daily_budget_cap_usd);
-  el.recommendationPolicyLowSpendInput.value =
-    spendPolicy.low_spend_threshold_usd == null ? '' : String(spendPolicy.low_spend_threshold_usd);
-  el.recommendationPolicyHighSpendInput.value =
-    spendPolicy.high_spend_threshold_usd == null ? '' : String(spendPolicy.high_spend_threshold_usd);
-  el.recommendationPolicyTrendLookbackInput.value = String(spendPolicy.trend_lookback_days ?? 7);
-  el.recommendationPolicyUptrendRatioInput.value = String(spendPolicy.uptrend_min_ratio ?? 0.15);
-  el.recommendationPolicyCountryTargetsInput.value = JSON.stringify(targets.country_targets || {}, null, 2);
-  el.recommendationPolicyMediaTargetsInput.value = JSON.stringify(targets.media_targets || {}, null, 2);
-  el.recommendationPolicyPromptInput.value = String(row.manual_prompt_markdown || '');
-  el.recommendationPolicyEnabledSelect.value = row.enabled === false ? 'false' : 'true';
+function createRecommendationPolicySelection(overrides = {}) {
+  const editor = getRecommendationPolicyEditor();
+  const rawEngine = String(overrides.engine ?? editor.selection?.engine ?? '').trim().toLowerCase();
+  return {
+    platform: String(overrides.platform ?? editor.selection?.platform ?? '').trim().toLowerCase(),
+    appKey: String(overrides.appKey ?? editor.selection?.appKey ?? '').trim(),
+    engine: rawEngine === 'budget' || rawEngine === 'asa' ? rawEngine : ''
+  };
 }
 
-function syncRecommendationPolicyFormSelection() {
-  if (!el.recommendationPolicyForm) {
-    return;
-  }
-  const appKey = String(el.recommendationPolicyAppSelect.value || '').trim();
-  const platform = String(el.recommendationPolicyPlatformSelect.value || '').trim().toLowerCase();
-  const engine = String(el.recommendationPolicyEngineSelect.value || 'budget').trim().toLowerCase();
-  if (!appKey || !platform || !engine) {
-    return;
-  }
-  const row = (state.recommendationPolicies || []).find(
-    (item) => item.app_key === appKey && item.platform === platform && item.engine === engine
+function isRecommendationPolicySelectionComplete(selection) {
+  return Boolean(selection?.platform && selection?.appKey && selection?.engine);
+}
+
+function isSameRecommendationPolicySelection(left, right) {
+  return (
+    String(left?.platform || '') === String(right?.platform || '') &&
+    String(left?.appKey || '') === String(right?.appKey || '') &&
+    String(left?.engine || '') === String(right?.engine || '')
   );
-  if (row) {
-    applyRecommendationPolicyToForm(row);
+}
+
+function policyTargetFieldsForMetricFamily(metricFamily) {
+  return RECOMMENDATION_POLICY_TARGET_FIELDS[metricFamily] || RECOMMENDATION_POLICY_TARGET_FIELDS.ecpi;
+}
+
+function appSupportsRecommendationPlatform(app, platform) {
+  if (!app) {
+    return false;
+  }
+  if (platform === 'ios') {
+    return Boolean(app.ios_pull_app_id);
+  }
+  if (platform === 'android') {
+    return Boolean(app.android_pull_app_id);
+  }
+  if (platform === 'unknown') {
+    return Boolean(app.pull_app_id);
+  }
+  return false;
+}
+
+function buildRecommendationPolicyAppOptions(platform) {
+  const normalizedPlatform = String(platform || '').trim().toLowerCase();
+  const items = ['<option value="">请选择要配置的应用</option>'];
+  if (!normalizedPlatform) {
+    return items.join('');
+  }
+  for (const app of (state.apps || []).filter((item) => appSupportsRecommendationPlatform(item, normalizedPlatform))) {
+    const name = productViewName(app.app_key, normalizedPlatform);
+    items.push(
+      `<option value="${escapeHtml(app.app_key)}">${escapeHtml(name)}${name === app.app_key ? '' : ` (${escapeHtml(app.app_key)})`}</option>`
+    );
+  }
+  return items.join('');
+}
+
+function getRecommendationPolicyRowBySelection(selection) {
+  return (state.recommendationPolicies || []).find(
+    (item) =>
+      item.app_key === selection.appKey && item.platform === selection.platform && item.engine === selection.engine
+  );
+}
+
+function renderRecommendationPolicySelectionFields() {
+  if (!el.recommendationPolicyPlatformSelect || !el.recommendationPolicyAppSelect || !el.recommendationPolicyEngineSelect) {
     return;
   }
-  resetRecommendationPolicyForm();
-  el.recommendationPolicyAppSelect.value = appKey;
-  el.recommendationPolicyPlatformSelect.value = platform;
-  el.recommendationPolicyEngineSelect.value = engine;
+  const editor = getRecommendationPolicyEditor();
+  const selection = editor.selection || createRecommendationPolicySelection();
+  el.recommendationPolicyPlatformSelect.value = selection.platform || '';
+  el.recommendationPolicyEngineSelect.value = selection.engine || '';
+  el.recommendationPolicyAppSelect.innerHTML = buildRecommendationPolicyAppOptions(selection.platform);
+  const appExists = (state.apps || []).some(
+    (app) => app.app_key === selection.appKey && appSupportsRecommendationPlatform(app, selection.platform)
+  );
+  el.recommendationPolicyAppSelect.value = selection.platform && appExists ? selection.appKey || '' : '';
+}
+
+function renderRecommendationPolicySelectionPreview() {
+  if (!el.recommendationPolicySelectionPreview || !el.recommendationPolicySourceSummary) {
+    return;
+  }
+  const editor = getRecommendationPolicyEditor();
+  const selection = editor.selection || {};
+  if (!isRecommendationPolicySelectionComplete(selection)) {
+    el.recommendationPolicySelectionPreview.textContent = '还没有完整选择，请先选择平台、应用和建议类型。';
+    el.recommendationPolicySourceSummary.textContent = '选择完成后会自动载入已保存规则或推荐模板。';
+    return;
+  }
+  const appName = productViewName(selection.appKey, selection.platform);
+  const engineLabel = POLICY_ENGINE_LABELS[selection.engine] || selection.engine;
+  el.recommendationPolicySelectionPreview.textContent = `${platformLabel(selection.platform)} / ${appName} / ${engineLabel}`;
+
+  if (editor.source === 'saved') {
+    el.recommendationPolicySourceSummary.textContent = '当前已载入这组配置的已保存规则。修改后保存，会直接更新这一个组合。';
+    return;
+  }
+  if (editor.source === 'recommended') {
+    el.recommendationPolicySourceSummary.textContent = '当前无已保存规则，系统已先载入推荐模板，你可以在此基础上继续调整。';
+    return;
+  }
+  if (editor.source === 'blank') {
+    el.recommendationPolicySourceSummary.textContent = '当前使用的是空白模板，只保留系统必填默认值，适合从零开始配置。';
+    return;
+  }
+  el.recommendationPolicySourceSummary.textContent = '选择完成后会自动载入已保存规则或推荐模板。';
+}
+
+function renderRecommendationPolicyStatusCopy() {
+  if (!el.recommendationPolicyStateBadge || !el.recommendationPolicyStatusTitle || !el.recommendationPolicyStatus) {
+    return;
+  }
+  const editor = getRecommendationPolicyEditor();
+  const selection = editor.selection || {};
+  let badgeText = '未开始配置';
+  let title = '先选择平台、应用和建议类型';
+  let message = '保存时只会影响当前选择的应用、平台和建议类型，不会改动其他组合。';
+  const isMuted = editor.source === 'unselected';
+
+  if (isRecommendationPolicySelectionComplete(selection)) {
+    const appName = productViewName(selection.appKey, selection.platform);
+    const engineLabel = POLICY_ENGINE_LABELS[selection.engine] || selection.engine;
+    title = `正在配置 ${appName} 的${engineLabel}`;
+    if (editor.source === 'saved') {
+      badgeText = '已载入已保存规则';
+      message = '当前展示的是这组已保存规则。修改后保存，会覆盖当前组合的规则配置。';
+    } else if (editor.source === 'recommended') {
+      badgeText = '已载入推荐模板';
+      message = '当前组合还没有已保存规则，系统已按推荐模板为你填好常用默认值。';
+    } else if (editor.source === 'blank') {
+      badgeText = '当前为空白模板';
+      message = '当前组合使用空白模板，只保留系统默认值，适合从零开始配置。';
+    }
+  }
+
+  if (editor.dirty) {
+    message = `${message} 你还有未保存的修改。`;
+  }
+
+  el.recommendationPolicyStateBadge.textContent = badgeText;
+  el.recommendationPolicyStateBadge.classList.toggle('is-muted', isMuted);
+  el.recommendationPolicyStatusTitle.textContent = title;
+  el.recommendationPolicyStatus.textContent = message;
+}
+
+function renderRecommendationPolicyStepState() {
+  const editor = getRecommendationPolicyEditor();
+  const currentStep = Math.min(RECOMMENDATION_POLICY_STEP_COUNT, Math.max(1, Number(editor.step) || 1));
+  editor.step = currentStep;
+
+  el.recommendationPolicySteps
+    ?.querySelectorAll('[data-policy-step-target]')
+    .forEach((node) => {
+      const target = Number(node.getAttribute('data-policy-step-target') || '1');
+      node.classList.toggle('is-active', target === currentStep);
+      node.classList.toggle('is-complete', target < currentStep);
+    });
+
+  el.recommendationPolicyForm
+    ?.querySelectorAll('[data-policy-step-panel]')
+    .forEach((node) => {
+      const target = Number(node.getAttribute('data-policy-step-panel') || '1');
+      node.classList.toggle('hidden', target !== currentStep);
+    });
+
+  if (el.recommendationPolicyPrevBtn) {
+    el.recommendationPolicyPrevBtn.disabled = currentStep <= 1;
+  }
+  if (el.recommendationPolicyNextBtn) {
+    el.recommendationPolicyNextBtn.disabled = currentStep >= RECOMMENDATION_POLICY_STEP_COUNT;
+    el.recommendationPolicyNextBtn.textContent =
+      currentStep >= RECOMMENDATION_POLICY_STEP_COUNT ? '已到最后一步' : '下一步';
+  }
+  if (el.recommendationPolicySaveBtn) {
+    el.recommendationPolicySaveBtn.classList.toggle('hidden', currentStep !== RECOMMENDATION_POLICY_STEP_COUNT);
+  }
+}
+
+function renderRecommendationPolicyMediaSourceChips() {
+  if (!el.recommendationPolicyMediaSourcesChips || !el.recommendationPolicyMediaSourceDraftInput || !el.recommendationPolicyAddMediaSourceBtn) {
+    return;
+  }
+  const editor = getRecommendationPolicyEditor();
+  const mediaSources = Array.isArray(editor.draft?.mediaSources) ? editor.draft.mediaSources : [];
+  const isActive = editor.draft?.trafficScope === 'media_sources';
+  el.recommendationPolicyMediaSourceDraftInput.disabled = !isActive;
+  el.recommendationPolicyAddMediaSourceBtn.disabled = !isActive;
+
+  if (mediaSources.length === 0) {
+    el.recommendationPolicyMediaSourcesChips.innerHTML =
+      '<span class="policy-chip-empty">还没有限制媒体源。只有在选择“指定媒体源”时，这里的内容才会生效。</span>';
+    return;
+  }
+
+  el.recommendationPolicyMediaSourcesChips.innerHTML = mediaSources
+    .map(
+      (item) => `
+        <span class="policy-chip">
+          <span>${escapeHtml(item)}</span>
+          <button
+            class="policy-chip-remove"
+            type="button"
+            aria-label="移除媒体源 ${escapeHtml(item)}"
+            data-policy-chip-kind="mediaSources"
+            data-policy-chip-value="${escapeHtml(item)}"
+          >
+            ×
+          </button>
+        </span>
+      `
+    )
+    .join('');
+}
+
+function renderRecommendationPolicyContextWindowChips() {
+  if (!el.recommendationPolicyContextWindowChips) {
+    return;
+  }
+  const editor = getRecommendationPolicyEditor();
+  const windows = Array.isArray(editor.draft?.contextWindowDays) ? editor.draft.contextWindowDays : [];
+  if (windows.length === 0) {
+    el.recommendationPolicyContextWindowChips.innerHTML =
+      '<span class="policy-chip-empty">当前没有上下文窗口。推荐保留 7、14、21 天三个窗口。</span>';
+    return;
+  }
+  el.recommendationPolicyContextWindowChips.innerHTML = windows
+    .map(
+      (item) => `
+        <span class="policy-chip">
+          <span>${escapeHtml(String(item))} 天</span>
+          <button
+            class="policy-chip-remove"
+            type="button"
+            aria-label="移除 ${escapeHtml(String(item))} 天窗口"
+            data-policy-chip-kind="contextWindowDays"
+            data-policy-chip-value="${escapeHtml(String(item))}"
+          >
+            ×
+          </button>
+        </span>
+      `
+    )
+    .join('');
+}
+
+function renderRecommendationPolicyTargetRows(kind) {
+  const listEl =
+    kind === 'country' ? el.recommendationPolicyCountryTargetsList : el.recommendationPolicyMediaTargetsList;
+  if (!listEl) {
+    return;
+  }
+  const editor = getRecommendationPolicyEditor();
+  const metricFamily = editor.draft?.metricFamily || 'ecpi';
+  const fields = policyTargetFieldsForMetricFamily(metricFamily);
+  const rows = Array.isArray(editor.draft?.[kind === 'country' ? 'countryTargets' : 'mediaTargets'])
+    ? editor.draft[kind === 'country' ? 'countryTargets' : 'mediaTargets']
+    : [];
+
+  if (fields.length === 0) {
+    listEl.innerHTML = '';
+    return;
+  }
+
+  if (rows.length === 0) {
+    listEl.innerHTML =
+      `<div class="policy-target-empty">${kind === 'country' ? '还没有国家单独阈值。' : '还没有媒体源单独阈值。'}</div>`;
+    return;
+  }
+
+  listEl.innerHTML = rows
+    .map((row, index) => {
+      const keyLabel = kind === 'country' ? '国家 / 地区' : '媒体源';
+      const rowTitle = kind === 'country' ? `国家阈值 ${index + 1}` : `媒体源阈值 ${index + 1}`;
+      const fieldInputs = fields
+        .map((field) => {
+          const meta = RECOMMENDATION_POLICY_TARGET_FIELD_META[field];
+          return `
+            <label class="filter-field">
+              <span class="field-label">${escapeHtml(meta.label)}</span>
+              <input
+                type="number"
+                min="0"
+                step="${escapeHtml(meta.step)}"
+                placeholder="${escapeHtml(meta.placeholder)}"
+                value="${escapeHtml(String(row[field] || ''))}"
+                data-policy-target-kind="${escapeHtml(kind)}"
+                data-policy-target-row-id="${escapeHtml(row.id)}"
+                data-policy-target-field="${escapeHtml(field)}"
+              />
+            </label>
+          `;
+        })
+        .join('');
+      return `
+        <div class="policy-target-row" data-policy-target-kind="${escapeHtml(kind)}" data-policy-target-row-id="${escapeHtml(row.id)}">
+          <div class="policy-target-row-head">
+            <strong>${escapeHtml(rowTitle)}</strong>
+            <div class="table-actions">
+              <button class="btn btn-ghost btn-compact" type="button" data-policy-target-copy="${escapeHtml(row.id)}" data-policy-target-kind="${escapeHtml(kind)}">复制</button>
+              <button class="btn btn-ghost btn-compact" type="button" data-policy-target-remove="${escapeHtml(row.id)}" data-policy-target-kind="${escapeHtml(kind)}">删除</button>
+            </div>
+          </div>
+          <div class="policy-target-row-fields">
+            <label class="filter-field">
+              <span class="field-label">${keyLabel}</span>
+              <input
+                type="text"
+                placeholder="${kind === 'country' ? '例如 US 或 BR' : '例如 Apple Search Ads'}"
+                value="${escapeHtml(String(row.key || ''))}"
+                data-policy-target-kind="${escapeHtml(kind)}"
+                data-policy-target-row-id="${escapeHtml(row.id)}"
+                data-policy-target-key="true"
+              />
+            </label>
+            ${fieldInputs}
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  applyUniformFieldLabels();
+}
+
+function renderRecommendationPolicyFieldVisibility() {
+  const editor = getRecommendationPolicyEditor();
+  const metricFamily = editor.draft?.metricFamily || 'ecpi';
+  const isRelative = metricFamily === 'relative_compare';
+  el.recommendationPolicyEcpiGroup?.classList.toggle('hidden', metricFamily !== 'ecpi');
+  el.recommendationPolicyRoasGroup?.classList.toggle('hidden', metricFamily !== 'd7_roas_cpp');
+  el.recommendationPolicyRelativeGroup?.classList.toggle('hidden', metricFamily !== 'relative_compare');
+  el.recommendationPolicyTargetOverridesBlock?.classList.toggle('hidden', isRelative);
+  renderRecommendationPolicyMediaSourceChips();
+  renderRecommendationPolicyContextWindowChips();
+  renderRecommendationPolicyTargetRows('country');
+  renderRecommendationPolicyTargetRows('media');
+}
+
+function renderRecommendationPolicyReview() {
+  if (!el.recommendationPolicyImpactSummary || !el.recommendationPolicyReviewSummary) {
+    return;
+  }
+  const editor = getRecommendationPolicyEditor();
+  const draft = collectRecommendationPolicyDraftFromInputs();
+  const selection = draft.selection;
+  const appName = selection.appKey ? productViewName(selection.appKey, selection.platform) : '-';
+  const review = buildRecommendationPolicyReviewSummary({
+    ruleJson: mergeRecommendationPolicyRule(editor.originalRuleJson || {}, draft),
+    appName,
+    platformLabel: selection.platform ? platformLabel(selection.platform) : '-',
+    engineLabel: POLICY_ENGINE_LABELS[selection.engine] || selection.engine || '-',
+    enabled: draft.enabled
+  });
+
+  el.recommendationPolicyImpactSummary.innerHTML = review.impactItems
+    .map(
+      (item) => `
+        <div>
+          <dt>${escapeHtml(item.label)}</dt>
+          <dd>${escapeHtml(item.value)}</dd>
+        </div>
+      `
+    )
+    .join('');
+
+  el.recommendationPolicyReviewSummary.innerHTML = [
+    { label: '优化目标', value: review.objective },
+    { label: '生效范围', value: review.scope },
+    { label: '关键阈值摘要', value: review.thresholds },
+    { label: '当前状态', value: editor.dirty ? '有未保存修改' : '当前内容与已载入版本一致' }
+  ]
+    .map(
+      (item) => `
+        <div class="policy-review-item">
+          <strong>${escapeHtml(item.label)}</strong>
+          <span>${escapeHtml(item.value || '-')}</span>
+        </div>
+      `
+    )
+    .join('');
+}
+
+function renderRecommendationPolicyEmptyState() {
+  if (!el.recommendationPolicyEmptyState) {
+    return;
+  }
+  const editor = getRecommendationPolicyEditor();
+  if ((state.apps || []).length === 0) {
+    el.recommendationPolicyEmptyState.classList.remove('hidden');
+    el.recommendationPolicyEmptyState.innerHTML = `
+      <strong>请先新增应用，再配置调控规则</strong>
+      <p>当前还没有应用可选。先到“应用设置”里创建应用，再回来配置预算或 ASA 调控规则。</p>
+    `;
+    return;
+  }
+
+  if (isRecommendationPolicySelectionComplete(editor.selection)) {
+    const appName = productViewName(editor.selection.appKey, editor.selection.platform);
+    const engineLabel = POLICY_ENGINE_LABELS[editor.selection.engine] || editor.selection.engine;
+    if (editor.source === 'recommended') {
+      el.recommendationPolicyEmptyState.classList.remove('hidden');
+      el.recommendationPolicyEmptyState.innerHTML = `
+        <strong>当前组合还没有已保存规则</strong>
+        <p>已为 ${escapeHtml(appName)} 的 ${escapeHtml(engineLabel)} 载入推荐模板。你可以直接补阈值和限制条件后保存。</p>
+      `;
+      return;
+    }
+    if (editor.source === 'blank') {
+      el.recommendationPolicyEmptyState.classList.remove('hidden');
+      el.recommendationPolicyEmptyState.innerHTML = `
+        <strong>当前组合还没有已保存规则</strong>
+        <p>你正在从空白模板配置 ${escapeHtml(appName)} 的 ${escapeHtml(engineLabel)}。只保留系统默认值，适合从零开始填写。</p>
+      `;
+      return;
+    }
+  }
+
+  if ((state.recommendationPolicies || []).length === 0) {
+    el.recommendationPolicyEmptyState.classList.remove('hidden');
+    el.recommendationPolicyEmptyState.innerHTML = `
+      <strong>第一次配置可以按这个顺序走</strong>
+      <p>先选平台，再选应用，接着选择建议类型；填好优化目标和限制条件后，最后在保存前确认影响范围。</p>
+    `;
+    return;
+  }
+  el.recommendationPolicyEmptyState.classList.add('hidden');
+  el.recommendationPolicyEmptyState.innerHTML = '';
+}
+
+function renderRecommendationPolicyEditor() {
+  renderRecommendationPolicySelectionFields();
+  renderRecommendationPolicySelectionPreview();
+  renderRecommendationPolicyStatusCopy();
+  renderRecommendationPolicyStepState();
+  renderRecommendationPolicyFieldVisibility();
+  renderRecommendationPolicyReview();
+  renderRecommendationPolicyEmptyState();
+}
+
+function applyRecommendationPolicyDraftToInputs(draft) {
+  if (!draft) {
+    return;
+  }
+  el.recommendationPolicyMetricFamilySelect.value = draft.metricFamily || 'ecpi';
+  el.recommendationPolicyDecisionModeSelect.value = draft.decisionMode || 'deterministic';
+  el.recommendationPolicyTrafficScopeSelect.value = draft.trafficScope || 'all';
+  el.recommendationPolicyExcludeRecentInput.value = String(draft.excludeRecentDays ?? '7');
+  el.recommendationPolicyDecisionWindowInput.value = String(draft.decisionWindowDays ?? '14');
+  el.recommendationPolicyEcpiMaxInput.value = String(draft.globalTargets?.ecpi_max || '');
+  el.recommendationPolicyRoasMinInput.value = String(draft.globalTargets?.roas_min || '');
+  el.recommendationPolicyRoasGoodInput.value = String(draft.globalTargets?.roas_good || '');
+  el.recommendationPolicyCppMaxInput.value = String(draft.globalTargets?.cpp_max || '');
+  el.recommendationPolicyCppPauseInput.value = String(draft.globalTargets?.cpp_pause_threshold || '');
+  el.recommendationPolicyRelativeUnderperformInput.value = String(draft.relativeCompare?.underperform_ratio || '');
+  el.recommendationPolicyRelativePeerCountInput.value = String(draft.relativeCompare?.min_peer_count || '');
+  el.recommendationPolicyRelativeMinFailedInput.value = String(draft.relativeCompare?.min_failed_metrics || '');
+  el.recommendationPolicyDailyCapInput.value = String(draft.spendPolicy?.daily_budget_cap_usd || '');
+  el.recommendationPolicyLowSpendInput.value = String(draft.spendPolicy?.low_spend_threshold_usd || '');
+  el.recommendationPolicyHighSpendInput.value = String(draft.spendPolicy?.high_spend_threshold_usd || '');
+  el.recommendationPolicyTrendLookbackInput.value = String(draft.spendPolicy?.trend_lookback_days || '7');
+  el.recommendationPolicyUptrendRatioInput.value = String(draft.spendPolicy?.uptrend_min_ratio || '0.15');
+  el.recommendationPolicyPromptInput.value = String(draft.manualPromptMarkdown || '');
+  el.recommendationPolicyEnabledSelect.value = draft.enabled === false ? 'false' : 'true';
+  el.recommendationPolicyMediaSourceDraftInput.value = '';
+  el.recommendationPolicyContextWindowDraftInput.value = '';
+  el.recommendationPolicyForm
+    ?.querySelectorAll('input[name="recommendationPolicyRelativeMetric"]')
+    .forEach((node) => {
+      node.checked = Array.isArray(draft.relativeCompare?.metrics) && draft.relativeCompare.metrics.includes(node.value);
+    });
+}
+
+function collectRecommendationPolicyDraftFromInputs() {
+  const editor = getRecommendationPolicyEditor();
+  const baseDraft = cloneRecommendationPolicyDraft(editor.draft || createPolicyTemplate(editor.selection || {}, 'blank'));
+  baseDraft.selection = createRecommendationPolicySelection({
+    platform: el.recommendationPolicyPlatformSelect?.value,
+    appKey: el.recommendationPolicyAppSelect?.value,
+    engine: el.recommendationPolicyEngineSelect?.value
+  });
+  baseDraft.metricFamily = String(el.recommendationPolicyMetricFamilySelect?.value || 'ecpi').trim() || 'ecpi';
+  baseDraft.decisionMode = String(el.recommendationPolicyDecisionModeSelect?.value || 'deterministic').trim() || 'deterministic';
+  baseDraft.trafficScope = String(el.recommendationPolicyTrafficScopeSelect?.value || 'all').trim() || 'all';
+  baseDraft.excludeRecentDays = String(el.recommendationPolicyExcludeRecentInput?.value || '7').trim() || '7';
+  baseDraft.decisionWindowDays = String(el.recommendationPolicyDecisionWindowInput?.value || '14').trim() || '14';
+  baseDraft.globalTargets = {
+    ecpi_max: String(el.recommendationPolicyEcpiMaxInput?.value || '').trim(),
+    roas_min: String(el.recommendationPolicyRoasMinInput?.value || '').trim(),
+    roas_good: String(el.recommendationPolicyRoasGoodInput?.value || '').trim(),
+    cpp_max: String(el.recommendationPolicyCppMaxInput?.value || '').trim(),
+    cpp_pause_threshold: String(el.recommendationPolicyCppPauseInput?.value || '').trim()
+  };
+  baseDraft.relativeCompare = {
+    metrics: Array.from(
+      el.recommendationPolicyForm?.querySelectorAll('input[name="recommendationPolicyRelativeMetric"]:checked') || []
+    )
+      .map((node) => node.value)
+      .filter(Boolean),
+    underperform_ratio: String(el.recommendationPolicyRelativeUnderperformInput?.value || '').trim(),
+    min_peer_count: String(el.recommendationPolicyRelativePeerCountInput?.value || '').trim(),
+    min_failed_metrics: String(el.recommendationPolicyRelativeMinFailedInput?.value || '').trim()
+  };
+  baseDraft.spendPolicy = {
+    daily_budget_cap_usd: String(el.recommendationPolicyDailyCapInput?.value || '').trim(),
+    low_spend_threshold_usd: String(el.recommendationPolicyLowSpendInput?.value || '').trim(),
+    high_spend_threshold_usd: String(el.recommendationPolicyHighSpendInput?.value || '').trim(),
+    trend_lookback_days: String(el.recommendationPolicyTrendLookbackInput?.value || '7').trim() || '7',
+    uptrend_min_ratio: String(el.recommendationPolicyUptrendRatioInput?.value || '0.15').trim() || '0.15'
+  };
+  baseDraft.manualPromptMarkdown = String(el.recommendationPolicyPromptInput?.value || '');
+  baseDraft.enabled = el.recommendationPolicyEnabledSelect?.value !== 'false';
+  return baseDraft;
+}
+
+function syncRecommendationPolicyDirtyState() {
+  const editor = getRecommendationPolicyEditor();
+  editor.draft = collectRecommendationPolicyDraftFromInputs();
+  editor.dirty = buildRecommendationPolicySnapshot(editor.draft) !== editor.originalSnapshot;
+}
+
+function applyRecommendationPolicyMetricFamilyChange(nextMetricFamily) {
+  const editor = getRecommendationPolicyEditor();
+  const currentDraft = collectRecommendationPolicyDraftFromInputs();
+  currentDraft.metricFamily = nextMetricFamily;
+  const sanitizedDraft = sanitizeRecommendationPolicyDraft(currentDraft, nextMetricFamily);
+  const hadHiddenChanges = buildRecommendationPolicySnapshot(currentDraft) !== buildRecommendationPolicySnapshot(sanitizedDraft);
+  editor.draft = sanitizedDraft;
+  applyRecommendationPolicyDraftToInputs(sanitizedDraft);
+  syncRecommendationPolicyDirtyState();
+  renderRecommendationPolicyFieldVisibility();
+  renderRecommendationPolicyStatusCopy();
+  renderRecommendationPolicyReview();
+  if (hadHiddenChanges) {
+    showToast('已清空当前核心指标下不再适用的隐藏阈值和单独条件。');
+  }
+}
+
+function setRecommendationPolicyDraftState({ source, draft, originalRuleJson, step }) {
+  const editor = getRecommendationPolicyEditor();
+  editor.source = source;
+  editor.draft = cloneRecommendationPolicyDraft(draft);
+  editor.selection = createRecommendationPolicySelection(draft.selection);
+  editor.originalRuleJson = cloneRecommendationPolicyDraft(originalRuleJson || {});
+  editor.originalSnapshot = buildRecommendationPolicySnapshot(editor.draft);
+  editor.dirty = false;
+  editor.step = step ?? 1;
+  applyRecommendationPolicyDraftToInputs(editor.draft);
+  renderRecommendationPolicyEditor();
+}
+
+function loadRecommendationPolicySelection(selection, options = {}) {
+  const nextSelection = createRecommendationPolicySelection(selection);
+  const row = getRecommendationPolicyRowBySelection(nextSelection);
+  if (row) {
+    const draft = buildPolicyDraftFromRow(row);
+    setRecommendationPolicyDraftState({
+      source: 'saved',
+      draft,
+      originalRuleJson: row.rule_json || {},
+      step: options.step ?? 1
+    });
+    return;
+  }
+  const templateKind = options.templateKind === 'blank' ? 'blank' : 'recommended';
+  const draft = createPolicyTemplate(nextSelection, templateKind);
+  setRecommendationPolicyDraftState({
+    source: templateKind,
+    draft,
+    originalRuleJson: {},
+    step: options.step ?? 1
+  });
+}
+
+function resetRecommendationPolicyToPartialSelection(selection) {
+  const draft = createPolicyTemplate(selection, 'blank');
+  const editor = getRecommendationPolicyEditor();
+  editor.source = 'unselected';
+  editor.selection = createRecommendationPolicySelection(selection);
+  editor.draft = draft;
+  editor.originalRuleJson = {};
+  editor.originalSnapshot = buildRecommendationPolicySnapshot(draft);
+  editor.dirty = false;
+  editor.step = 1;
+  applyRecommendationPolicyDraftToInputs(draft);
+  renderRecommendationPolicyEditor();
+}
+
+function confirmRecommendationPolicyDiscard() {
+  const editor = getRecommendationPolicyEditor();
+  if (!editor.dirty) {
+    return true;
+  }
+  return window.confirm('当前有未保存的修改。放弃当前修改并切换吗？');
+}
+
+function handleRecommendationPolicySelectionChange(overrides = {}, options = {}) {
+  const editor = getRecommendationPolicyEditor();
+  const currentSelection = createRecommendationPolicySelection(editor.selection);
+  const nextSelection = createRecommendationPolicySelection({
+    platform: overrides.platform ?? el.recommendationPolicyPlatformSelect?.value,
+    appKey: overrides.appKey ?? el.recommendationPolicyAppSelect?.value,
+    engine: overrides.engine ?? el.recommendationPolicyEngineSelect?.value
+  });
+  const nextApp = (state.apps || []).find((app) => app.app_key === nextSelection.appKey);
+  if (nextSelection.appKey && !appSupportsRecommendationPlatform(nextApp, nextSelection.platform)) {
+    nextSelection.appKey = '';
+  }
+
+  if (isSameRecommendationPolicySelection(currentSelection, nextSelection) && !options.force) {
+    renderRecommendationPolicySelectionFields();
+    renderRecommendationPolicySelectionPreview();
+    return;
+  }
+
+  if (!confirmRecommendationPolicyDiscard()) {
+    renderRecommendationPolicySelectionFields();
+    return;
+  }
+
+  if (!isRecommendationPolicySelectionComplete(nextSelection)) {
+    resetRecommendationPolicyToPartialSelection(nextSelection);
+    return;
+  }
+  loadRecommendationPolicySelection(nextSelection, { step: 1 });
+}
+
+function applyRecommendationPolicyTemplate(templateKind) {
+  const editor = getRecommendationPolicyEditor();
+  if (!isRecommendationPolicySelectionComplete(editor.selection)) {
+    showToast('请先选择平台、应用和建议类型，再载入模板。', true);
+    return;
+  }
+  if (!confirmRecommendationPolicyDiscard()) {
+    renderRecommendationPolicySelectionFields();
+    return;
+  }
+  const draft = createPolicyTemplate(editor.selection, templateKind);
+  setRecommendationPolicyDraftState({
+    source: templateKind,
+    draft,
+    originalRuleJson: editor.originalRuleJson || {},
+    step: 1
+  });
+}
+
+function addRecommendationPolicyChip(kind, value) {
+  const editor = getRecommendationPolicyEditor();
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return;
+  }
+
+  if (kind === 'mediaSources') {
+    const nextValues = Array.from(new Set([...(editor.draft.mediaSources || []), normalized]));
+    editor.draft.mediaSources = nextValues;
+    el.recommendationPolicyMediaSourceDraftInput.value = '';
+  } else {
+    const numeric = Number(normalized);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      showToast('上下文窗口必须是大于 0 的整数。', true);
+      return;
+    }
+    const nextValues = Array.from(new Set([...(editor.draft.contextWindowDays || []), Math.floor(numeric)])).sort(
+      (left, right) => left - right
+    );
+    editor.draft.contextWindowDays = nextValues;
+    el.recommendationPolicyContextWindowDraftInput.value = '';
+  }
+
+  syncRecommendationPolicyDirtyState();
+  renderRecommendationPolicyFieldVisibility();
+  renderRecommendationPolicyStatusCopy();
+  renderRecommendationPolicyReview();
+}
+
+function removeRecommendationPolicyChip(kind, value) {
+  const editor = getRecommendationPolicyEditor();
+  if (kind === 'mediaSources') {
+    editor.draft.mediaSources = (editor.draft.mediaSources || []).filter((item) => item !== value);
+  } else {
+    editor.draft.contextWindowDays = (editor.draft.contextWindowDays || []).filter((item) => String(item) !== String(value));
+  }
+  syncRecommendationPolicyDirtyState();
+  renderRecommendationPolicyFieldVisibility();
+  renderRecommendationPolicyStatusCopy();
+  renderRecommendationPolicyReview();
+}
+
+function addRecommendationPolicyTargetRow(kind) {
+  const editor = getRecommendationPolicyEditor();
+  const key = kind === 'country' ? 'countryTargets' : 'mediaTargets';
+  editor.draft[key] = [...(editor.draft[key] || []), createEmptyTargetRow(kind)];
+  syncRecommendationPolicyDirtyState();
+  renderRecommendationPolicyFieldVisibility();
+  renderRecommendationPolicyStatusCopy();
+  renderRecommendationPolicyReview();
+}
+
+function upsertRecommendationPolicyTargetRow(kind, rowId, patch) {
+  const editor = getRecommendationPolicyEditor();
+  const key = kind === 'country' ? 'countryTargets' : 'mediaTargets';
+  editor.draft[key] = (editor.draft[key] || []).map((row) => (row.id === rowId ? { ...row, ...patch } : row));
+  syncRecommendationPolicyDirtyState();
+  renderRecommendationPolicyStatusCopy();
+  renderRecommendationPolicyReview();
+}
+
+function copyRecommendationPolicyTargetRow(kind, rowId) {
+  const editor = getRecommendationPolicyEditor();
+  const key = kind === 'country' ? 'countryTargets' : 'mediaTargets';
+  const row = (editor.draft[key] || []).find((item) => item.id === rowId);
+  if (!row) {
+    return;
+  }
+  const nextRow = { ...cloneRecommendationPolicyDraft(row), id: createEmptyTargetRow(kind).id };
+  editor.draft[key] = [...(editor.draft[key] || []), nextRow];
+  syncRecommendationPolicyDirtyState();
+  renderRecommendationPolicyFieldVisibility();
+  renderRecommendationPolicyStatusCopy();
+  renderRecommendationPolicyReview();
+}
+
+function removeRecommendationPolicyTargetRow(kind, rowId) {
+  const editor = getRecommendationPolicyEditor();
+  const key = kind === 'country' ? 'countryTargets' : 'mediaTargets';
+  editor.draft[key] = (editor.draft[key] || []).filter((row) => row.id !== rowId);
+  syncRecommendationPolicyDirtyState();
+  renderRecommendationPolicyFieldVisibility();
+  renderRecommendationPolicyStatusCopy();
+  renderRecommendationPolicyReview();
+}
+
+function changeRecommendationPolicyStep(targetStep) {
+  const editor = getRecommendationPolicyEditor();
+  const nextStep = Math.min(RECOMMENDATION_POLICY_STEP_COUNT, Math.max(1, Number(targetStep) || 1));
+  if (nextStep > 1 && !isRecommendationPolicySelectionComplete(editor.selection)) {
+    showToast('请先选择平台、应用和建议类型，再继续下一步。', true);
+    editor.step = 1;
+    renderRecommendationPolicyStepState();
+    return;
+  }
+  syncRecommendationPolicyDirtyState();
+  editor.step = nextStep;
+  renderRecommendationPolicyStepState();
+  renderRecommendationPolicyReview();
+}
+
+function handleRecommendationPolicyScalarInputChange() {
+  syncRecommendationPolicyDirtyState();
+  renderRecommendationPolicyFieldVisibility();
+  renderRecommendationPolicyStatusCopy();
+  renderRecommendationPolicyReview();
 }
 
 function renderRecommendationPolicies() {
@@ -1410,21 +2143,22 @@ function renderRecommendationPolicies() {
   const rows = Array.isArray(state.recommendationPolicies) ? state.recommendationPolicies : [];
   if (rows.length === 0) {
     el.recommendationPoliciesTableBody.innerHTML =
-      '<tr><td class="table-empty" colspan="8">当前还没有应用级策略，保存后会显示在这里。</td></tr>';
+      '<tr><td class="table-empty" colspan="7">还没有已保存规则。先选平台、应用和建议类型，再填写目标和限制条件。</td></tr>';
     return;
   }
   el.recommendationPoliciesTableBody.innerHTML = rows
     .map((row) => {
-      const support = row.effective_support || {};
-      const notes = Array.isArray(support.notes) ? support.notes : [];
+      const summary = buildRecommendationPolicyTableSummary(row);
       return `
         <tr>
-          <td>${escapeHtml(productViewName(row.app_key, row.platform || 'unknown'))}</td>
-          <td>${escapeHtml(platformLabel(row.platform || 'unknown'))}</td>
-          <td>${escapeHtml(String(row.engine || '-').toUpperCase())}</td>
-          <td>${escapeHtml(String(row.rule_json?.metric_family || '-'))}</td>
-          <td>${escapeHtml(String(row.rule_json?.traffic_scope || '-'))}</td>
-          <td class="table-cell-wrap">${escapeHtml(`${support.automation_level || 'partial'}${notes[0] ? ` · ${notes[0]}` : ''}`)}</td>
+          <td class="table-cell-wrap">
+            <strong>${escapeHtml(productViewName(row.app_key, row.platform || 'unknown'))}</strong>
+            <div class="hint">${escapeHtml(`${platformLabel(row.platform || 'unknown')} · ${POLICY_ENGINE_LABELS[row.engine] || row.engine}`)}</div>
+          </td>
+          <td class="table-cell-wrap">${escapeHtml(summary.objective)}</td>
+          <td class="table-cell-wrap">${escapeHtml(summary.scope)}</td>
+          <td class="table-cell-wrap">${escapeHtml(summary.thresholds)}</td>
+          <td class="table-cell-wrap">${escapeHtml(summary.supportLabel)}${summary.supportNote ? `<div class="hint">${escapeHtml(summary.supportNote)}</div>` : ''}</td>
           <td>${escapeHtml(fmtTime(row.updated_at))}</td>
           <td>
             <div class="table-actions">
@@ -1441,69 +2175,54 @@ async function loadRecommendationPolicies() {
   const body = await api('/api/recommendation-policies');
   state.recommendationPolicies = Array.isArray(body.data) ? body.data : [];
   renderRecommendationPolicies();
-  syncRecommendationPolicyFormSelection();
+  renderRecommendationPolicyEmptyState();
+  const editor = getRecommendationPolicyEditor();
+  if (isRecommendationPolicySelectionComplete(editor.selection) && !editor.dirty) {
+    loadRecommendationPolicySelection(editor.selection, { step: editor.step });
+    return;
+  }
+  renderRecommendationPolicyEditor();
+}
+
+function validateRecommendationPolicyDraftForSave(draft) {
+  const selection = draft.selection || {};
+  if (!isRecommendationPolicySelectionComplete(selection)) {
+    throw new Error('请先选择应用、平台和建议类型。');
+  }
+  const app = (state.apps || []).find((item) => item.app_key === selection.appKey);
+  if (!appSupportsRecommendationPlatform(app, selection.platform)) {
+    throw new Error('当前应用不支持这个平台，请重新选择应用或平台。');
+  }
+  if (draft.metricFamily === 'relative_compare' && (!Array.isArray(draft.relativeCompare?.metrics) || draft.relativeCompare.metrics.length === 0)) {
+    throw new Error('同类对比判断至少勾选 1 项比较指标。');
+  }
 }
 
 async function saveRecommendationPolicy(event) {
   event.preventDefault();
-  const appKey = String(el.recommendationPolicyAppSelect.value || '').trim();
-  const platform = String(el.recommendationPolicyPlatformSelect.value || '').trim().toLowerCase();
-  const engine = String(el.recommendationPolicyEngineSelect.value || '').trim().toLowerCase();
-  if (!appKey || !platform || !engine) {
-    throw new Error('请先选择应用、平台和引擎');
-  }
+  syncRecommendationPolicyDirtyState();
+  const editor = getRecommendationPolicyEditor();
+  const draft = editor.draft;
+  const selection = draft.selection;
+  validateRecommendationPolicyDraftForSave(draft);
 
-  const ruleJson = {
-    metric_family: String(el.recommendationPolicyMetricFamilySelect.value || 'ecpi').trim(),
-    decision_mode: String(el.recommendationPolicyDecisionModeSelect.value || 'deterministic').trim(),
-    traffic_scope: String(el.recommendationPolicyTrafficScopeSelect.value || 'all').trim(),
-    media_sources: String(el.recommendationPolicyMediaSourcesInput.value || '')
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean),
-    maturity_window: {
-      exclude_recent_days: Number(el.recommendationPolicyExcludeRecentInput.value || 7),
-      decision_window_days: Number(el.recommendationPolicyDecisionWindowInput.value || 14),
-      context_window_days: String(el.recommendationPolicyContextWindowsInput.value || '7,14,21')
-        .split(',')
-        .map((item) => Number(item.trim()))
-        .filter((item) => Number.isFinite(item) && item > 0)
-    },
-    targets: {
-      global_targets: {
-        ecpi_max: el.recommendationPolicyEcpiMaxInput.value ? Number(el.recommendationPolicyEcpiMaxInput.value) : undefined,
-        roas_min: el.recommendationPolicyRoasMinInput.value ? Number(el.recommendationPolicyRoasMinInput.value) : undefined,
-        roas_good: el.recommendationPolicyRoasGoodInput.value ? Number(el.recommendationPolicyRoasGoodInput.value) : undefined,
-        cpp_max: el.recommendationPolicyCppMaxInput.value ? Number(el.recommendationPolicyCppMaxInput.value) : undefined,
-        cpp_pause_threshold: el.recommendationPolicyCppPauseInput.value ? Number(el.recommendationPolicyCppPauseInput.value) : undefined
-      },
-      country_targets: parsePolicyTargetsJson(el.recommendationPolicyCountryTargetsInput.value, '国家目标 JSON'),
-      media_targets: parsePolicyTargetsJson(el.recommendationPolicyMediaTargetsInput.value, '媒体目标 JSON')
-    },
-    spend_policy: {
-      daily_budget_cap_usd: el.recommendationPolicyDailyCapInput.value ? Number(el.recommendationPolicyDailyCapInput.value) : undefined,
-      low_spend_threshold_usd: el.recommendationPolicyLowSpendInput.value ? Number(el.recommendationPolicyLowSpendInput.value) : undefined,
-      high_spend_threshold_usd: el.recommendationPolicyHighSpendInput.value ? Number(el.recommendationPolicyHighSpendInput.value) : undefined,
-      trend_lookback_days: Number(el.recommendationPolicyTrendLookbackInput.value || 7),
-      uptrend_min_ratio: Number(el.recommendationPolicyUptrendRatioInput.value || 0.15)
-    }
-  };
-
+  const ruleJson = mergeRecommendationPolicyRule(editor.originalRuleJson || {}, draft);
   await api('/api/recommendation-policies', {
     method: 'POST',
     body: JSON.stringify({
-      appKey,
-      platform,
-      engine,
-      enabled: el.recommendationPolicyEnabledSelect.value !== 'false',
+      appKey: selection.appKey,
+      platform: selection.platform,
+      engine: selection.engine,
+      enabled: draft.enabled,
       ruleJson,
-      manualPromptMarkdown: String(el.recommendationPolicyPromptInput.value || '')
+      manualPromptMarkdown: draft.manualPromptMarkdown
     })
   });
-  if (el.recommendationPolicyStatus) {
-    el.recommendationPolicyStatus.textContent = `${productViewName(appKey, platform)} / ${engine.toUpperCase()} 策略已保存。`;
-  }
-  showToast(`已保存 ${productViewName(appKey, platform)} 的应用级策略`);
+
+  editor.originalRuleJson = cloneRecommendationPolicyDraft(ruleJson);
+  editor.originalSnapshot = buildRecommendationPolicySnapshot(draft);
+  editor.dirty = false;
+  showToast(`已保存该应用的${POLICY_ENGINE_LABELS[selection.engine] || selection.engine}调控规则`);
   await loadRecommendationPolicies();
 }
 
@@ -1520,9 +2239,40 @@ async function handleRecommendationPoliciesTableClick(event) {
   if (!row) {
     return;
   }
-  applyRecommendationPolicyToForm(row);
-  showToast(`正在编辑 ${productViewName(row.app_key, row.platform || 'unknown')} / ${String(row.engine || '').toUpperCase()} 策略`);
+  if (!confirmRecommendationPolicyDiscard()) {
+    return;
+  }
+  loadRecommendationPolicySelection(
+    {
+      platform: row.platform,
+      appKey: row.app_key,
+      engine: row.engine
+    },
+    { step: 2 }
+  );
+  showToast(`已载入 ${productViewName(row.app_key, row.platform || 'unknown')} 的当前已保存规则`);
   scrollToSection('section-budget', true);
+}
+
+function handleRecommendationPolicyTargetInput(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+  const kind = String(target.dataset.policyTargetKind || '').trim();
+  const rowId = String(target.dataset.policyTargetRowId || '').trim();
+  if (!kind || !rowId) {
+    return;
+  }
+  if (target.dataset.policyTargetKey === 'true') {
+    upsertRecommendationPolicyTargetRow(kind, rowId, { key: target.value });
+    return;
+  }
+  const field = String(target.dataset.policyTargetField || '').trim();
+  if (!field) {
+    return;
+  }
+  upsertRecommendationPolicyTargetRow(kind, rowId, { [field]: target.value });
 }
 
 async function loadApps() {
@@ -1531,6 +2281,7 @@ async function loadApps() {
   renderApps();
   populateAppSelects();
   syncAsaStageFormSelection();
+  renderRecommendationPolicyEditor();
 }
 
 async function saveAppConfig(event) {
@@ -3864,7 +4615,7 @@ async function bootstrap() {
   setDefaultAsaDateRange();
   setDefaultDailyBriefDate();
   setDefaultBitableExportDate();
-  resetRecommendationPolicyForm();
+  renderRecommendationPolicyEditor();
   if (el.runtimePullTimeInput) {
     el.runtimePullTimeInput.value = '09:00';
   }
@@ -4057,9 +4808,128 @@ el.budgetDetailModalBackdrop.addEventListener('click', () => setBudgetDetailModa
 el.recommendationPolicyForm?.addEventListener('submit', (e) =>
   saveRecommendationPolicy(e).catch((err) => showToast(err.message || '应用级策略保存失败', true))
 );
-el.recommendationPolicyAppSelect?.addEventListener('change', syncRecommendationPolicyFormSelection);
-el.recommendationPolicyPlatformSelect?.addEventListener('change', syncRecommendationPolicyFormSelection);
-el.recommendationPolicyEngineSelect?.addEventListener('change', syncRecommendationPolicyFormSelection);
+el.recommendationPolicyPlatformSelect?.addEventListener('change', () =>
+  handleRecommendationPolicySelectionChange({ platform: el.recommendationPolicyPlatformSelect.value })
+);
+el.recommendationPolicyAppSelect?.addEventListener('change', () =>
+  handleRecommendationPolicySelectionChange({ appKey: el.recommendationPolicyAppSelect.value })
+);
+el.recommendationPolicyEngineSelect?.addEventListener('change', () =>
+  handleRecommendationPolicySelectionChange({ engine: el.recommendationPolicyEngineSelect.value })
+);
+el.recommendationPolicyMetricFamilySelect?.addEventListener('change', () =>
+  applyRecommendationPolicyMetricFamilyChange(String(el.recommendationPolicyMetricFamilySelect.value || 'ecpi'))
+);
+el.recommendationPolicyDecisionModeSelect?.addEventListener('change', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyTrafficScopeSelect?.addEventListener('change', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyExcludeRecentInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyDecisionWindowInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyEcpiMaxInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyRoasMinInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyRoasGoodInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyCppMaxInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyCppPauseInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyRelativeUnderperformInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyRelativePeerCountInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyRelativeMinFailedInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyDailyCapInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyLowSpendInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyHighSpendInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyTrendLookbackInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyUptrendRatioInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyPromptInput?.addEventListener('input', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyEnabledSelect?.addEventListener('change', handleRecommendationPolicyScalarInputChange);
+el.recommendationPolicyForm
+  ?.querySelectorAll('input[name="recommendationPolicyRelativeMetric"]')
+  .forEach((node) => node.addEventListener('change', handleRecommendationPolicyScalarInputChange));
+el.recommendationPolicyUseRecommendedBtn?.addEventListener('click', () => applyRecommendationPolicyTemplate('recommended'));
+el.recommendationPolicyUseBlankBtn?.addEventListener('click', () => applyRecommendationPolicyTemplate('blank'));
+el.recommendationPolicyPrevBtn?.addEventListener('click', () => changeRecommendationPolicyStep(getRecommendationPolicyEditor().step - 1));
+el.recommendationPolicyNextBtn?.addEventListener('click', () => changeRecommendationPolicyStep(getRecommendationPolicyEditor().step + 1));
+el.recommendationPolicySteps?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) {
+    return;
+  }
+  const step = Number(target.dataset.policyStepTarget || '0');
+  if (step > 0) {
+    changeRecommendationPolicyStep(step);
+  }
+});
+el.recommendationPolicyAddMediaSourceBtn?.addEventListener('click', () =>
+  addRecommendationPolicyChip('mediaSources', el.recommendationPolicyMediaSourceDraftInput?.value)
+);
+el.recommendationPolicyMediaSourceDraftInput?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') {
+    return;
+  }
+  event.preventDefault();
+  addRecommendationPolicyChip('mediaSources', el.recommendationPolicyMediaSourceDraftInput.value);
+});
+el.recommendationPolicyAddContextWindowBtn?.addEventListener('click', () =>
+  addRecommendationPolicyChip('contextWindowDays', el.recommendationPolicyContextWindowDraftInput?.value)
+);
+el.recommendationPolicyContextWindowDraftInput?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') {
+    return;
+  }
+  event.preventDefault();
+  addRecommendationPolicyChip('contextWindowDays', el.recommendationPolicyContextWindowDraftInput.value);
+});
+el.recommendationPolicyAddCountryTargetBtn?.addEventListener('click', () => addRecommendationPolicyTargetRow('country'));
+el.recommendationPolicyAddMediaTargetBtn?.addEventListener('click', () => addRecommendationPolicyTargetRow('media'));
+el.recommendationPolicyCountryTargetsList?.addEventListener('input', handleRecommendationPolicyTargetInput);
+el.recommendationPolicyMediaTargetsList?.addEventListener('input', handleRecommendationPolicyTargetInput);
+el.recommendationPolicyCountryTargetsList?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) {
+    return;
+  }
+  const kind = String(target.dataset.policyTargetKind || 'country');
+  const rowId = String(target.dataset.policyTargetRemove || target.dataset.policyTargetCopy || '').trim();
+  if (!rowId) {
+    return;
+  }
+  if (target.dataset.policyTargetRemove) {
+    removeRecommendationPolicyTargetRow(kind, rowId);
+    return;
+  }
+  if (target.dataset.policyTargetCopy) {
+    copyRecommendationPolicyTargetRow(kind, rowId);
+  }
+});
+el.recommendationPolicyMediaTargetsList?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) {
+    return;
+  }
+  const kind = String(target.dataset.policyTargetKind || 'media');
+  const rowId = String(target.dataset.policyTargetRemove || target.dataset.policyTargetCopy || '').trim();
+  if (!rowId) {
+    return;
+  }
+  if (target.dataset.policyTargetRemove) {
+    removeRecommendationPolicyTargetRow(kind, rowId);
+    return;
+  }
+  if (target.dataset.policyTargetCopy) {
+    copyRecommendationPolicyTargetRow(kind, rowId);
+  }
+});
+el.recommendationPolicyMediaSourcesChips?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) {
+    return;
+  }
+  removeRecommendationPolicyChip(String(target.dataset.policyChipKind || ''), String(target.dataset.policyChipValue || ''));
+});
+el.recommendationPolicyContextWindowChips?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) {
+    return;
+  }
+  removeRecommendationPolicyChip(String(target.dataset.policyChipKind || ''), String(target.dataset.policyChipValue || ''));
+});
 el.recommendationPoliciesTableBody?.addEventListener('click', (e) =>
   handleRecommendationPoliciesTableClick(e).catch((err) => showToast(err.message || '策略加载失败', true))
 );
