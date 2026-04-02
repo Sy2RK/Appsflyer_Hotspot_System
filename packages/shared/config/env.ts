@@ -130,7 +130,7 @@ export const env = {
   qwen: {
     baseUrl: process.env.QWEN_BASE_URL ?? '',
     apiKey: process.env.QWEN_API_KEY ?? '',
-    model: process.env.QWEN_MODEL ?? 'qwen3.5-plus',
+    model: process.env.QWEN_MODEL ?? 'qwen3.6-plus',
     thinkingEnabled: (process.env.QWEN_THINKING_ENABLED ?? 'true').toLowerCase() !== 'false',
     timeoutMs: optionalNumber('QWEN_TIMEOUT_MS', 15000),
     maxTokens: optionalNumber('QWEN_MAX_TOKENS', 1200)

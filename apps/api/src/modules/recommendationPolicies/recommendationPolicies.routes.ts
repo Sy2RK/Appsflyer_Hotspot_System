@@ -27,6 +27,16 @@ const defaultDeps: RecommendationPoliciesRouteDeps = {
   writeOperationLog
 };
 
+function isRecommendationPolicyEnginePlatformAllowed(engine: string, platform: string): boolean {
+  if (!engine || !platform) {
+    return true;
+  }
+  if (engine === 'asa') {
+    return platform === 'ios';
+  }
+  return ['ios', 'android', 'unknown'].includes(platform);
+}
+
 function appSupportsRecommendationPlatform(
   app: Awaited<ReturnType<typeof getAppByKey>>,
   platform: string
@@ -98,6 +108,13 @@ export function createRecommendationPoliciesRouter(
           ok: false,
           error: 'invalid_platform',
           message: '当前平台无效，请重新选择平台。'
+        });
+      }
+      if (!isRecommendationPolicyEnginePlatformAllowed(engine, platform)) {
+        return res.status(400).json({
+          ok: false,
+          error: 'asa_requires_ios',
+          message: 'ASA 规则只支持 iOS，请改为 iOS 后再保存。'
         });
       }
 

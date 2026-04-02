@@ -76,10 +76,14 @@ export interface AiChatResult {
 
 const MAX_HISTORY_MESSAGES = 96;
 const MAX_HISTORY_CHARS_PER_MESSAGE = 32000;
+const MAX_HISTORY_TOTAL_CHARS = 120000;
 const MAX_BUCKET_ROWS = 40;
 const MAX_GROUP_ROWS = 10;
+const MAX_CONTEXT_PACK_PROMPT_CHARS = 24000;
+const MAX_CONTEXT_PACK_SUMMARY_CHARS = 7000;
+const MIN_CONTEXT_PACK_SUMMARY_CHARS = 240;
 const AI_CHAT_TIMEOUT_ERROR = 'ai_chat_timeout';
-const AI_CHAT_REQUEST_TIMEOUT_MS = Math.max(env.qwen.timeoutMs, 120000);
+const AI_CHAT_REQUEST_TIMEOUT_MS = Math.max(env.qwen.timeoutMs, 90000);
 
 const PULL_METRICS = new Set(['installs', 'clicks', 'total_cost']);
 const PUSH_METRICS = new Set(['revenue', 'event_count', 'purchase_count']);
@@ -136,7 +140,7 @@ function sliceTail<T>(items: T[], limit: number): T[] {
 }
 
 function normalizeHistory(history: AiChatHistoryMessage[]): AiChatHistoryMessage[] {
-  return sliceTail(
+  const trimmed = sliceTail(
     history
       .filter((item) => item && (item.role === 'user' || item.role === 'assistant') && hasText(item.content))
       .map((item) => ({
@@ -145,6 +149,19 @@ function normalizeHistory(history: AiChatHistoryMessage[]): AiChatHistoryMessage
       })),
     MAX_HISTORY_MESSAGES
   );
+
+  let totalChars = 0;
+  const kept: AiChatHistoryMessage[] = [];
+  for (let index = trimmed.length - 1; index >= 0; index -= 1) {
+    const item = trimmed[index];
+    const nextChars = totalChars + item.content.length;
+    if (kept.length > 0 && nextChars > MAX_HISTORY_TOTAL_CHARS) {
+      break;
+    }
+    kept.push(item);
+    totalChars = nextChars;
+  }
+  return kept.reverse();
 }
 
 function extractTextFromMessageContent(raw: unknown): string {
@@ -190,6 +207,51 @@ function formatMetricLabel(metric: string): string {
     default:
       return metric;
   }
+}
+
+function truncateText(value: string, maxChars: number): { text: string; truncated: boolean } {
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return { text: '', truncated: false };
+  }
+  if (!Number.isFinite(maxChars) || maxChars <= 0 || normalized.length <= maxChars) {
+    return { text: normalized, truncated: false };
+  }
+  const clipped = normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd();
+  return {
+    text: `${clipped}…`,
+    truncated: true
+  };
+}
+
+function formatContextPackFilterValue(value: unknown): string {
+  if (typeof value === 'boolean') {
+    return value ? '是' : '否';
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : '';
+  }
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  return '';
+}
+
+function buildContextPackMetaLine(pack: AiBuiltContextPack): string {
+  const metaParts = [`条目 ${pack.rowCount}`];
+  if (pack.truncated) {
+    metaParts.push('结果已按 Top N 截断');
+  }
+  const filterParts = Object.entries(pack.appliedFilters || {})
+    .flatMap(([key, value]) => {
+      const text = formatContextPackFilterValue(value);
+      return text ? [`${key}=${text}`] : [];
+    })
+    .slice(0, 6);
+  if (filterParts.length > 0) {
+    metaParts.push(`筛选：${filterParts.join('；')}`);
+  }
+  return `元信息：${metaParts.join('；')}`;
 }
 
 function formatDimensionLabel(templateId: AiContextPackTemplateId): string {
@@ -839,17 +901,48 @@ export async function buildAiContextPacks(
   return { packs, warnings };
 }
 
-function buildContextPrompt(packs: AiBuiltContextPack[]): string {
+export function buildAiContextPrompt(packs: AiBuiltContextPack[]): {
+  prompt: string;
+  warnings: string[];
+  packsUsed: AiBuiltContextPack[];
+} {
   if (packs.length === 0) {
-    return '';
+    return {
+      prompt: '',
+      warnings: [],
+      packsUsed: []
+    };
   }
-  return [
-    '以下是当前工作台自动附带的业务上下文，请优先基于这些数据回答。若上下文不足，请明确说明，不要编造不存在的数据。',
-    ...packs.map(
-      (pack, index) =>
-        `\n[上下文包 ${index + 1}] ${pack.title}\n${pack.summaryMarkdown}\n结构化摘要：${JSON.stringify(pack.structured)}`
-    )
-  ].join('\n');
+  const intro = '以下是当前工作台自动附带的业务上下文，请优先基于这些数据回答。若上下文不足，请明确说明，不要编造不存在的数据。';
+  const sections: string[] = [intro];
+  const warnings: string[] = [];
+  const packsUsed: AiBuiltContextPack[] = [];
+  let usedChars = intro.length;
+
+  for (const pack of packs) {
+    const metaLine = buildContextPackMetaLine(pack);
+    const sectionHeader = `\n[上下文包 ${packsUsed.length + 1}] ${pack.title}\n${metaLine}\n`;
+    const baseSummary = truncateText(pack.summaryMarkdown, MAX_CONTEXT_PACK_SUMMARY_CHARS);
+    const remainingChars = MAX_CONTEXT_PACK_PROMPT_CHARS - usedChars - sectionHeader.length;
+    if (remainingChars < MIN_CONTEXT_PACK_SUMMARY_CHARS) {
+      warnings.push(`上下文包「${pack.title}」因总上下文过长已跳过。`);
+      continue;
+    }
+    const finalSummary = truncateText(baseSummary.text || '暂无可用摘要。', remainingChars);
+    const section = `${sectionHeader}${finalSummary.text}`;
+    sections.push(section);
+    packsUsed.push(pack);
+    usedChars += section.length;
+    if (baseSummary.truncated || finalSummary.truncated) {
+      warnings.push(`上下文包「${pack.title}」内容较长，已自动截短。`);
+    }
+  }
+
+  return {
+    prompt: packsUsed.length > 0 ? sections.join('\n') : '',
+    warnings,
+    packsUsed
+  };
 }
 
 async function requestQwenAiChat(input: {
@@ -945,7 +1038,10 @@ export async function runAiChat(input: {
   const promptMessage = hasText(input.message) ? String(input.message).trim() : '请结合我附带的上下文和图片，给出中文分析。';
   const normalizedHistory = normalizeHistory(input.history);
   const { packs, warnings } = await buildAiContextPacks(input.contextPacks);
-  const shouldEnableThinking = env.qwen.thinkingEnabled && (input.images.length > 0 || packs.length > 0);
+  const contextPromptResult = buildAiContextPrompt(packs);
+  const mergedWarnings = [...warnings, ...contextPromptResult.warnings];
+  const shouldEnableThinking =
+    env.qwen.thinkingEnabled && (input.images.length > 0 || contextPromptResult.packsUsed.length > 0);
 
   if (!env.qwen.baseUrl || !env.qwen.apiKey) {
     throw new Error('qwen_config_missing');
@@ -978,7 +1074,7 @@ export async function runAiChat(input: {
     }))
   ];
 
-  const contextPrompt = buildContextPrompt(packs);
+  const contextPrompt = contextPromptResult.prompt;
   if (contextPrompt) {
     messages.push({
       role: 'system',
@@ -990,24 +1086,11 @@ export async function runAiChat(input: {
     content: userContent
   });
 
-  try {
-    return await requestQwenAiChat({
-      messages,
-      packs,
-      warnings,
-      images: input.images,
-      thinkingEnabled: shouldEnableThinking
-    });
-  } catch (error) {
-    if (shouldEnableThinking && error instanceof Error && error.message === AI_CHAT_TIMEOUT_ERROR) {
-      return await requestQwenAiChat({
-        messages,
-        packs,
-        warnings,
-        images: input.images,
-        thinkingEnabled: false
-      });
-    }
-    throw error;
-  }
+  return requestQwenAiChat({
+    messages,
+    packs: contextPromptResult.packsUsed,
+    warnings: mergedWarnings,
+    images: input.images,
+    thinkingEnabled: shouldEnableThinking
+  });
 }

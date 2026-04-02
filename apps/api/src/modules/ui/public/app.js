@@ -2464,6 +2464,44 @@ function isSameRecommendationPolicySelection(left, right) {
   );
 }
 
+function isRecommendationPolicyEnginePlatformAllowed(engine, platform) {
+  if (!engine || !platform) {
+    return true;
+  }
+  if (engine === 'asa') {
+    return platform === 'ios';
+  }
+  return ['ios', 'android', 'unknown'].includes(platform);
+}
+
+function buildRecommendationPolicyPlatformOptions(engine) {
+  const items = ['<option value="">请选择平台</option>', '<option value="ios">iOS</option>'];
+  if (engine !== 'asa') {
+    items.push('<option value="android">Android</option>', '<option value="unknown">未知</option>');
+  }
+  return items.join('');
+}
+
+function normalizeRecommendationPolicySelectionForEngine(selection) {
+  const nextSelection = createRecommendationPolicySelection(selection);
+  let platformAdjusted = false;
+  let appCleared = false;
+  if (!isRecommendationPolicyEnginePlatformAllowed(nextSelection.engine, nextSelection.platform)) {
+    nextSelection.platform = nextSelection.engine === 'asa' ? 'ios' : '';
+    platformAdjusted = true;
+  }
+  const nextApp = (state.apps || []).find((app) => app.app_key === nextSelection.appKey);
+  if (nextSelection.appKey && !appSupportsRecommendationPlatform(nextApp, nextSelection.platform)) {
+    nextSelection.appKey = '';
+    appCleared = true;
+  }
+  return {
+    selection: nextSelection,
+    platformAdjusted,
+    appCleared
+  };
+}
+
 function policyTargetFieldsForMetricFamily(metricFamily) {
   return RECOMMENDATION_POLICY_TARGET_FIELDS[metricFamily] || RECOMMENDATION_POLICY_TARGET_FIELDS.ecpi;
 }
@@ -2512,6 +2550,7 @@ function renderRecommendationPolicySelectionFields() {
   }
   const editor = getRecommendationPolicyEditor();
   const selection = editor.selection || createRecommendationPolicySelection();
+  el.recommendationPolicyPlatformSelect.innerHTML = buildRecommendationPolicyPlatformOptions(selection.engine);
   el.recommendationPolicyPlatformSelect.value = selection.platform || '';
   el.recommendationPolicyEngineSelect.value = selection.engine || '';
   el.recommendationPolicyAppSelect.innerHTML = buildRecommendationPolicyAppOptions(selection.platform);
@@ -3054,15 +3093,13 @@ function confirmRecommendationPolicyDiscard() {
 function handleRecommendationPolicySelectionChange(overrides = {}, options = {}) {
   const editor = getRecommendationPolicyEditor();
   const currentSelection = createRecommendationPolicySelection(editor.selection);
-  const nextSelection = createRecommendationPolicySelection({
+  const requestedSelection = createRecommendationPolicySelection({
     platform: overrides.platform ?? el.recommendationPolicyPlatformSelect?.value,
     appKey: overrides.appKey ?? el.recommendationPolicyAppSelect?.value,
     engine: overrides.engine ?? el.recommendationPolicyEngineSelect?.value
   });
-  const nextApp = (state.apps || []).find((app) => app.app_key === nextSelection.appKey);
-  if (nextSelection.appKey && !appSupportsRecommendationPlatform(nextApp, nextSelection.platform)) {
-    nextSelection.appKey = '';
-  }
+  const { selection: nextSelection, platformAdjusted, appCleared } =
+    normalizeRecommendationPolicySelectionForEngine(requestedSelection);
 
   if (isSameRecommendationPolicySelection(currentSelection, nextSelection) && !options.force) {
     renderRecommendationPolicySelectionFields();
@@ -3077,7 +3114,19 @@ function handleRecommendationPolicySelectionChange(overrides = {}, options = {})
 
   if (!isRecommendationPolicySelectionComplete(nextSelection)) {
     resetRecommendationPolicyToPartialSelection(nextSelection);
+    if (platformAdjusted && nextSelection.engine === 'asa') {
+      showToast('ASA 规则只支持 iOS，已自动切换到 iOS。');
+    }
+    if (appCleared) {
+      showToast('当前应用不支持新的平台组合，请重新选择应用。', true);
+    }
     return;
+  }
+  if (platformAdjusted && nextSelection.engine === 'asa') {
+    showToast('ASA 规则只支持 iOS，已自动切换到 iOS。');
+  }
+  if (appCleared) {
+    showToast('当前应用不支持新的平台组合，请重新选择应用。', true);
   }
   loadRecommendationPolicySelection(nextSelection, { step: 1 });
 }
@@ -3114,11 +3163,11 @@ function addRecommendationPolicyChip(kind, value) {
     el.recommendationPolicyMediaSourceDraftInput.value = '';
   } else {
     const numeric = Number(normalized);
-    if (!Number.isFinite(numeric) || numeric <= 0) {
+    if (!Number.isInteger(numeric) || numeric <= 0) {
       showToast('上下文窗口必须是大于 0 的整数。', true);
       return;
     }
-    const nextValues = Array.from(new Set([...(editor.draft.contextWindowDays || []), Math.floor(numeric)])).sort(
+    const nextValues = Array.from(new Set([...(editor.draft.contextWindowDays || []), numeric])).sort(
       (left, right) => left - right
     );
     editor.draft.contextWindowDays = nextValues;
@@ -3262,6 +3311,9 @@ function validateRecommendationPolicyDraftForSave(draft) {
   const selection = draft.selection || {};
   if (!isRecommendationPolicySelectionComplete(selection)) {
     throw new Error('请先选择应用、平台和建议类型。');
+  }
+  if (selection.engine === 'asa' && selection.platform !== 'ios') {
+    throw new Error('ASA 规则只支持 iOS，请先改为 iOS。');
   }
   const app = (state.apps || []).find((item) => item.app_key === selection.appKey);
   if (!appSupportsRecommendationPlatform(app, selection.platform)) {

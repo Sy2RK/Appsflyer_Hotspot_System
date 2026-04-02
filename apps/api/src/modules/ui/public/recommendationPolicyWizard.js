@@ -46,6 +46,7 @@ export const POLICY_RELATIVE_METRIC_LABELS = {
 export const POLICY_ERROR_MESSAGES = {
   appKey_platform_engine_required: '请先选择应用、平台和建议类型。',
   invalid_platform: '当前平台无效，请重新选择平台。',
+  asa_requires_ios: 'ASA 规则只支持 iOS，请改为 iOS 后再保存。',
   app_not_found: '未找到对应应用，请先检查应用是否已在应用设置里创建。',
   app_platform_not_supported: '当前应用不支持这个平台，请重新选择应用或平台。',
   invalid_metric_family: '优化目标类型无效，请重新选择核心指标。',
@@ -91,6 +92,11 @@ function toNumberOrUndefined(value) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function toPositiveIntegerOrUndefined(value) {
+  const parsed = toNumberOrUndefined(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 function normalizeStringList(values) {
   return Array.from(
     new Set(
@@ -99,6 +105,16 @@ function normalizeStringList(values) {
         .filter(Boolean)
     )
   );
+}
+
+function normalizePositiveIntegerList(values) {
+  return Array.from(
+    new Set(
+      normalizeStringList(values)
+        .map((item) => toPositiveIntegerOrUndefined(item))
+        .filter((item) => item !== undefined)
+    )
+  ).sort((left, right) => left - right);
 }
 
 function sortObjectKeys(value) {
@@ -238,7 +254,7 @@ export function buildPolicyDraftFromRow(row = {}) {
   draft.mediaSources = normalizeStringList(rule.media_sources);
   draft.excludeRecentDays = toInputValue(maturityWindow.exclude_recent_days ?? 7);
   draft.decisionWindowDays = toInputValue(maturityWindow.decision_window_days ?? 14);
-  draft.contextWindowDays = normalizeStringList(maturityWindow.context_window_days).map(Number).filter((item) => Number.isFinite(item) && item > 0);
+  draft.contextWindowDays = normalizePositiveIntegerList(maturityWindow.context_window_days);
   if (draft.contextWindowDays.length === 0) {
     draft.contextWindowDays = DEFAULT_CONTEXT_WINDOWS.slice();
   }
@@ -333,9 +349,7 @@ export function mergeRecommendationPolicyRule(baseRule = {}, draft = {}) {
   result.maturity_window = maturityWindow;
   maturityWindow.exclude_recent_days = toNumberOrUndefined(sanitizedDraft.excludeRecentDays) ?? 7;
   maturityWindow.decision_window_days = toNumberOrUndefined(sanitizedDraft.decisionWindowDays) ?? 14;
-  maturityWindow.context_window_days = normalizeStringList(sanitizedDraft.contextWindowDays)
-    .map(Number)
-    .filter((item) => Number.isFinite(item) && item > 0);
+  maturityWindow.context_window_days = normalizePositiveIntegerList(sanitizedDraft.contextWindowDays);
   if (maturityWindow.context_window_days.length === 0) {
     maturityWindow.context_window_days = DEFAULT_CONTEXT_WINDOWS.slice();
   }

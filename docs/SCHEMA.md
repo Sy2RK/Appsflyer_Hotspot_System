@@ -88,13 +88,14 @@
 - `media_source`, `country`, `campaign`
 - `keyword`, `match_type`
 - `installs`, `total_cost`
-- `purchase_count`, `revenue_d7`
+- `purchase_count`, `revenue_d7`, `revenue_source_missing`
 - `ctr`, `cvr`, `cpi`, `cpp`, `d7_roas`
 - `version`
 
 说明：
 - 供 `budget-advisor` 的 `d7_roas_cpp` / `relative_compare` evaluator 使用
 - 使用 `install_time` 作为 cohort 起点，回收窗口固定按安装后 7 天聚合
+- `revenue_source_missing=1` 表示该安装 cohort 没有匹配到收入来源，只代表回收数据缺口，不等于真实 0 收入
 
 ### `asa_raw_installs`
 - ASA Raw Data 安装明细（仅 `Apple Search Ads`）

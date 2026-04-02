@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS hotspot.keyword_value_daily_metrics (
   total_cost Float64,
   purchase_count Float64,
   revenue_d7 Float64,
+  revenue_source_missing UInt8 DEFAULT 0,
   ctr Float64,
   cvr Float64,
   cpi Float64,
@@ -160,6 +161,8 @@ CREATE TABLE IF NOT EXISTS hotspot.keyword_value_daily_metrics (
 ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(install_date)
 ORDER BY (app_key, platform, install_date, media_source, country, campaign, keyword, match_type);
+
+ALTER TABLE hotspot.keyword_value_daily_metrics ADD COLUMN IF NOT EXISTS revenue_source_missing UInt8 DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS hotspot.asa_raw_installs (
   install_date Date,

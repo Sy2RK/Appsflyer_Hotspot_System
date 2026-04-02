@@ -117,6 +117,14 @@ function toOptionalPositiveNumber(value: unknown): number | undefined {
   return parsed;
 }
 
+function toPositiveInteger(value: unknown): number | undefined {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return parsed;
+}
+
 function normalizeStringArray(value: unknown): string[] {
   if (Array.isArray(value)) {
     return Array.from(
@@ -138,6 +146,16 @@ function normalizeStringArray(value: unknown): string[] {
     );
   }
   return [];
+}
+
+function normalizePositiveIntegerArray(value: unknown): number[] {
+  return Array.from(
+    new Set(
+      normalizeStringArray(value)
+        .map((item) => toPositiveInteger(item))
+        .filter((item): item is number => item !== undefined)
+    )
+  ).sort((left, right) => left - right);
 }
 
 function normalizeThresholdTargets(value: unknown): RecommendationThresholdTargets {
@@ -187,10 +205,7 @@ function validateThresholdMap(scope: string, value: unknown): void {
 
 function normalizeMaturityWindow(value: unknown): RecommendationPolicyMaturityWindow {
   const raw = asObject(value);
-  const contextWindowDays = normalizeStringArray(raw.context_window_days)
-    .map((item) => Number(item))
-    .filter((item) => Number.isFinite(item) && item > 0)
-    .map((item) => Math.floor(item));
+  const contextWindowDays = normalizePositiveIntegerArray(raw.context_window_days);
 
   return {
     exclude_recent_days: Math.floor(toPositiveNumber(raw.exclude_recent_days, 7, 0, 60)),
@@ -360,6 +375,11 @@ export function validateRecommendationPolicyRule(value: unknown): Recommendation
     typeof maturityWindow.context_window_days !== 'string'
   ) {
     throw new RecommendationPolicyValidationError('invalid_window', 'context_window_days 必须是数组或逗号分隔字符串');
+  }
+  for (const item of normalizeStringArray(maturityWindow.context_window_days)) {
+    if (toPositiveInteger(item) === undefined) {
+      throw new RecommendationPolicyValidationError('invalid_window', 'context_window_days 必须是大于 0 的整数');
+    }
   }
 
   const targets = asObject(raw.targets);
@@ -676,23 +696,19 @@ export function summarizeRecommendationPolicySupport(
     supportedFeatures.push('d7_roas_cpp');
     if (engine === 'budget') {
       automationLevel = 'partial';
-      notes.push('budget 引擎的 D7 ROAS / CPP 依赖 keyword_value_daily_metrics 中已有成熟价值数据。');
+      notes.push('已支持按 7 日回收和付费成本做判断，但需要等待回收数据逐步沉淀。');
     }
   }
 
   if (rule.metric_family === 'relative_compare') {
     automationLevel = 'partial';
     supportedFeatures.push('relative_compare');
-    notes.push('relative_compare 已接入 evaluator，当前按 campaign 代理比较，CTR 仍依赖后续素材级事实补齐。');
+    notes.push('已支持和同类对象比较表现，适合发现明显落后的项。');
   }
 
   if (Object.keys(rule.targets.country_targets).length > 0) {
     supportedFeatures.push('country_targets');
-    if (engine === 'budget') {
-      notes.push('budget 引擎会在国家聚合口径可用时参与国家级 eCPI 阈值判断。');
-    } else {
-      notes.push('ASA 引擎会优先读取国家级 eCPI 阈值。');
-    }
+    notes.push('已支持按国家单独设置阈值，命中时会优先套用更细的规则。');
   }
 
   if (rule.traffic_scope === 'asa_only') {
@@ -705,6 +721,6 @@ export function summarizeRecommendationPolicySupport(
   return {
     automation_level: automationLevel,
     supported_features: Array.from(new Set(supportedFeatures)),
-    notes
+    notes: Array.from(new Set(notes))
   };
 }

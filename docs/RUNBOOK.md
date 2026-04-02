@@ -52,7 +52,7 @@ cp .env.example .env
 # Qwen（OpenAI兼容）
 # QWEN_BASE_URL=
 # QWEN_API_KEY=
-# QWEN_MODEL=qwen3.5-plus
+# QWEN_MODEL=qwen3.6-plus
 # QWEN_THINKING_ENABLED=true
 cd infra
 docker compose up -d --build
@@ -82,7 +82,7 @@ Web UI 新增能力:
 - 顶部全局调度设置（统一编辑 Pull 时间 / 推送时间）
 - 自动闭环调度（Pull ready -> budget-advisor / asa-keywords -> daily-brief / asa-daily-brief -> bitable-export）
 - 右下角 `Guru Ads Agent`
-  - 抽屉式 AI 对话窗，当前复用 Qwen 3.5
+  - 抽屉式 AI 对话窗，当前复用 Qwen 3.6
   - 支持多轮对话、图片上传、数据库聚合上下文包
   - 面板内保留 Gemini 官网外部工具快捷入口
 - 规则 DSL 表单编辑（并可与 JSON 双向同步）

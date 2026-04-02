@@ -1,4 +1,4 @@
-import { chQuery } from './clickhouse.js';
+import { chExec, chQuery } from './clickhouse.js';
 import { env } from '../config/env.js';
 import { explainBudgetRecommendationWithLlm } from './llm.js';
 import { getDateStringInTimezone, shiftDateString } from './businessDate.js';
@@ -96,6 +96,7 @@ interface BudgetValueFact {
   total_cost: number;
   purchase_count: number;
   revenue_d7: number;
+  revenue_source_missing: number;
   ctr: number;
   cvr: number;
   cpi: number;
@@ -176,6 +177,21 @@ function buildLookbackStartDate(lookbackDays: number): string {
 
 function stateKey(platform: string, keyword: string, matchType: string): string {
   return `${platform}|${keyword}|${matchType}`;
+}
+
+let ensureKeywordValueSchemaPromise: Promise<void> | null = null;
+
+async function ensureKeywordValueSchema(): Promise<void> {
+  if (!ensureKeywordValueSchemaPromise) {
+    ensureKeywordValueSchemaPromise = chExec(
+      `ALTER TABLE keyword_value_daily_metrics
+        ADD COLUMN IF NOT EXISTS revenue_source_missing UInt8 DEFAULT 0`
+    ).catch((error) => {
+      ensureKeywordValueSchemaPromise = null;
+      throw error;
+    });
+  }
+  await ensureKeywordValueSchemaPromise;
 }
 
 function median(values: number[]): number {
@@ -274,12 +290,13 @@ export function finalizeBudgetDecisionPlan(input: {
 function resolvePrimaryMetric(
   _appKey: string,
   _platform: string,
-  policy: RecommendationPolicyRuleJson | null
+  policy: RecommendationPolicyRuleJson | null,
+  options: { valueCoverageMissing?: boolean } = {}
 ): { primaryMetric: PrimaryMetric; metricMode: MetricMode } {
   if (policy?.metric_family === 'd7_roas_cpp') {
     return {
       primaryMetric: 'roas',
-      metricMode: 'active'
+      metricMode: options.valueCoverageMissing ? 'roas_pending_revenue' : 'active'
     };
   }
   if (policy?.metric_family === 'relative_compare') {
@@ -287,7 +304,7 @@ function resolvePrimaryMetric(
     if (relativeMetrics.has('roas') && !relativeMetrics.has('cpi')) {
       return {
         primaryMetric: 'roas',
-        metricMode: 'active'
+        metricMode: options.valueCoverageMissing ? 'roas_pending_revenue' : 'active'
       };
     }
   }
@@ -669,6 +686,7 @@ async function queryBudgetCountryFacts(appKey: string, from: string, to: string)
 
 async function queryBudgetValueFacts(appKey: string, from: string, to: string): Promise<BudgetValueFact[]> {
   try {
+    await ensureKeywordValueSchema();
     const rows = await chQuery<Record<string, unknown>>(
       `SELECT
           toString(install_date) AS date,
@@ -683,6 +701,7 @@ async function queryBudgetValueFacts(appKey: string, from: string, to: string): 
           total_cost,
           purchase_count,
           revenue_d7,
+          revenue_source_missing,
           ctr,
           cvr,
           cpi,
@@ -707,6 +726,7 @@ async function queryBudgetValueFacts(appKey: string, from: string, to: string): 
       total_cost: safeNumber(row.total_cost),
       purchase_count: safeNumber(row.purchase_count),
       revenue_d7: safeNumber(row.revenue_d7),
+      revenue_source_missing: safeNumber(row.revenue_source_missing),
       ctr: safeNumber(row.ctr),
       cvr: safeNumber(row.cvr),
       cpi: safeNumber(row.cpi),
@@ -917,6 +937,7 @@ export async function runBudgetAdvisorCycle(
     apps: apps.length,
     report_date: date
   });
+  await ensureKeywordValueSchema();
   emitProgress();
 
   for (const app of apps) {
@@ -988,6 +1009,7 @@ export async function runBudgetAdvisorCycle(
         policy: RecommendationPolicyRuleJson | null;
         targetEcpi: number;
         volumeTier: VolumeTier;
+        valueCoverageMissing: boolean;
         currentRoas: number | null;
         targetRoas: number | null;
         currentCpp: number | null;
@@ -1047,6 +1069,8 @@ export async function runBudgetAdvisorCycle(
         const relevantValueFacts = (valueFactsByKey.get(factKey(fact.platform, fact.media_source, fact.keyword, fact.match_type)) ?? []).filter(
           (row) => row.date >= policyWindow.from && row.date <= policyWindow.to
         );
+        const relevantValueFactsWithRevenue = relevantValueFacts.filter((row) => row.revenue_source_missing !== 1);
+        const valueCoverageMissing = relevantValueFacts.length > 0 && relevantValueFactsWithRevenue.length === 0;
         const relevantCountryFacts = aggregateBudgetCountryWindowFacts(
           (countryFactsByKey.get(factKey(fact.platform, fact.media_source, fact.keyword, fact.match_type)) ?? []).filter(
             (row) => policy?.targets.country_targets?.[row.country]
@@ -1054,9 +1078,9 @@ export async function runBudgetAdvisorCycle(
           policyWindow.from,
           policyWindow.to
         );
-        const totalValueCost = relevantValueFacts.reduce((sum, row) => sum + row.total_cost, 0);
-        const totalValueRevenue = relevantValueFacts.reduce((sum, row) => sum + row.revenue_d7, 0);
-        const totalValuePurchases = relevantValueFacts.reduce((sum, row) => sum + row.purchase_count, 0);
+        const totalValueCost = relevantValueFactsWithRevenue.reduce((sum, row) => sum + row.total_cost, 0);
+        const totalValueRevenue = relevantValueFactsWithRevenue.reduce((sum, row) => sum + row.revenue_d7, 0);
+        const totalValuePurchases = relevantValueFactsWithRevenue.reduce((sum, row) => sum + row.purchase_count, 0);
         const currentRoas = totalValueCost > 0 ? totalValueRevenue / totalValueCost : null;
         const currentCpp = totalValuePurchases > 0 ? totalValueCost / totalValuePurchases : null;
         const currentCtr = averageOrNull(relevantValueFacts.map((row) => row.ctr));
@@ -1079,7 +1103,7 @@ export async function runBudgetAdvisorCycle(
 
         const valueDriven =
           policy?.metric_family === 'd7_roas_cpp' &&
-          relevantValueFacts.length > 0 &&
+          relevantValueFactsWithRevenue.length > 0 &&
           ((thresholdTargets.roas_min ?? 0) > 0 || (thresholdTargets.cpp_max ?? 0) > 0);
         const relativeCompareDriven = policy?.metric_family === 'relative_compare';
         const peerFacts = (factsByPlatformMedia.get(`${fact.platform}|${fact.media_source}`) ?? []).filter(
@@ -1090,8 +1114,9 @@ export async function runBudgetAdvisorCycle(
             const peerValueRows = (valueFactsByKey.get(
               factKey(peer.platform, peer.media_source, peer.keyword, peer.match_type)
             ) ?? []).filter((row) => row.date >= policyWindow.from && row.date <= policyWindow.to);
-            const peerCost = peerValueRows.reduce((sum, row) => sum + row.total_cost, 0);
-            const peerRevenue = peerValueRows.reduce((sum, row) => sum + row.revenue_d7, 0);
+            const peerValueRowsWithRevenue = peerValueRows.filter((row) => row.revenue_source_missing !== 1);
+            const peerCost = peerValueRowsWithRevenue.reduce((sum, row) => sum + row.total_cost, 0);
+            const peerRevenue = peerValueRowsWithRevenue.reduce((sum, row) => sum + row.revenue_d7, 0);
             return peerCost > 0 ? peerRevenue / peerCost : NaN;
           })
           .filter((value) => Number.isFinite(value)) as number[];
@@ -1182,6 +1207,7 @@ export async function runBudgetAdvisorCycle(
           policy,
           targetEcpi: relativeTargetEcpi,
           volumeTier,
+          valueCoverageMissing,
           currentRoas,
           targetRoas:
             policy?.metric_family === 'd7_roas_cpp'
@@ -1195,7 +1221,7 @@ export async function runBudgetAdvisorCycle(
           finalDecision,
           failedMetrics: relativeDecision?.failedMetrics ?? [],
           strongMetrics: relativeDecision?.strongMetrics ?? [],
-          metricSettings: resolvePrimaryMetric(app.app_key, fact.platform, policy)
+          metricSettings: resolvePrimaryMetric(app.app_key, fact.platform, policy, { valueCoverageMissing })
         });
       }
 
@@ -1210,6 +1236,7 @@ export async function runBudgetAdvisorCycle(
           policy,
           finalDecision,
           metricSettings,
+          valueCoverageMissing,
           currentRoas,
           targetRoas,
           currentCpp,
@@ -1264,7 +1291,8 @@ export async function runBudgetAdvisorCycle(
             current_cpp: currentCpp,
             target_cpp: targetCpp,
             current_roas: currentRoas,
-            target_roas: targetRoas
+            target_roas: targetRoas,
+            value_coverage_missing: valueCoverageMissing
           },
           manualPromptMarkdown:
             policyMap.get(buildRecommendationPolicyKey(app.app_key, fact.platform, 'budget'))?.manual_prompt_markdown ?? null,
@@ -1316,6 +1344,7 @@ export async function runBudgetAdvisorCycle(
             target_roas: targetRoas,
             current_cpp: currentCpp,
             target_cpp: targetCpp,
+            value_coverage_missing: valueCoverageMissing,
             budget_action: finalDecision.action,
             execution_actions: finalDecision.executionActions,
             scenario_tags: finalDecision.scenarioTags,

@@ -1,4 +1,4 @@
-import { chInsertJSON, chQuery } from './clickhouse.js';
+import { chExec, chInsertJSON, chQuery } from './clickhouse.js';
 import {
   listApps,
   listKeywordExtractRules,
@@ -101,6 +101,7 @@ interface KeywordValueFactRow {
   total_cost: number;
   purchase_count: number;
   revenue_d7: number;
+  revenue_source_missing: number;
   ctr: number;
   cvr: number;
   cpi: number;
@@ -131,7 +132,23 @@ export interface KeywordEngineCycleResult {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const KEYWORD_VALUE_FACT_BACKFILL_DAYS = 45;
+// D7 revenue can continue to mature for up to 7 days after install, so
+// rolling runs only need to rescan a short trailing install window.
+const KEYWORD_VALUE_FACT_ROLLING_LOOKBACK_DAYS = 8;
+let ensureKeywordValueFactSchemaPromise: Promise<void> | null = null;
+
+async function ensureKeywordValueFactSchema(): Promise<void> {
+  if (!ensureKeywordValueFactSchemaPromise) {
+    ensureKeywordValueFactSchemaPromise = chExec(
+      `ALTER TABLE keyword_value_daily_metrics
+        ADD COLUMN IF NOT EXISTS revenue_source_missing UInt8 DEFAULT 0`
+    ).catch((error) => {
+      ensureKeywordValueFactSchemaPromise = null;
+      throw error;
+    });
+  }
+  await ensureKeywordValueFactSchemaPromise;
+}
 
 function logInfo(
   logger: KeywordEngineLogger | undefined,
@@ -413,10 +430,6 @@ export function buildKeywordValueRows(
       country,
       campaign
     });
-    if (!revenueMap.has(revenueKey)) {
-      continue;
-    }
-
     const key = [
       installDate,
       appKey,
@@ -466,9 +479,9 @@ export function buildKeywordValueRows(
         campaign: row.campaign
       })
     );
-    if (!revenue || revenue.raw_event_count <= 0) {
-      return [];
-    }
+    const revenueSourceMissing = revenue ? 0 : 1;
+    const purchaseCount = revenue ? revenue.purchase_count : 0;
+    const revenueD7 = revenue ? revenue.revenue_d7 : 0;
     return [
       {
         install_date: row.install_date,
@@ -481,13 +494,14 @@ export function buildKeywordValueRows(
         match_type: row.match_type,
         installs: row.installs,
         total_cost: row.total_cost,
-        purchase_count: revenue.purchase_count,
-        revenue_d7: revenue.revenue_d7,
+        purchase_count: purchaseCount,
+        revenue_d7: revenueD7,
+        revenue_source_missing: revenueSourceMissing,
         ctr: row.impressions > 0 ? row.clicks / row.impressions : 0,
         cvr: row.clicks > 0 ? row.installs / row.clicks : 0,
         cpi: row.installs > 0 ? row.total_cost / row.installs : 0,
-        cpp: revenue.purchase_count > 0 ? row.total_cost / revenue.purchase_count : 0,
-        d7_roas: row.total_cost > 0 ? revenue.revenue_d7 / row.total_cost : 0,
+        cpp: purchaseCount > 0 ? row.total_cost / purchaseCount : 0,
+        d7_roas: row.total_cost > 0 ? revenueD7 / row.total_cost : 0,
         version
       }
     ];
@@ -735,7 +749,9 @@ export async function runKeywordEngineCycle(
   const startedAt = new Date();
   const version = Date.now();
   const { from, to } = buildWindow(backfillDays);
-  const { from: valueFrom, to: valueTo } = buildWindow(Math.max(KEYWORD_VALUE_FACT_BACKFILL_DAYS, Math.max(1, Math.floor(backfillDays))));
+  const { from: valueFrom, to: valueTo } = buildWindow(
+    Math.max(KEYWORD_VALUE_FACT_ROLLING_LOOKBACK_DAYS, Math.max(1, Math.floor(backfillDays)))
+  );
   const apps = await listApps();
   const rules = await listKeywordExtractRules();
   const rulesByApp = new Map<string, KeywordExtractRuleRecord[]>();
@@ -756,6 +772,7 @@ export async function runKeywordEngineCycle(
     value_to: valueTo,
     apps: apps.length
   });
+  await ensureKeywordValueFactSchema();
 
   const details: KeywordEngineCycleDetail[] = [];
   const lifecycleLookbackDays = Math.max(

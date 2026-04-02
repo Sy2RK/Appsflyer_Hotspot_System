@@ -21,6 +21,7 @@ import {
   buildAsaDecisionWindow,
   buildAsaRelativeCompareDecision
 } from '../packages/shared/utils/asaKeywords.js';
+import { buildAiContextPrompt } from '../packages/shared/utils/aiChat.js';
 import {
   didKeywordEngineCycleComplete,
   resolveKeywordEngineBackfillDays
@@ -518,8 +519,8 @@ async function main(): Promise<void> {
 
   const supportSummary = summarizeRecommendationPolicySupport('budget', validatedPolicy);
   assert.equal(supportSummary.automation_level, 'partial');
-  assert.ok(supportSummary.notes.some((note) => note.includes('relative_compare 已接入 evaluator')));
-  assert.ok(supportSummary.notes.some((note) => note.includes('国家级 eCPI 阈值判断')));
+  assert.ok(supportSummary.notes.some((note) => note.includes('已支持和同类对象比较表现')));
+  assert.ok(supportSummary.notes.some((note) => note.includes('按国家单独设置阈值')));
   assert.ok(!supportSummary.notes.some((note) => note.includes('主要用于解释上下文')));
 
   assert.throws(
@@ -604,6 +605,7 @@ async function main(): Promise<void> {
   assert.equal(keywordValueRows[0].keyword, 'camera exact');
   assert.equal(keywordValueRows[0].purchase_count, 2);
   assert.equal(keywordValueRows[0].revenue_d7, 80);
+  assert.equal(keywordValueRows[0].revenue_source_missing, 0);
   assert.equal(keywordValueRows[0].cpp, 25);
   assert.equal(keywordValueRows[0].d7_roas, 1.6);
   assert.equal(keywordValueRows[0].ctr, 0.1);
@@ -630,7 +632,75 @@ async function main(): Promise<void> {
     123,
     new Map()
   );
-  assert.equal(keywordValueRowsWithoutSource.length, 0);
+  assert.equal(keywordValueRowsWithoutSource.length, 1);
+  assert.equal(keywordValueRowsWithoutSource[0].purchase_count, 0);
+  assert.equal(keywordValueRowsWithoutSource[0].revenue_d7, 0);
+  assert.equal(keywordValueRowsWithoutSource[0].revenue_source_missing, 1);
+  assert.equal(keywordValueRowsWithoutSource[0].cpp, 0);
+  assert.equal(keywordValueRowsWithoutSource[0].d7_roas, 0);
+
+  assert.throws(
+    () =>
+      validateRecommendationPolicyRule({
+        metric_family: 'ecpi',
+        decision_mode: 'deterministic',
+        traffic_scope: 'all',
+        maturity_window: {
+          exclude_recent_days: 7,
+          decision_window_days: 14,
+          context_window_days: [7.9]
+        }
+      }),
+    (error: unknown) =>
+      error instanceof RecommendationPolicyValidationError &&
+      error.code === 'invalid_window' &&
+      /整数/.test(error.message)
+  );
+
+  const contextPrompt = buildAiContextPrompt([
+    {
+      type: 'metrics_trend',
+      templateId: 'media_source',
+      title: '上下文包一',
+      summaryMarkdown: 'A'.repeat(9000),
+      structured: { duplicated: true },
+      rowCount: 20,
+      truncated: false,
+      appliedFilters: {
+        appKey: 'demo',
+        platform: 'ios'
+      }
+    },
+    {
+      type: 'budget_summary',
+      templateId: 'keyword',
+      title: '上下文包二',
+      summaryMarkdown: 'B'.repeat(9000),
+      structured: { duplicated: true },
+      rowCount: 18,
+      truncated: false,
+      appliedFilters: {
+        appKey: 'demo',
+        platform: 'ios'
+      }
+    },
+    {
+      type: 'asa_keyword_summary',
+      templateId: 'stage',
+      title: '上下文包三',
+      summaryMarkdown: 'C'.repeat(9000),
+      structured: { duplicated: true },
+      rowCount: 12,
+      truncated: false,
+      appliedFilters: {
+        appKey: 'demo',
+        platform: 'ios'
+      }
+    }
+  ]);
+  assert.ok(contextPrompt.prompt.includes('上下文包一'));
+  assert.ok(!contextPrompt.prompt.includes('结构化摘要'));
+  assert.ok(contextPrompt.warnings.some((item) => /截短|跳过/.test(item)));
 
   const mergedRule = mergeRecommendationPolicyRule(
     {
@@ -737,7 +807,7 @@ async function main(): Promise<void> {
   assert.equal(businessSummary.objective, '按同类对比表现判断是否调控');
   assert.match(businessSummary.scope, /Apple Search Ads/);
   assert.equal(businessSummary.supportLabel, '部分支持');
-  assert.match(businessSummary.supportNote, /campaign/);
+  assert.equal(businessSummary.supportNote, '当前按 campaign 做同类对比');
 
   assert.equal(
     getRecommendationPolicyErrorMessage('invalid_media_sources'),
@@ -747,6 +817,7 @@ async function main(): Promise<void> {
     getRecommendationPolicyErrorMessage('app_platform_not_supported'),
     '当前应用不支持这个平台，请重新选择应用或平台。'
   );
+  assert.equal(getRecommendationPolicyErrorMessage('asa_requires_ios'), 'ASA 规则只支持 iOS，请改为 iOS 后再保存。');
 
   const mockedPolicyRouter = createRecommendationPoliciesRouter({
     getAppByKey: async () =>
@@ -822,6 +893,29 @@ async function main(): Promise<void> {
     assert.equal(invalidRulePayload.ok, false);
     assert.equal(invalidRulePayload.error, 'invalid_rule_json');
     assert.match(invalidRulePayload.message, /unexpected_field/);
+
+    const invalidAsaPlatformResponse = await fetch(`${baseUrl}/api/recommendation-policies`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        appKey: 'demo',
+        platform: 'android',
+        engine: 'asa',
+        ruleJson: {
+          metric_family: 'ecpi',
+          decision_mode: 'deterministic',
+          traffic_scope: 'all'
+        }
+      })
+    });
+    assert.equal(invalidAsaPlatformResponse.status, 400);
+    assert.deepEqual(await invalidAsaPlatformResponse.json(), {
+      ok: false,
+      error: 'asa_requires_ios',
+      message: 'ASA 规则只支持 iOS，请改为 iOS 后再保存。'
+    });
   });
 
   const unsupportedPlatformRouter = createRecommendationPoliciesRouter({
