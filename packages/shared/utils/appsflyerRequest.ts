@@ -129,6 +129,8 @@ export async function fetchAppsflyerText(
     headers: Record<string, string>;
     timeoutMs: number;
     label: string;
+    method?: 'GET' | 'POST';
+    body?: string;
   }
 ): Promise<string> {
   const controller = new AbortController();
@@ -136,7 +138,9 @@ export async function fetchAppsflyerText(
 
   try {
     const response = await fetch(url, {
+      method: input.method ?? (input.body ? 'POST' : 'GET'),
       headers: input.headers,
+      body: input.body,
       signal: controller.signal
     });
     const body = await response.text().catch(() => '');

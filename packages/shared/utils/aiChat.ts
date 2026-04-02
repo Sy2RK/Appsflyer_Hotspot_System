@@ -57,7 +57,10 @@ export interface AiBuiltContextPack {
 }
 
 export interface AiChatResult {
+  model_id: AiChatModelId;
   model: string;
+  model_label: string;
+  provider: string;
   reply: string;
   usage: Record<string, unknown> | null;
   warnings: string[];
@@ -74,6 +77,34 @@ export interface AiChatResult {
   raw: Record<string, unknown>;
 }
 
+export type AiChatModelId = 'qwen' | 'openrouter_kimi_k25' | 'openai_gpt54';
+type AiChatProviderId = 'dashscope' | 'openrouter' | 'openai';
+
+export interface AiChatModelOption {
+  id: AiChatModelId;
+  label: string;
+  provider: AiChatProviderId;
+  provider_label: string;
+  model: string;
+  supports_images: boolean;
+  supports_thinking: boolean;
+}
+
+interface AiChatProviderConfig {
+  id: AiChatModelId;
+  label: string;
+  provider: AiChatProviderId;
+  providerLabel: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  supportsImages: boolean;
+  supportsThinking: boolean;
+  timeoutMs: number;
+  maxTokens: number;
+  extraHeaders?: Record<string, string>;
+}
+
 const MAX_HISTORY_MESSAGES = 96;
 const MAX_HISTORY_CHARS_PER_MESSAGE = 32000;
 const MAX_HISTORY_TOTAL_CHARS = 120000;
@@ -83,7 +114,6 @@ const MAX_CONTEXT_PACK_PROMPT_CHARS = 24000;
 const MAX_CONTEXT_PACK_SUMMARY_CHARS = 7000;
 const MIN_CONTEXT_PACK_SUMMARY_CHARS = 240;
 const AI_CHAT_TIMEOUT_ERROR = 'ai_chat_timeout';
-const AI_CHAT_REQUEST_TIMEOUT_MS = Math.max(env.qwen.timeoutMs, 90000);
 
 const PULL_METRICS = new Set(['installs', 'clicks', 'total_cost']);
 const PUSH_METRICS = new Set(['revenue', 'event_count', 'purchase_count']);
@@ -94,6 +124,187 @@ const METRICS_DIMS: Record<string, 'media_source' | 'country' | 'campaign'> = {
 };
 const BUDGET_TEMPLATES = new Set<AiContextPackTemplateId>(['platform_media_source', 'action_status', 'keyword']);
 const ASA_TEMPLATES = new Set<AiContextPackTemplateId>(['stage', 'campaign_adset', 'keyword']);
+const AI_CHAT_MODEL_LABELS: Record<AiChatModelId, string> = {
+  qwen: 'Qwen 3.6-Plus',
+  openrouter_kimi_k25: 'Kimi-K2.5 (OpenRouter)',
+  openai_gpt54: 'GPT-5.4 (OpenAI)'
+};
+const AI_CHAT_PROVIDER_LABELS: Record<AiChatProviderId, string> = {
+  dashscope: 'DashScope',
+  openrouter: 'OpenRouter',
+  openai: 'OpenAI'
+};
+const OPENROUTER_IMAGE_UNSUPPORTED_PATTERNS = [
+  /does not support images?/i,
+  /doesn't support images?/i,
+  /image_url/i,
+  /vision[^.]{0,40}not supported/i,
+  /multimodal[^.]{0,40}not supported/i,
+  /unsupported[^.]{0,30}(image|vision|multimodal)/i,
+  /content[^.]{0,40}type[^.]{0,30}image/i,
+  /input[^.]{0,30}image[^.]{0,30}not supported/i
+];
+
+export function isAiChatModelId(value: string): value is AiChatModelId {
+  return value === 'qwen' || value === 'openrouter_kimi_k25' || value === 'openai_gpt54';
+}
+
+export function getAiChatModelLabel(modelId: AiChatModelId): string {
+  return AI_CHAT_MODEL_LABELS[modelId];
+}
+
+function getAiChatProviderLabel(provider: AiChatProviderId): string {
+  return AI_CHAT_PROVIDER_LABELS[provider];
+}
+
+function hasProviderCredentials(value: string): boolean {
+  return String(value || '').trim().length > 0;
+}
+
+function isQwenAvailable(): boolean {
+  return hasProviderCredentials(env.qwen.baseUrl) && hasProviderCredentials(env.qwen.apiKey) && hasProviderCredentials(env.qwen.model);
+}
+
+function isOpenRouterAvailable(): boolean {
+  return (
+    hasProviderCredentials(env.openrouter.baseUrl) &&
+    hasProviderCredentials(env.openrouter.apiKey) &&
+    hasProviderCredentials(env.openrouter.model)
+  );
+}
+
+function isOpenAiAvailable(): boolean {
+  return hasProviderCredentials(env.openai.baseUrl) && hasProviderCredentials(env.openai.apiKey) && hasProviderCredentials(env.openai.model);
+}
+
+export function listAvailableAiChatModels(): AiChatModelOption[] {
+  const items: AiChatModelOption[] = [];
+  if (isQwenAvailable()) {
+    items.push({
+      id: 'qwen',
+      label: getAiChatModelLabel('qwen'),
+      provider: 'dashscope',
+      provider_label: getAiChatProviderLabel('dashscope'),
+      model: env.qwen.model,
+      supports_images: true,
+      supports_thinking: env.qwen.thinkingEnabled
+    });
+  }
+  if (isOpenRouterAvailable()) {
+    items.push({
+      id: 'openrouter_kimi_k25',
+      label: getAiChatModelLabel('openrouter_kimi_k25'),
+      provider: 'openrouter',
+      provider_label: getAiChatProviderLabel('openrouter'),
+      model: env.openrouter.model,
+      supports_images: true,
+      supports_thinking: false
+    });
+  }
+  if (isOpenAiAvailable()) {
+    items.push({
+      id: 'openai_gpt54',
+      label: getAiChatModelLabel('openai_gpt54'),
+      provider: 'openai',
+      provider_label: getAiChatProviderLabel('openai'),
+      model: env.openai.model,
+      supports_images: true,
+      supports_thinking: false
+    });
+  }
+  return items;
+}
+
+export function getDefaultAiChatModelId(): AiChatModelId | '' {
+  if (isQwenAvailable()) {
+    return 'qwen';
+  }
+  if (isOpenRouterAvailable()) {
+    return 'openrouter_kimi_k25';
+  }
+  if (isOpenAiAvailable()) {
+    return 'openai_gpt54';
+  }
+  return '';
+}
+
+function resolveAiChatProviderConfig(modelId: AiChatModelId): AiChatProviderConfig | null {
+  if (modelId === 'qwen') {
+    if (!isQwenAvailable()) {
+      return null;
+    }
+    return {
+      id: 'qwen',
+      label: getAiChatModelLabel('qwen'),
+      provider: 'dashscope',
+      providerLabel: getAiChatProviderLabel('dashscope'),
+      baseUrl: env.qwen.baseUrl,
+      apiKey: env.qwen.apiKey,
+      model: env.qwen.model,
+      supportsImages: true,
+      supportsThinking: env.qwen.thinkingEnabled,
+      timeoutMs: env.qwen.timeoutMs,
+      maxTokens: env.qwen.maxTokens
+    };
+  }
+  if (modelId === 'openrouter_kimi_k25') {
+    if (!isOpenRouterAvailable()) {
+      return null;
+    }
+    const extraHeaders: Record<string, string> = {};
+    if (hasProviderCredentials(env.openrouter.httpReferer)) {
+      extraHeaders['HTTP-Referer'] = env.openrouter.httpReferer;
+    }
+    if (hasProviderCredentials(env.openrouter.appTitle)) {
+      extraHeaders['X-Title'] = env.openrouter.appTitle;
+    }
+    return {
+      id: 'openrouter_kimi_k25',
+      label: getAiChatModelLabel('openrouter_kimi_k25'),
+      provider: 'openrouter',
+      providerLabel: getAiChatProviderLabel('openrouter'),
+      baseUrl: env.openrouter.baseUrl,
+      apiKey: env.openrouter.apiKey,
+      model: env.openrouter.model,
+      supportsImages: true,
+      supportsThinking: false,
+      timeoutMs: env.openrouter.timeoutMs,
+      maxTokens: env.openrouter.maxTokens,
+      extraHeaders
+    };
+  }
+  if (!isOpenAiAvailable()) {
+    return null;
+  }
+  return {
+    id: 'openai_gpt54',
+    label: getAiChatModelLabel('openai_gpt54'),
+    provider: 'openai',
+    providerLabel: getAiChatProviderLabel('openai'),
+    baseUrl: env.openai.baseUrl,
+    apiKey: env.openai.apiKey,
+    model: env.openai.model,
+    supportsImages: true,
+    supportsThinking: false,
+    timeoutMs: env.openai.timeoutMs,
+    maxTokens: env.openai.maxTokens
+  };
+}
+
+function resolveAiChatRequestTimeoutMs(modelConfig: AiChatProviderConfig): number {
+  return Math.max(modelConfig.timeoutMs, 90000);
+}
+
+function resolveAiChatMaxOutputTokens(modelConfig: AiChatProviderConfig): number {
+  return Math.max(900, modelConfig.maxTokens);
+}
+
+function isOpenRouterImageCapabilityError(status: number, errorText: string): boolean {
+  if (![400, 415, 422].includes(status)) {
+    return false;
+  }
+  return OPENROUTER_IMAGE_UNSUPPORTED_PATTERNS.some((pattern) => pattern.test(errorText));
+}
 
 function hasText(value: unknown): boolean {
   return String(value ?? '').trim().length > 0;
@@ -945,32 +1156,41 @@ export function buildAiContextPrompt(packs: AiBuiltContextPack[]): {
   };
 }
 
-async function requestQwenAiChat(input: {
+async function requestAiChatCompletion(input: {
+  modelConfig: AiChatProviderConfig;
   messages: Array<Record<string, unknown>>;
   packs: AiBuiltContextPack[];
   warnings: string[];
   images: AiChatImageInput[];
   thinkingEnabled: boolean;
 }): Promise<AiChatResult> {
+  const maxOutputTokens = resolveAiChatMaxOutputTokens(input.modelConfig);
   const payload: Record<string, unknown> = {
-    model: env.qwen.model,
+    model: input.modelConfig.model,
     temperature: 0.3,
-    max_tokens: Math.max(900, env.qwen.maxTokens),
-    messages: input.messages,
-    extra_body: {
-      enable_thinking: input.thinkingEnabled
-    }
+    messages: input.messages
   };
+  if (input.modelConfig.id === 'openai_gpt54') {
+    payload.max_completion_tokens = maxOutputTokens;
+  } else {
+    payload.max_tokens = maxOutputTokens;
+  }
+  if (input.modelConfig.id === 'qwen') {
+    payload.extra_body = {
+      enable_thinking: input.thinkingEnabled
+    };
+  }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), AI_CHAT_REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), resolveAiChatRequestTimeoutMs(input.modelConfig));
 
   try {
-    const res = await fetch(`${env.qwen.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+    const res = await fetch(`${input.modelConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        Authorization: `Bearer ${env.qwen.apiKey}`
+        Authorization: `Bearer ${input.modelConfig.apiKey}`,
+        ...(input.modelConfig.extraHeaders || {})
       },
       body: JSON.stringify(payload),
       signal: controller.signal
@@ -981,7 +1201,20 @@ async function requestQwenAiChat(input: {
       const errorText = extractTextFromMessageContent(
         (responseJson.error as Record<string, unknown> | undefined)?.message ?? responseJson.message
       );
-      throw new Error(errorText || `qwen_request_failed_${res.status}`);
+      if (
+        input.modelConfig.id === 'openrouter_kimi_k25' &&
+        /not available in your region/i.test(String(errorText || ''))
+      ) {
+        throw new Error('openrouter_region_unavailable');
+      }
+      if (
+        input.modelConfig.id === 'openrouter_kimi_k25' &&
+        input.images.length > 0 &&
+        isOpenRouterImageCapabilityError(res.status, String(errorText || ''))
+      ) {
+        throw new Error('openrouter_image_not_supported');
+      }
+      throw new Error(errorText || `ai_chat_request_failed_${res.status}`);
     }
 
     const choices = Array.isArray(responseJson.choices) ? responseJson.choices : [];
@@ -993,7 +1226,10 @@ async function requestQwenAiChat(input: {
     }
 
     return {
-      model: env.qwen.model,
+      model_id: input.modelConfig.id,
+      model: input.modelConfig.model,
+      model_label: input.modelConfig.label,
+      provider: input.modelConfig.provider,
       reply,
       usage:
         responseJson.usage && typeof responseJson.usage === 'object'
@@ -1034,18 +1270,26 @@ export async function runAiChat(input: {
   history: AiChatHistoryMessage[];
   contextPacks: AiContextPackSpec[];
   images: AiChatImageInput[];
+  modelId?: AiChatModelId;
 }): Promise<AiChatResult> {
   const promptMessage = hasText(input.message) ? String(input.message).trim() : '请结合我附带的上下文和图片，给出中文分析。';
   const normalizedHistory = normalizeHistory(input.history);
   const { packs, warnings } = await buildAiContextPacks(input.contextPacks);
   const contextPromptResult = buildAiContextPrompt(packs);
   const mergedWarnings = [...warnings, ...contextPromptResult.warnings];
-  const shouldEnableThinking =
-    env.qwen.thinkingEnabled && (input.images.length > 0 || contextPromptResult.packsUsed.length > 0);
-
-  if (!env.qwen.baseUrl || !env.qwen.apiKey) {
-    throw new Error('qwen_config_missing');
+  const resolvedModelId = input.modelId ?? getDefaultAiChatModelId();
+  if (!resolvedModelId) {
+    throw new Error('ai_chat_model_unavailable');
   }
+  const modelConfig = resolveAiChatProviderConfig(resolvedModelId);
+  if (!modelConfig) {
+    throw new Error('ai_chat_model_unavailable');
+  }
+  if (input.images.length > 0 && !modelConfig.supportsImages) {
+    throw new Error('ai_model_images_unsupported');
+  }
+  const shouldEnableThinking =
+    modelConfig.supportsThinking && (input.images.length > 0 || contextPromptResult.packsUsed.length > 0);
 
   const userContent: Array<Record<string, unknown>> = [
     {
@@ -1086,7 +1330,8 @@ export async function runAiChat(input: {
     content: userContent
   });
 
-  return requestQwenAiChat({
+  return requestAiChatCompletion({
+    modelConfig,
     messages,
     packs: contextPromptResult.packsUsed,
     warnings: mergedWarnings,

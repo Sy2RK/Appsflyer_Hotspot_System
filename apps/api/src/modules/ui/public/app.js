@@ -70,6 +70,9 @@ const state = {
     scrollLocked: false,
     messages: [],
     pending: false,
+    availableModels: [],
+    defaultModelId: '',
+    currentModelId: '',
     selectedImages: [],
     selectedContextPacks: [],
     contextMenuOpen: false,
@@ -429,6 +432,8 @@ const el = {
   aiChatBody: document.getElementById('aiChatBody'),
   aiChatCloseBtn: document.getElementById('aiChatCloseBtn'),
   aiChatClearBtn: document.getElementById('aiChatClearBtn'),
+  aiChatModelSelect: document.getElementById('aiChatModelSelect'),
+  aiChatModelHint: document.getElementById('aiChatModelHint'),
   aiChatContextMenu: document.getElementById('aiChatContextMenu'),
   aiChatRecommendedPacks: document.getElementById('aiChatRecommendedPacks'),
   aiChatCorePacks: document.getElementById('aiChatCorePacks'),
@@ -468,6 +473,7 @@ let toastTimer = null;
 let scrollTicking = false;
 const chartState = new WeakMap();
 const helpPopoverGroups = Array.from(document.querySelectorAll('.help-group'));
+const AI_CHAT_MODEL_STORAGE_KEY = 'hotspot.aiChat.modelId';
 const helpPopoverMap = new WeakMap();
 const activeHelpPopovers = new Set();
 const helpPopoverHideTimers = new WeakMap();
@@ -683,10 +689,180 @@ function getAIChatErrorMessage(code, fallbackMessage = '') {
   if (code === 'ai_chat_timeout') {
     return 'Guru Ads Agent 响应超时，请重试，或减少上下文后再发送。';
   }
+  if (code === 'ai_model_unavailable') {
+    return 'Guru Ads Agent 当前没有可用模型，请联系管理员检查模型配置。';
+  }
+  if (code === 'invalid_model_id') {
+    return '当前模型无效，请重新选择 Guru Ads Agent 模型。';
+  }
+  if (code === 'ai_model_images_unsupported') {
+    return '当前模型仅支持文本对话，请切回支持图片的模型，或移除图片后再试。';
+  }
+  if (code === 'openrouter_image_not_supported') {
+    return '当前 Kimi-K2.5（OpenRouter）通道暂不支持这次图片请求，请切回 Qwen 或移除图片后重试。';
+  }
+  if (code === 'openrouter_region_unavailable') {
+    return '当前 OpenRouter 的 Kimi-K2.5 在你这个地区或账号下不可用，请先切回 Qwen，或更换可用地区 / 账号后再试。';
+  }
   if (code === 'internal_error') {
     return 'Guru Ads Agent 暂时不可用，请稍后重试。';
   }
   return '';
+}
+
+function readStoredAIChatModelId() {
+  try {
+    return String(window.localStorage.getItem(AI_CHAT_MODEL_STORAGE_KEY) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function writeStoredAIChatModelId(modelId) {
+  try {
+    window.localStorage.setItem(AI_CHAT_MODEL_STORAGE_KEY, String(modelId || '').trim());
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function clearStoredAIChatModelId() {
+  try {
+    window.localStorage.removeItem(AI_CHAT_MODEL_STORAGE_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function getAIChatModelOption(modelId) {
+  const normalized = String(modelId || '').trim();
+  return (state.aiChat.availableModels || []).find((item) => item.id === normalized) || null;
+}
+
+function getAIChatFallbackModel(options = {}) {
+  const requiresImages = options.requiresImages === true;
+  const excludeModelId = String(options.excludeModelId || '').trim();
+  const models = Array.isArray(state.aiChat.availableModels) ? state.aiChat.availableModels : [];
+  const filtered = models.filter((item) => {
+    if (!item || item.id === excludeModelId) {
+      return false;
+    }
+    if (requiresImages && item.supportsImages === false) {
+      return false;
+    }
+    return true;
+  });
+  if (filtered.length === 0) {
+    return null;
+  }
+  return filtered.find((item) => item.id === state.aiChat.defaultModelId) || filtered[0];
+}
+
+function getAIChatCurrentModelLabel() {
+  return getAIChatModelOption(state.aiChat.currentModelId)?.label || '';
+}
+
+function buildAIChatModelHintState() {
+  const model = getAIChatModelOption(state.aiChat.currentModelId);
+  if (!model) {
+    return {
+      text: '当前没有可用模型。',
+      warning: true
+    };
+  }
+  const capabilityParts = [
+    model.providerLabel || model.provider || '',
+    model.supportsImages === false ? '仅文本' : '支持图片',
+    model.supportsThinking ? '支持思考' : '标准响应'
+  ].filter(Boolean);
+  const hasImages = Array.isArray(state.aiChat.selectedImages) && state.aiChat.selectedImages.length > 0;
+  if (hasImages && model.supportsImages === false) {
+    return {
+      text: `${capabilityParts.join(' · ')}。当前已附带图片，发送时会自动切回支持图片的模型。`,
+      warning: true
+    };
+  }
+  return {
+    text: capabilityParts.join(' · '),
+    warning: false
+  };
+}
+
+function renderAIChatModelHint() {
+  if (!(el.aiChatModelHint instanceof HTMLElement)) {
+    return;
+  }
+  const hintState = buildAIChatModelHintState();
+  el.aiChatModelHint.textContent = hintState.text;
+  el.aiChatModelHint.classList.toggle('is-warning', hintState.warning);
+}
+
+function syncAIChatModelUi() {
+  const models = Array.isArray(state.aiChat.availableModels) ? state.aiChat.availableModels : [];
+  const hasCurrentModel = models.some((item) => item.id === state.aiChat.currentModelId);
+  if (!hasCurrentModel) {
+    state.aiChat.currentModelId = models[0]?.id || '';
+  }
+
+  if (el.aiChatModelSelect instanceof HTMLSelectElement) {
+    if (models.length === 0) {
+      el.aiChatModelSelect.innerHTML = '<option value="">当前无可用模型</option>';
+      el.aiChatModelSelect.value = '';
+    } else {
+      el.aiChatModelSelect.innerHTML = models
+        .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`)
+        .join('');
+      el.aiChatModelSelect.value = state.aiChat.currentModelId || models[0].id;
+    }
+    el.aiChatModelSelect.disabled = state.aiChat.pending || models.length === 0;
+  }
+  if (el.aiChatSendBtn instanceof HTMLButtonElement) {
+    el.aiChatSendBtn.disabled = state.aiChat.pending || !state.aiChat.currentModelId;
+  }
+  renderAIChatModelHint();
+}
+
+function setAIChatModelSelection(modelId, options = {}) {
+  const persist = options.persist !== false;
+  const match = getAIChatModelOption(modelId);
+  state.aiChat.currentModelId = match?.id || '';
+  if (persist) {
+    if (state.aiChat.currentModelId) {
+      writeStoredAIChatModelId(state.aiChat.currentModelId);
+    } else {
+      clearStoredAIChatModelId();
+    }
+  }
+  syncAIChatModelUi();
+}
+
+function createAIChatRequestError(code, message, status) {
+  const error = new Error(message || getAIChatErrorMessage(code) || 'Guru Ads Agent 请求失败');
+  error.code = code || '';
+  error.status = status || 0;
+  return error;
+}
+
+function maybeFallbackAIChatModelAfterFailure(errorCode, options = {}) {
+  const stickyFailureCodes = new Set([
+    'ai_model_unavailable',
+    'ai_model_images_unsupported',
+    'openrouter_image_not_supported',
+    'openrouter_region_unavailable'
+  ]);
+  if (!stickyFailureCodes.has(String(errorCode || ''))) {
+    return null;
+  }
+  const failedModelId = String(options.failedModelId || state.aiChat.currentModelId || '').trim();
+  const fallbackModel = getAIChatFallbackModel({
+    requiresImages: options.requiresImages === true,
+    excludeModelId: failedModelId
+  });
+  if (!fallbackModel) {
+    return null;
+  }
+  setAIChatModelSelection(fallbackModel.id, { persist: true });
+  return fallbackModel;
 }
 
 function aiChatPackTemplateLabel(type, templateId) {
@@ -933,7 +1109,9 @@ function renderAIChatMessages() {
     .map((item) => {
       const roleClass = item.role === 'assistant' ? 'is-assistant' : item.role === 'system' ? 'is-system' : 'is-user';
       const roleLabel = item.role === 'assistant' ? 'Guru Ads Agent' : item.role === 'system' ? '系统提示' : '你';
-      const metaText = item.pending ? `${roleLabel} · 正在生成…` : `${roleLabel} · ${fmtTime(item.createdAt)}`;
+      const modelLabel = item.role === 'assistant' ? String(item.modelLabel || '').trim() : '';
+      const metaPrefix = [roleLabel, modelLabel].filter(Boolean).join(' · ');
+      const metaText = item.pending ? `${metaPrefix} · 正在生成…` : `${metaPrefix} · ${fmtTime(item.createdAt)}`;
       return `
         <div class="ai-chat-message ${roleClass}">
           <div class="ai-chat-message-meta">${escapeHtml(metaText)}</div>
@@ -991,6 +1169,7 @@ function renderAIChatAttachmentStrip() {
       `
     )
     .join('');
+  renderAIChatModelHint();
 }
 
 function clearAIChatAttachments() {
@@ -1235,6 +1414,41 @@ function primeAIChatBuilderDefaults() {
   syncAIChatPackBuilderPreview();
 }
 
+async function loadAIChatModels() {
+  const body = await api('/api/ai/models');
+  const data = body.data && typeof body.data === 'object' ? body.data : {};
+  const models = Array.isArray(data.models)
+    ? data.models
+        .filter((item) => item && typeof item === 'object')
+        .map((item) => ({
+          id: String(item.id || '').trim(),
+          label: String(item.label || '').trim(),
+          provider: String(item.provider || '').trim(),
+          providerLabel: String(item.provider_label || item.provider || '').trim(),
+          model: String(item.model || '').trim(),
+          supportsImages: item.supports_images !== false,
+          supportsThinking: item.supports_thinking === true
+        }))
+        .filter((item) => item.id && item.label)
+    : [];
+  state.aiChat.availableModels = models;
+  state.aiChat.defaultModelId = String(data.default_model_id || '').trim();
+
+  const storedModelId = readStoredAIChatModelId();
+  const storedModelAvailable = models.some((item) => item.id === storedModelId);
+  if (storedModelId && !storedModelAvailable) {
+    clearStoredAIChatModelId();
+  }
+  const defaultModelAvailable = models.some((item) => item.id === state.aiChat.defaultModelId);
+  const nextModelId = storedModelAvailable
+    ? storedModelId
+    : defaultModelAvailable
+      ? state.aiChat.defaultModelId
+      : models[0]?.id || '';
+
+  setAIChatModelSelection(nextModelId, { persist: storedModelAvailable });
+}
+
 function clearAIChatConversation() {
   state.aiChat.messages = [];
   clearAIChatAttachments();
@@ -1295,6 +1509,11 @@ function handleAIChatImageSelection(event) {
   target.value = '';
   renderAIChatAttachmentStrip();
   setAIChatContextMenuOpen(false);
+  const currentModel = getAIChatModelOption(state.aiChat.currentModelId);
+  if (currentModel && currentModel.supportsImages === false) {
+    showToast(`当前 ${currentModel.label} 仅支持文本，发送时会自动切回支持图片的模型。`);
+    return;
+  }
   showToast(`已附加 ${files.length} 张图片`);
 }
 
@@ -1319,12 +1538,34 @@ async function sendAIChat(event) {
   if (state.aiChat.pending) {
     return;
   }
+  if (!state.aiChat.currentModelId) {
+    throw new Error('Guru Ads Agent 当前没有可用模型，请联系管理员检查模型配置。');
+  }
   const draft = String(el.aiChatInput?.value || '').trim();
   const images = [...(state.aiChat.selectedImages || [])];
   const packs = [...(state.aiChat.selectedContextPacks || [])];
   if (!draft && images.length === 0 && packs.length === 0) {
     throw new Error('请先输入内容，或者附带图片 / 数据包');
   }
+  let requestModel = getAIChatModelOption(state.aiChat.currentModelId);
+  if (images.length > 0 && requestModel && requestModel.supportsImages === false) {
+    const fallbackModel = getAIChatFallbackModel({
+      requiresImages: true,
+      excludeModelId: requestModel.id
+    });
+    if (!fallbackModel) {
+      throw createAIChatRequestError(
+        'ai_model_images_unsupported',
+        '当前已附带图片，但没有可自动切换的图片模型，请移除图片后再试。',
+        400
+      );
+    }
+    setAIChatModelSelection(fallbackModel.id, { persist: true });
+    requestModel = fallbackModel;
+    showToast(`当前已附带图片，已自动切回 ${fallbackModel.label}。`);
+  }
+  const requestModelId = requestModel?.id || state.aiChat.currentModelId;
+  const currentModelLabel = requestModel?.label || getAIChatCurrentModelLabel();
 
   const history = (state.aiChat.messages || [])
     .filter((item) => !item.pending && (item.role === 'user' || item.role === 'assistant'))
@@ -1352,11 +1593,13 @@ async function sendAIChat(event) {
     content: '处理中...',
     attachments: [],
     createdAt: new Date().toISOString(),
+    modelLabel: currentModelLabel || undefined,
     pending: true
   };
 
   state.aiChat.messages = [...(state.aiChat.messages || []), userMessage, pendingMessage];
   state.aiChat.pending = true;
+  syncAIChatModelUi();
   if (el.aiChatInput instanceof HTMLTextAreaElement) {
     el.aiChatInput.value = '';
   }
@@ -1367,6 +1610,7 @@ async function sendAIChat(event) {
   try {
     const formData = new FormData();
     formData.set('message', draft);
+    formData.set('model_id', requestModelId);
     formData.set('history_json', JSON.stringify(history));
     formData.set(
       'context_packs_json',
@@ -1386,12 +1630,14 @@ async function sendAIChat(event) {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok || body.ok === false) {
-      throw new Error(
+      throw createAIChatRequestError(
+        body.error || '',
         body.message ||
           getAIChatErrorMessage(body.error) ||
           getRecommendationPolicyErrorMessage(body.error) ||
           body.error ||
-          `request_failed_${res.status}`
+          `request_failed_${res.status}`,
+        res.status
       );
     }
 
@@ -1401,6 +1647,7 @@ async function sendAIChat(event) {
       id: aiChatMessageId(),
       role: 'assistant',
       content: String(result.reply || '').trim() || '模型没有返回可展示内容。',
+      modelLabel: String(result.model_label || currentModelLabel || '').trim() || undefined,
       attachments: (result.attachments_used?.context_packs || []).map((item) => ({
         type: 'context',
         title: item.title || '上下文包'
@@ -1418,6 +1665,11 @@ async function sendAIChat(event) {
     }
     renderAIChatMessages();
   } catch (error) {
+    const errorCode = String(error.code || '').trim();
+    const fallbackModel = maybeFallbackAIChatModelAfterFailure(errorCode, {
+      failedModelId: requestModelId,
+      requiresImages: images.length > 0
+    });
     state.aiChat.messages = (state.aiChat.messages || []).filter((item) => item.id !== pendingMessage.id);
     state.aiChat.messages.push({
       id: aiChatMessageId(),
@@ -1426,10 +1678,20 @@ async function sendAIChat(event) {
       attachments: [],
       createdAt: new Date().toISOString()
     });
+    if (fallbackModel) {
+      state.aiChat.messages.push({
+        id: aiChatMessageId(),
+        role: 'system',
+        content: `已自动切回 ${fallbackModel.label}，下次发送会优先使用这个模型。`,
+        attachments: [],
+        createdAt: new Date().toISOString()
+      });
+    }
     renderAIChatMessages();
     showToast(error.message || 'Guru Ads Agent 请求失败', true);
   } finally {
     state.aiChat.pending = false;
+    syncAIChatModelUi();
   }
 }
 
@@ -5708,6 +5970,7 @@ async function refreshAll() {
   await loadApps();
   await refreshOverviewTotals();
   await loadRuntimeSchedule();
+  await safeRefresh('Guru Ads Agent 模型', () => loadAIChatModels());
   const now = new Date();
   updateOverviewCards(now);
 
@@ -5767,6 +6030,7 @@ async function bootstrap() {
   primeAIChatBuilderDefaults();
   renderAIChatMessages();
   renderAIChatAttachmentStrip();
+  syncAIChatModelUi();
   syncAIChatInputHeight();
   setupSideNav();
   bindChartHover(el.metricsCanvas, el.metricsTooltip);
@@ -6181,6 +6445,17 @@ el.aiChatCloseBtn?.addEventListener('click', () => setAIDockOpen(false));
 el.aiChatClearBtn?.addEventListener('click', () => {
   clearAIChatConversation();
   showToast('AI 会话已清空');
+});
+el.aiChatModelSelect?.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLSelectElement)) {
+    return;
+  }
+  setAIChatModelSelection(target.value, { persist: true });
+  const selectedModel = getAIChatModelOption(target.value);
+  if (selectedModel && selectedModel.supportsImages === false && (state.aiChat.selectedImages || []).length > 0) {
+    showToast(`当前 ${selectedModel.label} 仅支持文本，发送时会自动切回支持图片的模型。`);
+  }
 });
 el.aiChatAddImageBtn?.addEventListener('click', () => {
   if (el.aiChatFileInput instanceof HTMLInputElement) {

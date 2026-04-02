@@ -2718,14 +2718,69 @@ body.ai-dock-scroll-locked #appShell {
 }
 
 .ai-chat-head h3 {
-  font-size: 24px;
+  font-size: clamp(18px, 2vw, 24px);
   color: var(--text-primary);
+  white-space: nowrap;
 }
 
 .ai-chat-head-actions {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.ai-chat-model-wrap {
+  display: grid;
+  justify-items: stretch;
+  gap: 5px;
+}
+
+.ai-chat-model-select {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 34px;
+  width: 156px;
+  min-width: 156px;
+  max-width: 156px;
+  padding: 0 38px 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 176, 196, 0.42);
+  background-color: rgba(255, 255, 255, 0.9);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' fill='none' stroke='%232b88ad' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: calc(100% - 14px) 50%;
+  background-size: 12px 8px;
+  background-repeat: no-repeat;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+}
+
+.ai-chat-model-select:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
+.ai-chat-model-select:focus {
+  outline: none;
+  border-color: rgba(43, 136, 173, 0.55);
+  box-shadow:
+    0 0 0 3px rgba(117, 212, 242, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.ai-chat-model-hint {
+  min-height: 16px;
+  padding: 0 4px;
+  color: rgba(83, 112, 145, 0.88);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: left;
+}
+
+.ai-chat-model-hint.is-warning {
+  color: #a15633;
 }
 
 .ai-dock-status {
@@ -3724,6 +3779,16 @@ body.ai-dock-scroll-locked #appShell {
   .ai-chat-head-actions {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .ai-chat-model-wrap {
+    flex: 1 1 auto;
+  }
+
+  .ai-chat-model-select {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
   }
 
   .ai-chat-builder-grid {

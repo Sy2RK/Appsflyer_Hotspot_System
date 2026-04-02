@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
+import { createAiRouter } from '../apps/api/src/modules/ai/ai.routes.js';
 import { createRecommendationPoliciesRouter } from '../apps/api/src/modules/recommendationPolicies/recommendationPolicies.routes.js';
 import {
   createPolicyTemplate,
@@ -26,7 +27,11 @@ import {
   didKeywordEngineCycleComplete,
   resolveKeywordEngineBackfillDays
 } from '../packages/shared/utils/keywordEngineWorkerPolicy.js';
-import { buildKeywordValueRows } from '../packages/shared/utils/keywordEngine.js';
+import {
+  buildKeywordValueCohortWindows,
+  buildKeywordValueRows,
+  mergeKeywordValueRevenueRows
+} from '../packages/shared/utils/keywordEngine.js';
 import {
   defaultRecommendationPolicyRule,
   evaluateSpendScenarios,
@@ -639,6 +644,76 @@ async function main(): Promise<void> {
   assert.equal(keywordValueRowsWithoutSource[0].cpp, 0);
   assert.equal(keywordValueRowsWithoutSource[0].d7_roas, 0);
 
+  const cohortWindows = buildKeywordValueCohortWindows('2026-03-01', '2026-04-08', '2026-04-08');
+  assert.deepEqual(cohortWindows, [
+    { from: '2026-03-01', to: '2026-03-31' },
+    { from: '2026-04-01', to: '2026-04-01' }
+  ]);
+  assert.deepEqual(buildKeywordValueCohortWindows('2026-04-02', '2026-04-08', '2026-04-08'), []);
+
+  const mergedValueRevenueRows = mergeKeywordValueRevenueRows(
+    [
+      {
+        install_date: '2026-03-20',
+        app_key: 'demo',
+        platform: 'android',
+        media_source: 'GoogleAdwords_Int',
+        country: 'US',
+        campaign: 'camera exact',
+        raw_event_count: 5,
+        purchase_count: 3,
+        revenue_d7: 90
+      }
+    ],
+    [
+      {
+        install_date: '2026-03-20',
+        app_key: 'demo',
+        platform: 'android',
+        media_source: 'googleadwords_int',
+        country: 'US',
+        campaign: 'camera exact',
+        raw_event_count: 4,
+        purchase_count: 2,
+        revenue_d7: 80
+      }
+    ]
+  );
+  const mergedExactCountry = mergedValueRevenueRows.find((row) => row.country === 'US');
+  const mergedUnknownCountry = mergedValueRevenueRows.find((row) => row.country === 'unknown');
+  assert.equal(mergedValueRevenueRows.length, 2);
+  assert.equal(mergedExactCountry?.purchase_count, 3);
+  assert.equal(mergedExactCountry?.revenue_d7, 90);
+  assert.equal(mergedUnknownCountry?.purchase_count, 3);
+  assert.equal(mergedUnknownCountry?.revenue_d7, 90);
+
+  const keywordValueRowsUnknownCountry = buildKeywordValueRows(
+    'demo',
+    [
+      {
+        report_date: '2026-03-20',
+        app_key: 'demo',
+        platform: 'android',
+        campaign: 'camera exact',
+        media_source: 'googleadwords_int',
+        country: 'unknown',
+        impressions: '1000',
+        installs: '10',
+        clicks: '100',
+        total_cost: '50',
+        average_ecpi: '5',
+        source_report: 'daily_report_v5'
+      }
+    ],
+    mergedValueRevenueRows,
+    123,
+    new Map()
+  );
+  assert.equal(keywordValueRowsUnknownCountry.length, 1);
+  assert.equal(keywordValueRowsUnknownCountry[0].revenue_source_missing, 0);
+  assert.equal(keywordValueRowsUnknownCountry[0].purchase_count, 3);
+  assert.equal(keywordValueRowsUnknownCountry[0].revenue_d7, 90);
+
   assert.throws(
     () =>
       validateRecommendationPolicyRule({
@@ -818,6 +893,271 @@ async function main(): Promise<void> {
     '当前应用不支持这个平台，请重新选择应用或平台。'
   );
   assert.equal(getRecommendationPolicyErrorMessage('asa_requires_ios'), 'ASA 规则只支持 iOS，请改为 iOS 后再保存。');
+
+  const capturedAiModelIds: string[] = [];
+  const aiRouter = createAiRouter({
+    buildAiContextPacks: async () => ({
+      packs: [],
+      warnings: []
+    }),
+    runAiChat: async (input) => {
+      capturedAiModelIds.push(String(input.modelId || ''));
+      return {
+        model_id: (input.modelId || 'qwen') as 'qwen' | 'openrouter_kimi_k25' | 'openai_gpt54',
+        model:
+          input.modelId === 'openrouter_kimi_k25'
+            ? 'moonshotai/kimi-k2.5'
+            : input.modelId === 'openai_gpt54'
+              ? 'gpt-5.4'
+              : 'qwen3.6-plus',
+        model_label:
+          input.modelId === 'openrouter_kimi_k25'
+            ? 'Kimi-K2.5 (OpenRouter)'
+            : input.modelId === 'openai_gpt54'
+              ? 'GPT-5.4 (OpenAI)'
+              : 'Qwen 3.6-Plus',
+        provider:
+          input.modelId === 'openrouter_kimi_k25'
+            ? 'openrouter'
+            : input.modelId === 'openai_gpt54'
+              ? 'openai'
+              : 'dashscope',
+        reply: 'ok',
+        usage: null,
+        warnings: [],
+        attachments_used: {
+          images: [],
+          context_packs: []
+        },
+        raw: {}
+      };
+    },
+    listAvailableAiChatModels: () => [
+      {
+        id: 'qwen',
+        label: 'Qwen 3.6-Plus',
+        provider: 'dashscope',
+        provider_label: 'DashScope',
+        model: 'qwen3.6-plus',
+        supports_images: true,
+        supports_thinking: true
+      },
+      {
+        id: 'openrouter_kimi_k25',
+        label: 'Kimi-K2.5 (OpenRouter)',
+        provider: 'openrouter',
+        provider_label: 'OpenRouter',
+        model: 'moonshotai/kimi-k2.5',
+        supports_images: true,
+        supports_thinking: false
+      },
+      {
+        id: 'openai_gpt54',
+        label: 'GPT-5.4 (OpenAI)',
+        provider: 'openai',
+        provider_label: 'OpenAI',
+        model: 'gpt-5.4',
+        supports_images: true,
+        supports_thinking: false
+      }
+    ],
+    getDefaultAiChatModelId: () => 'qwen'
+  } as never);
+
+  await withHttpApi(aiRouter, async (baseUrl) => {
+    const modelsResponse = await fetch(`${baseUrl}/api/ai/models`);
+    assert.equal(modelsResponse.status, 200);
+    assert.deepEqual(await modelsResponse.json(), {
+      ok: true,
+      data: {
+        default_model_id: 'qwen',
+        models: [
+          {
+            id: 'qwen',
+            label: 'Qwen 3.6-Plus',
+            provider: 'dashscope',
+            provider_label: 'DashScope',
+            model: 'qwen3.6-plus',
+            supports_images: true,
+            supports_thinking: true
+          },
+          {
+            id: 'openrouter_kimi_k25',
+            label: 'Kimi-K2.5 (OpenRouter)',
+            provider: 'openrouter',
+            provider_label: 'OpenRouter',
+            model: 'moonshotai/kimi-k2.5',
+            supports_images: true,
+            supports_thinking: false
+          },
+          {
+            id: 'openai_gpt54',
+            label: 'GPT-5.4 (OpenAI)',
+            provider: 'openai',
+            provider_label: 'OpenAI',
+            model: 'gpt-5.4',
+            supports_images: true,
+            supports_thinking: false
+          }
+        ]
+      }
+    });
+
+    const invalidModelForm = new FormData();
+    invalidModelForm.set('message', 'hello');
+    invalidModelForm.set('model_id', 'bad_model');
+    const invalidModelResponse = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      body: invalidModelForm
+    });
+    assert.equal(invalidModelResponse.status, 400);
+    assert.deepEqual(await invalidModelResponse.json(), {
+      ok: false,
+      error: 'invalid_model_id',
+      message: '当前模型无效，请重新选择 Guru Ads Agent 模型。'
+    });
+
+    const openrouterForm = new FormData();
+    openrouterForm.set('message', 'hello');
+    openrouterForm.set('model_id', 'openrouter_kimi_k25');
+    const openrouterResponse = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      body: openrouterForm
+    });
+    assert.equal(openrouterResponse.status, 200);
+    assert.deepEqual(await openrouterResponse.json(), {
+      ok: true,
+      data: {
+        model_id: 'openrouter_kimi_k25',
+        model: 'moonshotai/kimi-k2.5',
+        model_label: 'Kimi-K2.5 (OpenRouter)',
+        provider: 'openrouter',
+        reply: 'ok',
+        usage: null,
+        warnings: [],
+        attachments_used: {
+          images: [],
+          context_packs: []
+        },
+        raw: {}
+      }
+    });
+
+    const openaiForm = new FormData();
+    openaiForm.set('message', 'hello');
+    openaiForm.set('model_id', 'openai_gpt54');
+    const openaiResponse = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      body: openaiForm
+    });
+    assert.equal(openaiResponse.status, 200);
+    assert.deepEqual(await openaiResponse.json(), {
+      ok: true,
+      data: {
+        model_id: 'openai_gpt54',
+        model: 'gpt-5.4',
+        model_label: 'GPT-5.4 (OpenAI)',
+        provider: 'openai',
+        reply: 'ok',
+        usage: null,
+        warnings: [],
+        attachments_used: {
+          images: [],
+          context_packs: []
+        },
+        raw: {}
+      }
+    });
+
+    const openrouterImageForm = new FormData();
+    openrouterImageForm.set('message', 'hello');
+    openrouterImageForm.set('model_id', 'openrouter_kimi_k25');
+    openrouterImageForm.append(
+      'images',
+      new File([new Uint8Array([1, 2, 3])], 'demo.png', { type: 'image/png' })
+    );
+    const openrouterImageResponse = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      body: openrouterImageForm
+    });
+    assert.equal(openrouterImageResponse.status, 200);
+    assert.deepEqual(await openrouterImageResponse.json(), {
+      ok: true,
+      data: {
+        model_id: 'openrouter_kimi_k25',
+        model: 'moonshotai/kimi-k2.5',
+        model_label: 'Kimi-K2.5 (OpenRouter)',
+        provider: 'openrouter',
+        reply: 'ok',
+        usage: null,
+        warnings: [],
+        attachments_used: {
+          images: [],
+          context_packs: []
+        },
+        raw: {}
+      }
+    });
+    assert.deepEqual(capturedAiModelIds, ['openrouter_kimi_k25', 'openai_gpt54', 'openrouter_kimi_k25']);
+  });
+
+  const qwenOnlyAiRouter = createAiRouter({
+    buildAiContextPacks: async () => ({
+      packs: [],
+      warnings: []
+    }),
+    runAiChat: (async () => {
+      throw new Error('run_ai_chat_should_not_be_called');
+    }) as never,
+    listAvailableAiChatModels: () => [
+      {
+        id: 'qwen',
+        label: 'Qwen 3.6-Plus',
+        provider: 'dashscope',
+        provider_label: 'DashScope',
+        model: 'qwen3.6-plus',
+        supports_images: true,
+        supports_thinking: true
+      }
+    ],
+    getDefaultAiChatModelId: () => 'qwen'
+  } as never);
+
+  await withHttpApi(qwenOnlyAiRouter, async (baseUrl) => {
+    const modelsResponse = await fetch(`${baseUrl}/api/ai/models`);
+    assert.equal(modelsResponse.status, 200);
+    assert.deepEqual(await modelsResponse.json(), {
+      ok: true,
+      data: {
+        default_model_id: 'qwen',
+        models: [
+          {
+            id: 'qwen',
+            label: 'Qwen 3.6-Plus',
+            provider: 'dashscope',
+            provider_label: 'DashScope',
+            model: 'qwen3.6-plus',
+            supports_images: true,
+            supports_thinking: true
+          }
+        ]
+      }
+    });
+
+    const unavailableForm = new FormData();
+    unavailableForm.set('message', 'hello');
+    unavailableForm.set('model_id', 'openrouter_kimi_k25');
+    const unavailableResponse = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      body: unavailableForm
+    });
+    assert.equal(unavailableResponse.status, 400);
+    assert.deepEqual(await unavailableResponse.json(), {
+      ok: false,
+      error: 'ai_model_unavailable',
+      message: '当前选择的模型暂不可用，请切回其他模型后重试。'
+    });
+  });
 
   const mockedPolicyRouter = createRecommendationPoliciesRouter({
     getAppByKey: async () =>

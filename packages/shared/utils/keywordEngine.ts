@@ -1,4 +1,5 @@
 import { chExec, chInsertJSON, chQuery } from './clickhouse.js';
+import { fetchAppsflyerText } from './appsflyerRequest.js';
 import {
   listApps,
   listKeywordExtractRules,
@@ -6,7 +7,7 @@ import {
   upsertKeywordLifecycleState
 } from './repositories.js';
 import { extractKeywordFromCampaign, evaluateKeywordLifecycle } from './keyword.js';
-import { KeywordExtractRuleRecord, KeywordLifecycleStateRow } from '../types/models.js';
+import type { AppConfigRecord, KeywordExtractRuleRecord, KeywordLifecycleStateRow } from '../types/models.js';
 import { env } from '../config/env.js';
 import { getPreviousDateString, shiftDateString } from './businessDate.js';
 
@@ -29,6 +30,10 @@ interface PullAggRow {
   total_cost: string;
   average_ecpi: string;
   source_report: string;
+}
+
+interface CsvRow {
+  [key: string]: string;
 }
 
 interface KeywordFactRow {
@@ -71,6 +76,11 @@ interface KeywordValueRevenueAggRow {
   raw_event_count: number;
   purchase_count: number;
   revenue_d7: number;
+}
+
+interface DateWindow {
+  from: string;
+  to: string;
 }
 
 interface KeywordValueCostAgg {
@@ -135,6 +145,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // D7 revenue can continue to mature for up to 7 days after install, so
 // rolling runs only need to rescan a short trailing install window.
 const KEYWORD_VALUE_FACT_ROLLING_LOOKBACK_DAYS = 8;
+const KEYWORD_VALUE_COHORT_MATURITY_DAYS = 7;
+const KEYWORD_VALUE_COHORT_MAX_QUERY_DAYS = 31;
 let ensureKeywordValueFactSchemaPromise: Promise<void> | null = null;
 
 async function ensureKeywordValueFactSchema(): Promise<void> {
@@ -209,8 +221,197 @@ function buildWindow(backfillDays: number): { from: string; to: string } {
 }
 
 function toNumber(raw: string): number {
-  const parsed = Number(raw);
+  const text = String(raw ?? '').trim();
+  if (!text || text.toLowerCase() === 'n/a') {
+    return 0;
+  }
+  const parsed = Number(text.replace(/[,$%\s]/g, ''));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function compareDateStrings(left: string, right: string): number {
+  const leftDate = normalizeDateInput(left);
+  const rightDate = normalizeDateInput(right);
+  if (!leftDate || !rightDate) {
+    return 0;
+  }
+  return leftDate.getTime() - rightDate.getTime();
+}
+
+function sleepMs(durationMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.floor(durationMs))));
+}
+
+function parseCsvRows(csv: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < csv.length; i += 1) {
+    const char = csv[i];
+    if (char === '"') {
+      if (inQuotes && csv[i + 1] === '"') {
+        field += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (char === ',' && !inQuotes) {
+      row.push(field);
+      field = '';
+      continue;
+    }
+    if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && csv[i + 1] === '\n') {
+        i += 1;
+      }
+      row.push(field);
+      field = '';
+      if (row.some((cell) => cell.trim().length > 0)) {
+        rows.push(row);
+      }
+      row = [];
+      continue;
+    }
+    field += char;
+  }
+
+  row.push(field);
+  if (row.some((cell) => cell.trim().length > 0)) {
+    rows.push(row);
+  }
+  return rows;
+}
+
+function normalizeCsvHeader(header: string): string {
+  return header
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function parseCsv(csv: string): CsvRow[] {
+  const rows = parseCsvRows(csv);
+  if (rows.length <= 1) {
+    return [];
+  }
+  const headers = rows[0].map((header) => normalizeCsvHeader(header));
+  return rows.slice(1).map((cols) => {
+    const row: CsvRow = {};
+    for (let index = 0; index < headers.length; index += 1) {
+      row[headers[index]] = String(cols[index] ?? '').trim();
+    }
+    return row;
+  });
+}
+
+function normalizeSourceDimension(value: string | undefined | null): string {
+  const text = String(value ?? '').trim().toLowerCase();
+  return text.length > 0 ? text : 'unknown';
+}
+
+function buildKeywordValueCohortUrl(appKey: string, appId: string): string {
+  return env.cohortEndpointTemplate
+    .replace('{app_key}', appKey)
+    .replace('{app_id}', encodeURIComponent(appId));
+}
+
+function buildKeywordValueCohortBody(window: DateWindow): string {
+  return JSON.stringify({
+    cohort_type: 'user_acquisition',
+    from: window.from,
+    to: window.to,
+    aggregation_type: 'cumulative',
+    preferred_timezone: true,
+    preferred_currency: true,
+    groupings: ['date', 'pid', 'c', 'geo'],
+    kpis: ['revenue']
+  });
+}
+
+export function buildKeywordValueCohortWindows(
+  valueFrom: string,
+  valueTo: string,
+  reportDate: string,
+  maxChunkDays = KEYWORD_VALUE_COHORT_MAX_QUERY_DAYS
+): DateWindow[] {
+  const matureTo = shiftDateString(reportDate, -KEYWORD_VALUE_COHORT_MATURITY_DAYS);
+  const boundedTo = compareDateStrings(valueTo, matureTo) <= 0 ? valueTo : matureTo;
+  if (compareDateStrings(valueFrom, boundedTo) > 0) {
+    return [];
+  }
+
+  const chunkDays = Math.max(1, Math.floor(maxChunkDays));
+  const windows: DateWindow[] = [];
+  let cursor = valueFrom;
+  while (compareDateStrings(cursor, boundedTo) <= 0) {
+    const candidateTo = shiftDateString(cursor, chunkDays - 1);
+    const chunkTo = compareDateStrings(candidateTo, boundedTo) <= 0 ? candidateTo : boundedTo;
+    windows.push({ from: cursor, to: chunkTo });
+    cursor = shiftDateString(chunkTo, 1);
+  }
+  return windows;
+}
+
+function accumulateKeywordValueRevenueRow(
+  aggregate: Map<string, KeywordValueRevenueAggRow>,
+  row: KeywordValueRevenueAggRow
+): void {
+  const key = buildKeywordValueSourceKey({
+    install_date: row.install_date,
+    platform: row.platform,
+    media_source: row.media_source,
+    country: row.country,
+    campaign: row.campaign
+  });
+  const existing = aggregate.get(key);
+  if (existing) {
+    existing.raw_event_count += row.raw_event_count;
+    existing.purchase_count += row.purchase_count;
+    existing.revenue_d7 += row.revenue_d7;
+    return;
+  }
+  aggregate.set(key, { ...row });
+}
+
+function expandKeywordValueRevenueRowsForUnknownCountry(
+  rows: KeywordValueRevenueAggRow[]
+): KeywordValueRevenueAggRow[] {
+  const aggregate = new Map<string, KeywordValueRevenueAggRow>();
+  for (const row of rows) {
+    accumulateKeywordValueRevenueRow(aggregate, row);
+    accumulateKeywordValueRevenueRow(aggregate, {
+      ...row,
+      country: 'unknown'
+    });
+  }
+  return Array.from(aggregate.values());
+}
+
+function aggregateKeywordValueRevenueRows(rows: KeywordValueRevenueAggRow[]): Map<string, KeywordValueRevenueAggRow> {
+  const aggregate = new Map<string, KeywordValueRevenueAggRow>();
+  for (const row of rows) {
+    accumulateKeywordValueRevenueRow(aggregate, row);
+  }
+  return aggregate;
+}
+
+export function mergeKeywordValueRevenueRows(
+  preferredRows: KeywordValueRevenueAggRow[],
+  fallbackRows: KeywordValueRevenueAggRow[]
+): KeywordValueRevenueAggRow[] {
+  const merged = aggregateKeywordValueRevenueRows(expandKeywordValueRevenueRowsForUnknownCountry(fallbackRows));
+  for (const [key, row] of aggregateKeywordValueRevenueRows(expandKeywordValueRevenueRowsForUnknownCountry(preferredRows))) {
+    merged.set(key, row);
+  }
+  return Array.from(merged.values());
 }
 
 function percentile50(values: number[]): number {
@@ -305,6 +506,55 @@ async function queryKeywordValueRevenueRows(appKey: string, from: string, to: st
   );
 }
 
+function parseKeywordValueCohortRows(
+  appKey: string,
+  platform: string,
+  rows: CsvRow[]
+): KeywordValueRevenueAggRow[] {
+  return rows.map((row) => ({
+    install_date: String(row.date || '').trim(),
+    app_key: appKey,
+    platform: platform.toLowerCase(),
+    media_source: String(row.pid || 'unknown').trim() || 'unknown',
+    country: String(row.geo || 'unknown').trim() || 'unknown',
+    campaign: String(row.c || 'unknown').trim() || 'unknown',
+    raw_event_count: toNumber(row.revenue_count_day_7 || '0'),
+    purchase_count: toNumber(row.revenue_count_day_7 || '0'),
+    revenue_d7: toNumber(row.revenue_sum_day_7 || '0')
+  }));
+}
+
+async function queryKeywordValueCohortRows(
+  app: AppConfigRecord,
+  platform: string,
+  appId: string,
+  windows: DateWindow[]
+): Promise<KeywordValueRevenueAggRow[]> {
+  if (windows.length === 0) {
+    return [];
+  }
+  const url = buildKeywordValueCohortUrl(app.app_key, appId);
+  const allRows: KeywordValueRevenueAggRow[] = [];
+  for (let index = 0; index < windows.length; index += 1) {
+    if (index > 0) {
+      await sleepMs(env.cohortRequestIntervalMs);
+    }
+    const csv = await fetchAppsflyerText(url, {
+      headers: {
+        Authorization: `Bearer ${env.masterApiToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'text/csv'
+      },
+      timeoutMs: env.cohortRequestTimeoutMs,
+      label: 'cohort_api',
+      method: 'POST',
+      body: buildKeywordValueCohortBody(windows[index])
+    });
+    allRows.push(...parseKeywordValueCohortRows(app.app_key, platform, parseCsv(csv)));
+  }
+  return allRows;
+}
+
 function buildKeywordFactRows(
   appKey: string,
   rows: PullAggRow[],
@@ -386,10 +636,10 @@ function buildKeywordValueSourceKey(input: {
 }): string {
   return [
     input.install_date,
-    input.platform || 'unknown',
-    input.media_source || 'unknown',
-    input.country || 'unknown',
-    input.campaign || 'unknown'
+    normalizeSourceDimension(input.platform),
+    normalizeSourceDimension(input.media_source),
+    normalizeSourceDimension(input.country),
+    normalizeSourceDimension(input.campaign)
   ].join('|');
 }
 
@@ -813,14 +1063,42 @@ export async function runKeywordEngineCycle(
         }
       }
 
-      if (rawEventValueRows.length === 0 && valuePullRows.length > 0) {
+      const cohortWindows = buildKeywordValueCohortWindows(valueFrom, valueTo, to);
+      const valuePlatforms = new Set(valuePullRows.map((row) => String(row.platform || 'unknown').toLowerCase()));
+      const cohortValueRows: KeywordValueRevenueAggRow[] = [];
+      const cohortTargets: Array<{ platform: string; appId: string }> = [];
+      if (app.ios_pull_app_id && valuePlatforms.has('ios')) {
+        cohortTargets.push({ platform: 'ios', appId: app.ios_pull_app_id });
+      }
+      if (app.android_pull_app_id && valuePlatforms.has('android')) {
+        cohortTargets.push({ platform: 'android', appId: app.android_pull_app_id });
+      }
+      for (const target of cohortTargets) {
+        try {
+          cohortValueRows.push(...(await queryKeywordValueCohortRows(app, target.platform, target.appId, cohortWindows)));
+        } catch (error) {
+          logWarn(logger, 'keyword_engine_value_metrics_cohort_failed', {
+            app_key: app.app_key,
+            platform: target.platform,
+            app_id: target.appId,
+            value_from: valueFrom,
+            value_to: valueTo,
+            mature_windows: cohortWindows.length,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      const mergedValueRows = mergeKeywordValueRevenueRows(cohortValueRows, rawEventValueRows);
+      if (mergedValueRows.length === 0 && valuePullRows.length > 0) {
         logWarn(logger, 'keyword_engine_value_metrics_source_missing', {
           app_key: app.app_key,
           value_from: valueFrom,
-          value_to: valueTo
+          value_to: valueTo,
+          cohort_window_count: cohortWindows.length
         });
       }
-      const valueRows = buildKeywordValueRows(app.app_key, valuePullRows, rawEventValueRows, version, rulesByApp);
+      const valueRows = buildKeywordValueRows(app.app_key, valuePullRows, mergedValueRows, version, rulesByApp);
       await chInsertJSON('keyword_value_daily_metrics', valueRows);
 
       details.push({

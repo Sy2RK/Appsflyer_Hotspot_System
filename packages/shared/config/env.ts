@@ -74,6 +74,9 @@ export const env = {
   rawEventsEndpointTemplate:
     process.env.APPSFLYER_RAW_EVENTS_ENDPOINT_TEMPLATE ??
     'https://hq1.appsflyer.com/api/raw-data/export/app/{app_id}/in_app_events_report/v5',
+  cohortEndpointTemplate:
+    process.env.APPSFLYER_COHORT_ENDPOINT_TEMPLATE ??
+    'https://hq1.appsflyer.com/api/cohorts/v1/data/app/{app_id}',
 
   aggregatorLookbackHours: optionalNumber('AGGREGATOR_LOOKBACK_HOURS', 6),
   aggregatorIntervalMs: optionalNumber('AGGREGATOR_INTERVAL_MS', 5 * 60 * 1000),
@@ -85,6 +88,14 @@ export const env = {
   pullerRunOnBoot: (process.env.PULLER_RUN_ON_BOOT ?? 'false').toLowerCase() === 'true',
   pullerRequestIntervalMs: optionalNumber('PULLER_REQUEST_INTERVAL_MS', 1000),
   pullerRequestTimeoutMs: optionalNumber('PULLER_REQUEST_TIMEOUT_MS', 20 * 1000),
+  cohortRequestIntervalMs: optionalNumber(
+    'APPSFLYER_COHORT_REQUEST_INTERVAL_MS',
+    optionalNumber('PULLER_REQUEST_INTERVAL_MS', 1000)
+  ),
+  cohortRequestTimeoutMs: optionalNumber(
+    'APPSFLYER_COHORT_TIMEOUT_MS',
+    optionalNumber('PULLER_REQUEST_TIMEOUT_MS', 20 * 1000)
+  ),
   pullerLockTtlMs: optionalNumber('PULLER_LOCK_TTL_MS', 15 * 60 * 1000),
   pullerSameContentCooldownRecentMs: optionalNumber(
     'PULLER_SAME_CONTENT_COOLDOWN_RECENT_MS',
@@ -134,6 +145,24 @@ export const env = {
     thinkingEnabled: (process.env.QWEN_THINKING_ENABLED ?? 'true').toLowerCase() !== 'false',
     timeoutMs: optionalNumber('QWEN_TIMEOUT_MS', 15000),
     maxTokens: optionalNumber('QWEN_MAX_TOKENS', 1200)
+  },
+
+  openrouter: {
+    baseUrl: process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1',
+    apiKey: process.env.OPENROUTER_API_KEY ?? '',
+    model: process.env.OPENROUTER_MODEL ?? '',
+    httpReferer: process.env.OPENROUTER_HTTP_REFERER ?? '',
+    appTitle: process.env.OPENROUTER_APP_TITLE ?? '',
+    timeoutMs: optionalNumber('OPENROUTER_TIMEOUT_MS', 15000),
+    maxTokens: optionalNumber('OPENROUTER_MAX_TOKENS', 1200)
+  },
+
+  openai: {
+    baseUrl: process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
+    apiKey: process.env.OPENAI_API_KEY ?? '',
+    model: process.env.OPENAI_MODEL ?? 'gpt-5.4',
+    timeoutMs: optionalNumber('OPENAI_TIMEOUT_MS', 15000),
+    maxTokens: optionalNumber('OPENAI_MAX_TOKENS', 1200)
   }
 };
 

@@ -1,7 +1,29 @@
 import { Router } from 'express';
-import { buildAiContextPacks, runAiChat, AiChatHistoryMessage, AiContextPackSpec, AiChatImageInput } from '@shared/utils/aiChat.js';
+import {
+  buildAiContextPacks,
+  runAiChat,
+  AiChatHistoryMessage,
+  AiContextPackSpec,
+  AiChatImageInput,
+  getDefaultAiChatModelId,
+  isAiChatModelId,
+  listAvailableAiChatModels,
+  type AiChatModelId
+} from '@shared/utils/aiChat.js';
 
-const router = Router();
+interface AiRouteDeps {
+  buildAiContextPacks: typeof buildAiContextPacks;
+  runAiChat: typeof runAiChat;
+  listAvailableAiChatModels: typeof listAvailableAiChatModels;
+  getDefaultAiChatModelId: typeof getDefaultAiChatModelId;
+}
+
+const defaultDeps: AiRouteDeps = {
+  buildAiContextPacks,
+  runAiChat,
+  listAvailableAiChatModels,
+  getDefaultAiChatModelId
+};
 
 const MAX_IMAGE_COUNT = 4;
 const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
@@ -96,96 +118,180 @@ function sanitizeContextPacks(raw: unknown): AiContextPackSpec[] {
     .filter((item) => item.appKey);
 }
 
-router.post('/api/ai/chat', async (req, res, next) => {
-  try {
-    const contentType = String(req.headers['content-type'] || '');
-    if (!contentType.toLowerCase().includes('multipart/form-data')) {
-      return res.status(400).json({ ok: false, error: 'multipart_form_data_required' });
-    }
+function findAvailableModel(modelId: AiChatModelId, deps: AiRouteDeps) {
+  return deps.listAvailableAiChatModels().find((item) => item.id === modelId) || null;
+}
 
-    const request = new Request(`http://localhost${req.originalUrl || req.url}`, {
-      method: req.method,
-      headers: toHeadersInit(req.headers),
-      body: req,
-      duplex: 'half'
-    });
-    const formData = await request.formData();
-    const message = String(formData.get('message') || '').trim();
-    const history = sanitizeHistory(parseJsonField(formData.get('history_json'), []));
-    const contextPacks = sanitizeContextPacks(parseJsonField(formData.get('context_packs_json'), []));
-    const images = formData.getAll('images').filter((item) => isUploadedFormFile(item));
+export function createAiRouter(deps: AiRouteDeps = defaultDeps): Router {
+  const router = Router();
 
-    if (!message && images.length === 0 && contextPacks.length === 0) {
-      return res.status(400).json({ ok: false, error: 'message_or_attachment_required' });
-    }
-    if (images.length > MAX_IMAGE_COUNT) {
-      return res.status(400).json({ ok: false, error: 'too_many_images' });
-    }
-    if (contextPacks.length > MAX_CONTEXT_PACK_COUNT) {
-      return res.status(400).json({ ok: false, error: 'too_many_context_packs' });
-    }
-
-    const imagePayloads: AiChatImageInput[] = [];
-    for (const image of images) {
-      const mimeType = String(image.type || '').trim().toLowerCase();
-      if (!ALLOWED_IMAGE_TYPES.has(mimeType)) {
-        return res.status(400).json({ ok: false, error: 'unsupported_image_type' });
-      }
-      if (image.size > MAX_IMAGE_SIZE_BYTES) {
-        return res.status(400).json({ ok: false, error: 'image_too_large' });
-      }
-
-      const arrayBuffer = await image.arrayBuffer();
-      imagePayloads.push({
-        name: image.name || 'image',
-        mimeType,
-        size: image.size,
-        base64Data: Buffer.from(arrayBuffer).toString('base64')
-      });
-    }
-
-    const result = await runAiChat({
-      message,
-      history,
-      contextPacks,
-      images: imagePayloads
-    });
-
+  router.get('/api/ai/models', async (_req, res) => {
+    const models = deps.listAvailableAiChatModels();
+    const defaultModelId = deps.getDefaultAiChatModelId() || models[0]?.id || '';
     return res.json({
       ok: true,
-      data: result
+      data: {
+        default_model_id: defaultModelId,
+        models
+      }
     });
-  } catch (error) {
-    if (error instanceof Error && error.message === 'ai_chat_timeout') {
-      return res.status(504).json({
-        ok: false,
-        error: 'ai_chat_timeout',
-        message: 'Guru Ads Agent 响应超时，请重试，或减少上下文后再发送。'
+  });
+
+  router.post('/api/ai/chat', async (req, res, next) => {
+    try {
+      const contentType = String(req.headers['content-type'] || '');
+      if (!contentType.toLowerCase().includes('multipart/form-data')) {
+        return res.status(400).json({ ok: false, error: 'multipart_form_data_required' });
+      }
+
+      const request = new Request(`http://localhost${req.originalUrl || req.url}`, {
+        method: req.method,
+        headers: toHeadersInit(req.headers),
+        body: req,
+        duplex: 'half'
       });
-    }
-    return next(error);
-  }
-});
+      const formData = await request.formData();
+      const message = String(formData.get('message') || '').trim();
+      const history = sanitizeHistory(parseJsonField(formData.get('history_json'), []));
+      const contextPacks = sanitizeContextPacks(parseJsonField(formData.get('context_packs_json'), []));
+      const images = formData.getAll('images').filter((item) => isUploadedFormFile(item));
+      const rawModelId = String(formData.get('model_id') || '').trim();
 
-router.post('/api/ai/context-packs/preview', async (req, res, next) => {
-  try {
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const rawSpecs = Array.isArray(body.contextPacks) ? body.contextPacks : [];
-    const contextPacks = sanitizeContextPacks(rawSpecs);
-    if (contextPacks.length === 0) {
-      return res.status(400).json({ ok: false, error: 'context_packs_required' });
-    }
-    if (contextPacks.length > MAX_CONTEXT_PACK_COUNT) {
-      return res.status(400).json({ ok: false, error: 'too_many_context_packs' });
-    }
-    const result = await buildAiContextPacks(contextPacks);
-    return res.json({
-      ok: true,
-      data: result
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
+      if (!message && images.length === 0 && contextPacks.length === 0) {
+        return res.status(400).json({ ok: false, error: 'message_or_attachment_required' });
+      }
+      if (images.length > MAX_IMAGE_COUNT) {
+        return res.status(400).json({ ok: false, error: 'too_many_images' });
+      }
+      if (contextPacks.length > MAX_CONTEXT_PACK_COUNT) {
+        return res.status(400).json({ ok: false, error: 'too_many_context_packs' });
+      }
 
-export default router;
+      if (rawModelId && !isAiChatModelId(rawModelId)) {
+        return res.status(400).json({
+          ok: false,
+          error: 'invalid_model_id',
+          message: '当前模型无效，请重新选择 Guru Ads Agent 模型。'
+        });
+      }
+      const defaultModelId = deps.getDefaultAiChatModelId();
+      const modelId = (rawModelId || defaultModelId || '') as AiChatModelId | '';
+      if (!modelId) {
+        return res.status(400).json({
+          ok: false,
+          error: 'ai_model_unavailable',
+          message: 'Guru Ads Agent 当前没有可用模型，请联系管理员检查模型配置。'
+        });
+      }
+      if (!findAvailableModel(modelId, deps)) {
+        return res.status(400).json({
+          ok: false,
+          error: 'ai_model_unavailable',
+          message: '当前选择的模型暂不可用，请切回其他模型后重试。'
+        });
+      }
+      const selectedModel = findAvailableModel(modelId, deps);
+      if (selectedModel && images.length > 0 && selectedModel.supports_images === false) {
+        return res.status(400).json({
+          ok: false,
+          error: 'ai_model_images_unsupported',
+          message: `当前 ${selectedModel.label} 仅支持文本对话，请切回支持图片的模型，或移除图片后再试。`
+        });
+      }
+
+      const imagePayloads: AiChatImageInput[] = [];
+      for (const image of images) {
+        const mimeType = String(image.type || '').trim().toLowerCase();
+        if (!ALLOWED_IMAGE_TYPES.has(mimeType)) {
+          return res.status(400).json({ ok: false, error: 'unsupported_image_type' });
+        }
+        if (image.size > MAX_IMAGE_SIZE_BYTES) {
+          return res.status(400).json({ ok: false, error: 'image_too_large' });
+        }
+
+        const arrayBuffer = await image.arrayBuffer();
+        imagePayloads.push({
+          name: image.name || 'image',
+          mimeType,
+          size: image.size,
+          base64Data: Buffer.from(arrayBuffer).toString('base64')
+        });
+      }
+
+      const result = await deps.runAiChat({
+        message,
+        history,
+        contextPacks,
+        images: imagePayloads,
+        modelId
+      });
+
+      return res.json({
+        ok: true,
+        data: result
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'ai_chat_model_unavailable') {
+        return res.status(400).json({
+          ok: false,
+          error: 'ai_model_unavailable',
+          message: '当前选择的模型暂不可用，请切回其他模型后重试。'
+        });
+      }
+      if (error instanceof Error && error.message === 'ai_model_images_unsupported') {
+        return res.status(400).json({
+          ok: false,
+          error: 'ai_model_images_unsupported',
+          message: '当前模型仅支持文本对话，请切回支持图片的模型，或移除图片后再试。'
+        });
+      }
+      if (error instanceof Error && error.message === 'ai_chat_timeout') {
+        return res.status(504).json({
+          ok: false,
+          error: 'ai_chat_timeout',
+          message: 'Guru Ads Agent 响应超时，请重试，或减少上下文后再发送。'
+        });
+      }
+      if (error instanceof Error && error.message === 'openrouter_image_not_supported') {
+        return res.status(400).json({
+          ok: false,
+          error: 'openrouter_image_not_supported',
+          message: '当前 Kimi-K2.5（OpenRouter）通道暂不支持这次图片请求，请切回 Qwen 或移除图片后重试。'
+        });
+      }
+      if (error instanceof Error && error.message === 'openrouter_region_unavailable') {
+        return res.status(400).json({
+          ok: false,
+          error: 'openrouter_region_unavailable',
+          message: '当前 OpenRouter 的 Kimi-K2.5 在你这个地区或账号下不可用，请先切回 Qwen，或更换可用地区 / 账号后再试。'
+        });
+      }
+      return next(error);
+    }
+  });
+
+  router.post('/api/ai/context-packs/preview', async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const rawSpecs = Array.isArray(body.contextPacks) ? body.contextPacks : [];
+      const contextPacks = sanitizeContextPacks(rawSpecs);
+      if (contextPacks.length === 0) {
+        return res.status(400).json({ ok: false, error: 'context_packs_required' });
+      }
+      if (contextPacks.length > MAX_CONTEXT_PACK_COUNT) {
+        return res.status(400).json({ ok: false, error: 'too_many_context_packs' });
+      }
+      const result = await deps.buildAiContextPacks(contextPacks);
+      return res.json({
+        ok: true,
+        data: result
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  return router;
+}
+
+export default createAiRouter();
