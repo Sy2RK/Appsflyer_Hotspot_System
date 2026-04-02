@@ -54,6 +54,14 @@ cp .env.example .env
 # QWEN_API_KEY=
 # QWEN_MODEL=qwen3.6-plus
 # QWEN_THINKING_ENABLED=true
+# Guru Ads Agent 可选模型
+# OPENROUTER_API_KEY=
+# OPENROUTER_MODEL=moonshotai/kimi-k2.5
+# OPENAI_API_KEY=
+# OPENAI_MODEL=gpt-5.4
+# cohort API（D7 ROAS 主来源）
+# APPSFLYER_COHORT_TIMEOUT_MS=20000
+# APPSFLYER_COHORT_REQUEST_INTERVAL_MS=1000
 cd infra
 docker compose up -d --build
 ```
@@ -82,7 +90,9 @@ Web UI 新增能力:
 - 顶部全局调度设置（统一编辑 Pull 时间 / 推送时间）
 - 自动闭环调度（Pull ready -> budget-advisor / asa-keywords -> daily-brief / asa-daily-brief -> bitable-export）
 - 右下角 `Guru Ads Agent`
-  - 抽屉式 AI 对话窗，当前复用 Qwen 3.6
+  - 抽屉式 AI 对话窗，支持多模型切换
+  - 默认模型按当前已配置 provider 凭据自动选择
+  - 当前可选：`Qwen 3.6-Plus`、`Kimi-K2.5 (OpenRouter)`、`GPT-5.4 (OpenAI)`
   - 支持多轮对话、图片上传、数据库聚合上下文包
   - 面板内保留 Gemini 官网外部工具快捷入口
 - 规则 DSL 表单编辑（并可与 JSON 双向同步）
@@ -93,6 +103,7 @@ Web UI 新增能力:
   - 不支持的平台组合不会出现在应用选择里；接口层也会兜底拦截
   - 切换核心指标时，不再适用的隐藏阈值会自动清理，避免“界面看不到但规则仍生效”
 - ASA 关键词管理页面（真实 ASA keyword、阶段配置、专项简报 / 建议发送）
+- `keyword-engine` 的 `D7 ROAS` 价值回收优先走 AppsFlyer cohort API，并在事实表中记录 `revenue_source_missing`
 - 每日报告页面（结构化预览、飞书 `interactive` 卡片发送、阈值说明）
 - 投放执行表推送页面（通用投放建议 + ASA 关键词建议 -> 同一 Base 内按日期归档执行表 + 群通知）
 - 操作日志页面（查看手动操作与定时任务执行记录）
@@ -122,6 +133,16 @@ Web UI 新增能力:
 ```bash
 curl http://localhost:3000/health
 ```
+
+可选补充：
+
+```bash
+curl http://localhost:3000/api/ai/models
+```
+
+预期：
+- 至少返回 1 个可用模型
+- 若未配置对应 provider 凭据，相关模型不会出现在列表中
 
 ---
 
@@ -265,6 +286,30 @@ curl -X POST "http://localhost:3000/api/pull-records/trigger" \
 WebUI 手动触发：
 - 在 `Pull明细` 区块点击 `手动读取`
 - 读取完成后会弹出“读取详情”弹窗
+
+---
+
+## 5.4 验证 D7 ROAS / cohort 价值链路
+
+检查价值事实表：
+
+```bash
+curl -s "http://localhost:8123/?query=SELECT%20install_date,app_key,platform,media_source,country,campaign,total_cost,purchase_count,revenue_d7,revenue_source_missing,d7_roas%20FROM%20hotspot.keyword_value_daily_metrics%20ORDER%20BY%20install_date%20DESC%20LIMIT%2010"
+```
+
+重点观察：
+- `revenue_source_missing=0`：当前 cohort 已拿到价值回收来源
+- `revenue_source_missing=1`：当前 cohort 只有花费 / 安装，没有拿到价值回收来源
+- `d7_roas` 只在 `revenue_d7` 与 `total_cost` 都具备时有意义
+
+如果大量行都为 `revenue_source_missing=1`：
+- 先检查 `APPSFLYER_COHORT_*` 配置
+- 再检查 AppsFlyer `Master API token` 是否可用
+- 最后检查 `raw_events` 是否存在对应安装 cohort 的收入事件可作为 fallback
+
+预算建议页面联动验证：
+- 当价值回收尚未补齐时，建议主指标会显示“收入数据待补齐”
+- 飞书执行表与 WebUI 中对应 `metric_mode=roas_pending_revenue` 会显示为“ROAS（收入回流中）”
 
 删除单条 Pull 明细：
 

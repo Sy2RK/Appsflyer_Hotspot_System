@@ -30,6 +30,8 @@
 10. `keyword-engine` 已改为按 `Pull 时间 + scheduled_worker_runs` 调度，不再依赖固定间隔轮询
 11. 新增应用级预算 / ASA 规则配置表 `recommendation_policy_configs`
 12. 新增价值与国家切片事实表：`keyword_value_daily_metrics`、`asa_keyword_country_daily_metrics`
+13. `keyword-engine` 的 `D7 ROAS` 价值回收主来源改为 AppsFlyer cohort API，并用 `revenue_source_missing` 标记数据缺口
+14. `Guru Ads Agent` 改为多模型结构，支持 Qwen / OpenRouter / OpenAI 可选 provider
 
 结论：
 
@@ -101,6 +103,8 @@ CLICKHOUSE_API_PASSWORD=
 PULLER_REQUEST_TIMEOUT_MS=20000
 ASA_KEYWORD_REQUEST_TIMEOUT_MS=20000
 ASA_MASTER_API_TIMEOUT_MS=20000
+APPSFLYER_COHORT_TIMEOUT_MS=20000
+APPSFLYER_COHORT_REQUEST_INTERVAL_MS=1000
 ```
 
 ### 3.1 必须满足的要求
@@ -108,12 +112,15 @@ ASA_MASTER_API_TIMEOUT_MS=20000
 - 以上值都必须非空
 - 不允许继续依赖旧版仓库内的默认弱口令
 - `CLICKHOUSE_API_PASSWORD` 用于初始化 / 更新 `hotspot_api` 用户
-- `PULLER_REQUEST_TIMEOUT_MS / ASA_*_TIMEOUT_MS` 虽然不是必填，但生产环境建议显式配置，避免外部网络卡住时长期占住单次 attempt
+- `PULLER_REQUEST_TIMEOUT_MS / ASA_*_TIMEOUT_MS / APPSFLYER_COHORT_*` 虽然不是必填，但生产环境建议显式配置，避免外部网络卡住时长期占住单次 attempt
+- 如果希望在 `Guru Ads Agent` 中启用更多模型，还需要按需补充：
+  - `OPENROUTER_API_KEY / OPENROUTER_MODEL`
+  - `OPENAI_API_KEY / OPENAI_MODEL`
 
 ### 3.2 快速检查
 
 ```bash
-grep -E '^(ADMIN_BASIC_AUTH_USER|ADMIN_BASIC_AUTH_PASSWORD|POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|CLICKHOUSE_USER|CLICKHOUSE_PASSWORD|CLICKHOUSE_API_PASSWORD|PULLER_REQUEST_TIMEOUT_MS|ASA_KEYWORD_REQUEST_TIMEOUT_MS|ASA_MASTER_API_TIMEOUT_MS)=' .env
+grep -E '^(ADMIN_BASIC_AUTH_USER|ADMIN_BASIC_AUTH_PASSWORD|POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|CLICKHOUSE_USER|CLICKHOUSE_PASSWORD|CLICKHOUSE_API_PASSWORD|PULLER_REQUEST_TIMEOUT_MS|ASA_KEYWORD_REQUEST_TIMEOUT_MS|ASA_MASTER_API_TIMEOUT_MS|APPSFLYER_COHORT_TIMEOUT_MS|APPSFLYER_COHORT_REQUEST_INTERVAL_MS)=' .env
 ```
 
 如果任何一项为空：
@@ -227,6 +234,16 @@ docker exec hotspot-clickhouse clickhouse-client --query "EXISTS hotspot.asa_key
 预期：
 
 - 两条命令都返回 `1`
+
+检查 `keyword_value_daily_metrics` 新增字段：
+
+```bash
+docker exec hotspot-clickhouse clickhouse-client --query "DESCRIBE TABLE hotspot.keyword_value_daily_metrics"
+```
+
+预期：
+
+- 存在列 `revenue_source_missing`
 
 检查快照表：
 

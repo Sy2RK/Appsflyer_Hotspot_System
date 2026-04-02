@@ -42,6 +42,49 @@ Response:
 ### `GET /ui`
 内置 Web 控制台（配置管理 + 告警与指标可视化）。
 
+### `GET /api/ai/models`
+返回当前 `Guru Ads Agent` 可用模型列表。
+
+返回重点字段：
+- `default_model_id`
+- `models[].id`
+- `models[].label`
+- `models[].provider`
+- `models[].provider_label`
+- `models[].model`
+- `models[].supports_images`
+- `models[].supports_thinking`
+
+示例响应：
+```json
+{
+  "ok": true,
+  "data": {
+    "default_model_id": "qwen",
+    "models": [
+      {
+        "id": "qwen",
+        "label": "Qwen 3.6-Plus",
+        "provider": "dashscope",
+        "provider_label": "DashScope",
+        "model": "qwen3.6-plus",
+        "supports_images": true,
+        "supports_thinking": true
+      },
+      {
+        "id": "openrouter_kimi_k25",
+        "label": "Kimi-K2.5 (OpenRouter)",
+        "provider": "openrouter",
+        "provider_label": "OpenRouter",
+        "model": "moonshotai/kimi-k2.5",
+        "supports_images": true,
+        "supports_thinking": false
+      }
+    ]
+  }
+}
+```
+
 ### `POST /api/ai/chat`
 `Guru Ads Agent` 对话接口，当前供 WebUI 右下角 AI 抽屉调用。
 
@@ -51,6 +94,10 @@ Response:
 表单字段：
 - `message`
   - 用户输入文本，可空
+- `model_id`
+  - 可选
+  - 当前支持：`qwen`、`openrouter_kimi_k25`、`openai_gpt54`
+  - 不传时自动回退到当前默认模型
 - `history_json`
   - 最近多轮对话，JSON 数组
   - 每项格式：`{ "role": "user|assistant", "content": "..." }`
@@ -67,6 +114,10 @@ Response:
 - `message / images / context_packs_json` 三者至少要有一个
 
 返回重点字段：
+- `model_id`
+- `model`
+- `model_label`
+- `provider`
 - `reply`
 - `attachments_used`
 - `warnings`
@@ -79,6 +130,16 @@ Response:
 - `too_many_context_packs`
 - `unsupported_image_type`
 - `image_too_large`
+- `invalid_model_id`
+- `ai_model_unavailable`
+- `ai_model_images_unsupported`
+- `openrouter_image_not_supported`
+- `openrouter_region_unavailable`
+
+说明：
+- 模型列表以 `GET /api/ai/models` 返回结果为准
+- 是否支持图片 / thinking 由模型配置动态决定
+- `Kimi-K2.5 (OpenRouter)` 即使在模型列表中可见，特定账号或地区下仍可能返回 provider 侧限制错误
 
 ### `POST /api/ai/context-packs/preview`
 预构建数据库聚合上下文包，用于前端调试或未来的预览能力。
