@@ -676,6 +676,19 @@ function aiChatMessageId() {
   return `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function getAIChatErrorMessage(code, fallbackMessage = '') {
+  if (fallbackMessage) {
+    return fallbackMessage;
+  }
+  if (code === 'ai_chat_timeout') {
+    return 'Guru Ads Agent 响应超时，请重试，或减少上下文后再发送。';
+  }
+  if (code === 'internal_error') {
+    return 'Guru Ads Agent 暂时不可用，请稍后重试。';
+  }
+  return '';
+}
+
 function aiChatPackTemplateLabel(type, templateId) {
   const items = AI_CHAT_PACK_TEMPLATES[type] || [];
   return items.find((item) => item.value === templateId)?.label || templateId;
@@ -734,22 +747,22 @@ function buildAIChatPackDisplay(spec) {
 }
 
 function isAIChatNearBottom() {
-  if (!(el.aiChatBody instanceof HTMLElement)) {
+  if (!(el.aiChatMessages instanceof HTMLElement)) {
     return true;
   }
   const threshold = 96;
-  return el.aiChatBody.scrollHeight - el.aiChatBody.scrollTop - el.aiChatBody.clientHeight <= threshold;
+  return el.aiChatMessages.scrollHeight - el.aiChatMessages.scrollTop - el.aiChatMessages.clientHeight <= threshold;
 }
 
 function scrollAIChatToBottom(force = false) {
-  if (!(el.aiChatBody instanceof HTMLElement)) {
+  if (!(el.aiChatMessages instanceof HTMLElement)) {
     return;
   }
   if (!force && !isAIChatNearBottom()) {
     return;
   }
   requestAnimationFrame(() => {
-    el.aiChatBody.scrollTop = el.aiChatBody.scrollHeight;
+    el.aiChatMessages.scrollTop = el.aiChatMessages.scrollHeight;
   });
 }
 
@@ -799,6 +812,7 @@ function setAIChatContextMenuOpen(open) {
     renderAIChatPackMenus();
     requestAnimationFrame(() => {
       el.aiChatBody?.scrollTo({ top: 0, behavior: 'auto' });
+      el.aiChatMessages?.scrollTo({ top: 0, behavior: 'auto' });
     });
   }
 }
@@ -887,8 +901,8 @@ function syncAIChatInputHeight() {
     return;
   }
   el.aiChatInput.style.height = 'auto';
-  const nextHeight = Math.min(el.aiChatInput.scrollHeight, 176);
-  el.aiChatInput.style.height = `${Math.max(nextHeight, 28)}px`;
+  const nextHeight = Math.min(el.aiChatInput.scrollHeight, 152);
+  el.aiChatInput.style.height = `${Math.max(nextHeight, 56)}px`;
 }
 
 function renderAIChatMessageAttachments(items) {
@@ -909,10 +923,7 @@ function renderAIChatMessages() {
   if (rows.length === 0) {
     el.aiChatMessages.innerHTML = `
       <div class="ai-chat-empty">
-        <div class="ai-chat-empty-orbit" aria-hidden="true"></div>
-        <p class="ai-chat-empty-kicker">Ready for Context</p>
-        <h4>从当前工作台发起一段有上下文的对话</h4>
-        <p>可以直接提问，也可以先附带数据库聚合包或截图，让模型围绕当前业务面板给出分析。</p>
+        <p>开始对话...(*´∀&#96;)~♥</p>
       </div>
     `;
     scrollAIChatToBottom(true);
@@ -1304,7 +1315,7 @@ function handleAIChatAttachmentStripClick(event) {
 }
 
 async function sendAIChat(event) {
-  event.preventDefault();
+  event?.preventDefault?.();
   if (state.aiChat.pending) {
     return;
   }
@@ -1317,7 +1328,7 @@ async function sendAIChat(event) {
 
   const history = (state.aiChat.messages || [])
     .filter((item) => !item.pending && (item.role === 'user' || item.role === 'assistant'))
-    .slice(-8)
+    .slice(-80)
     .map((item) => ({
       role: item.role,
       content: item.content
@@ -1376,7 +1387,11 @@ async function sendAIChat(event) {
     const body = await res.json().catch(() => ({}));
     if (!res.ok || body.ok === false) {
       throw new Error(
-        body.message || getRecommendationPolicyErrorMessage(body.error) || body.error || `request_failed_${res.status}`
+        body.message ||
+          getAIChatErrorMessage(body.error) ||
+          getRecommendationPolicyErrorMessage(body.error) ||
+          body.error ||
+          `request_failed_${res.status}`
       );
     }
 
@@ -1416,6 +1431,19 @@ async function sendAIChat(event) {
   } finally {
     state.aiChat.pending = false;
   }
+}
+
+function handleAIChatInputKeydown(event) {
+  if (!(event instanceof KeyboardEvent)) {
+    return;
+  }
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) {
+    return;
+  }
+  event.preventDefault();
+  sendAIChat().catch((error) => {
+    showToast(error.message || '发送失败', true);
+  });
 }
 
 async function api(path, options = {}) {
@@ -6116,6 +6144,7 @@ el.aiChatAddContextBtn?.addEventListener('click', () => {
   setAIChatContextMenuOpen(!state.aiChat.contextMenuOpen);
 });
 el.aiChatInput?.addEventListener('input', () => syncAIChatInputHeight());
+el.aiChatInput?.addEventListener('keydown', (event) => handleAIChatInputKeydown(event));
 el.aiChatFileInput?.addEventListener('change', (event) => {
   try {
     handleAIChatImageSelection(event);

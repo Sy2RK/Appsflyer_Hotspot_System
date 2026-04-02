@@ -1803,21 +1803,16 @@
         >
           <div class="ai-chat-head">
             <div>
-              <p class="ai-dock-kicker">Realtime AI Surface</p>
               <h3 id="aiChatDialogTitle">Guru Ads Agent</h3>
             </div>
             <div class="ai-chat-head-actions">
-              <span class="ai-dock-status">Guru Ads Agent · Qwen 3.5</span>
+              <span class="ai-dock-status">Qwen 3.5-Plus</span>
               <button id="aiChatCloseBtn" class="btn btn-ghost" type="button">关闭</button>
             </div>
           </div>
 
           <div id="aiChatBody" class="ai-chat-body">
             <section class="ai-chat-intro">
-              <div class="ai-chat-subhead">
-                <p class="ai-chat-copy">围绕当前控制台上下文发起对话。多轮会话、图片分析、数据库聚合包，都从同一套工具面板进入。</p>
-              </div>
-
               <div class="ai-chat-toolbar">
                 <div class="ai-chat-toolbar-group">
                   <button
@@ -1977,10 +1972,7 @@
 
             <div id="aiChatMessages" class="ai-chat-messages">
               <div id="aiChatEmptyState" class="ai-chat-empty">
-                <div class="ai-chat-empty-orbit" aria-hidden="true"></div>
-                <p class="ai-chat-empty-kicker">Ready for Context</p>
-                <h4>从当前工作台发起一段有上下文的对话</h4>
-                <p>可以直接提问，也可以先附带数据库聚合包或截图，让模型围绕当前业务面板给出分析。</p>
+                <p>开始对话...(*´∀&#96;)~♥</p>
               </div>
             </div>
           </div>
@@ -2003,17 +1995,16 @@
                 <div id="aiChatContextPackList" class="ai-chat-chip-list"></div>
               </div>
             </div>
-            <label class="ai-chat-input-shell" for="aiChatInput">
-              <textarea
-                id="aiChatInput"
-                rows="1"
-                placeholder="例如：结合我附带的预算建议聚合包，判断当前最值得优先处理的媒体源。"
-              ></textarea>
-            </label>
-            <div class="ai-chat-form-foot">
-              <p class="hint">支持页面内多轮对话。刷新页面会清空会话；图片最多 4 张，每张不超过 5MB。</p>
-              <button id="aiChatSendBtn" class="btn btn-primary" type="submit">发送到 Guru Ads Agent</button>
+            <div class="ai-chat-composer-row">
+              <label class="ai-chat-input-shell" for="aiChatInput">
+                <textarea
+                  id="aiChatInput"
+                  rows="1"
+                ></textarea>
+              </label>
+              <button id="aiChatSendBtn" class="btn btn-primary ai-chat-send-btn" type="submit">发送</button>
             </div>
+            <p class="ai-chat-form-note">多轮对话，刷新即清空；图片最多 4 张，单张不超过 5MB。</p>
           </form>
         </div>
       </div>

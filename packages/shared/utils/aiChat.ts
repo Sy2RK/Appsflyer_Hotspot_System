@@ -74,9 +74,12 @@ export interface AiChatResult {
   raw: Record<string, unknown>;
 }
 
-const MAX_HISTORY_MESSAGES = 10;
+const MAX_HISTORY_MESSAGES = 96;
+const MAX_HISTORY_CHARS_PER_MESSAGE = 32000;
 const MAX_BUCKET_ROWS = 40;
 const MAX_GROUP_ROWS = 10;
+const AI_CHAT_TIMEOUT_ERROR = 'ai_chat_timeout';
+const AI_CHAT_REQUEST_TIMEOUT_MS = Math.max(env.qwen.timeoutMs, 120000);
 
 const PULL_METRICS = new Set(['installs', 'clicks', 'total_cost']);
 const PUSH_METRICS = new Set(['revenue', 'event_count', 'purchase_count']);
@@ -138,7 +141,7 @@ function normalizeHistory(history: AiChatHistoryMessage[]): AiChatHistoryMessage
       .filter((item) => item && (item.role === 'user' || item.role === 'assistant') && hasText(item.content))
       .map((item) => ({
         role: item.role,
-        content: String(item.content).trim().slice(0, 2400)
+        content: String(item.content).trim().slice(0, MAX_HISTORY_CHARS_PER_MESSAGE)
       })),
     MAX_HISTORY_MESSAGES
   );
@@ -849,72 +852,25 @@ function buildContextPrompt(packs: AiBuiltContextPack[]): string {
   ].join('\n');
 }
 
-export async function runAiChat(input: {
-  message: string;
-  history: AiChatHistoryMessage[];
-  contextPacks: AiContextPackSpec[];
+async function requestQwenAiChat(input: {
+  messages: Array<Record<string, unknown>>;
+  packs: AiBuiltContextPack[];
+  warnings: string[];
   images: AiChatImageInput[];
+  thinkingEnabled: boolean;
 }): Promise<AiChatResult> {
-  const promptMessage = hasText(input.message) ? String(input.message).trim() : '请结合我附带的上下文和图片，给出中文分析。';
-  const normalizedHistory = normalizeHistory(input.history);
-  const { packs, warnings } = await buildAiContextPacks(input.contextPacks);
-
-  if (!env.qwen.baseUrl || !env.qwen.apiKey) {
-    throw new Error('qwen_config_missing');
-  }
-
-  const userContent: Array<Record<string, unknown>> = [
-    {
-      type: 'text',
-      text: promptMessage
-    }
-  ];
-  for (const image of input.images) {
-    userContent.push({
-      type: 'image_url',
-      image_url: {
-        url: `data:${image.mimeType};base64,${image.base64Data}`
-      }
-    });
-  }
-
-  const messages: Array<Record<string, unknown>> = [
-    {
-      role: 'system',
-      content:
-        '你是 Hotspot 控制台的投放分析助手。默认使用简体中文，回答要基于用户当前附带的数据与图片，结论务必克制、可执行。不要虚构系统里不存在的事实；若信息不足，请直接说明“当前上下文不足”。'
-    },
-    ...normalizedHistory.map((item) => ({
-      role: item.role,
-      content: item.content
-    }))
-  ];
-
-  const contextPrompt = buildContextPrompt(packs);
-  if (contextPrompt) {
-    messages.push({
-      role: 'system',
-      content: contextPrompt
-    });
-  }
-  messages.push({
-    role: 'user',
-    content: userContent
-  });
-
   const payload: Record<string, unknown> = {
     model: env.qwen.model,
     temperature: 0.3,
     max_tokens: Math.max(900, env.qwen.maxTokens),
-    messages
+    messages: input.messages,
+    extra_body: {
+      enable_thinking: input.thinkingEnabled
+    }
   };
-  if (env.qwen.thinkingEnabled) {
-    payload.extra_body = { enable_thinking: true };
-    payload.thinking = { enabled: true };
-  }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), env.qwen.timeoutMs);
+  const timer = setTimeout(() => controller.abort(), AI_CHAT_REQUEST_TIMEOUT_MS);
 
   try {
     const res = await fetch(`${env.qwen.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
@@ -950,14 +906,14 @@ export async function runAiChat(input: {
         responseJson.usage && typeof responseJson.usage === 'object'
           ? (responseJson.usage as Record<string, unknown>)
           : null,
-      warnings,
+      warnings: input.warnings,
       attachments_used: {
         images: input.images.map((image) => ({
           name: image.name,
           mimeType: image.mimeType,
           size: image.size
         })),
-        context_packs: packs.map((pack) => ({
+        context_packs: input.packs.map((pack) => ({
           type: pack.type,
           templateId: pack.templateId,
           title: pack.title,
@@ -967,7 +923,91 @@ export async function runAiChat(input: {
       },
       raw: responseJson
     };
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === 'AbortError' || /aborted/i.test(error.message) || /timed? ?out/i.test(error.message))
+    ) {
+      throw new Error(AI_CHAT_TIMEOUT_ERROR);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+export async function runAiChat(input: {
+  message: string;
+  history: AiChatHistoryMessage[];
+  contextPacks: AiContextPackSpec[];
+  images: AiChatImageInput[];
+}): Promise<AiChatResult> {
+  const promptMessage = hasText(input.message) ? String(input.message).trim() : '请结合我附带的上下文和图片，给出中文分析。';
+  const normalizedHistory = normalizeHistory(input.history);
+  const { packs, warnings } = await buildAiContextPacks(input.contextPacks);
+  const shouldEnableThinking = env.qwen.thinkingEnabled && (input.images.length > 0 || packs.length > 0);
+
+  if (!env.qwen.baseUrl || !env.qwen.apiKey) {
+    throw new Error('qwen_config_missing');
+  }
+
+  const userContent: Array<Record<string, unknown>> = [
+    {
+      type: 'text',
+      text: promptMessage
+    }
+  ];
+  for (const image of input.images) {
+    userContent.push({
+      type: 'image_url',
+      image_url: {
+        url: `data:${image.mimeType};base64,${image.base64Data}`
+      }
+    });
+  }
+
+  const messages: Array<Record<string, unknown>> = [
+    {
+      role: 'system',
+      content:
+        '你是 Hotspot 控制台的 Guru Ads Agent。默认使用简体中文回答。若用户附带了投放数据、数据库上下文包或图片，请优先基于这些上下文给出克制、可执行的分析结论，不要虚构系统里不存在的事实。若用户没有附带业务上下文，也可以像通用助手一样正常聊天、回答常规问题，不要机械拒答。只有当用户明确要求你基于当前业务数据、截图或工作台上下文做判断，但提供的信息确实不足时，才说明“当前上下文不足”。'
+    },
+    ...normalizedHistory.map((item) => ({
+      role: item.role,
+      content: item.content
+    }))
+  ];
+
+  const contextPrompt = buildContextPrompt(packs);
+  if (contextPrompt) {
+    messages.push({
+      role: 'system',
+      content: contextPrompt
+    });
+  }
+  messages.push({
+    role: 'user',
+    content: userContent
+  });
+
+  try {
+    return await requestQwenAiChat({
+      messages,
+      packs,
+      warnings,
+      images: input.images,
+      thinkingEnabled: shouldEnableThinking
+    });
+  } catch (error) {
+    if (shouldEnableThinking && error instanceof Error && error.message === AI_CHAT_TIMEOUT_ERROR) {
+      return await requestQwenAiChat({
+        messages,
+        packs,
+        warnings,
+        images: input.images,
+        thinkingEnabled: false
+      });
+    }
+    throw error;
   }
 }

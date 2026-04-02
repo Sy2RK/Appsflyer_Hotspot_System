@@ -238,7 +238,6 @@ export async function explainBudgetRecommendationWithLlm(input: BudgetLlmInput):
 
   if (env.qwen.thinkingEnabled) {
     body.extra_body = { enable_thinking: true };
-    body.thinking = { enabled: true };
   }
 
   const controller = new AbortController();

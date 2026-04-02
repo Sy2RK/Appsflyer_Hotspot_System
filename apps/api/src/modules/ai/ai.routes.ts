@@ -156,6 +156,13 @@ router.post('/api/ai/chat', async (req, res, next) => {
       data: result
     });
   } catch (error) {
+    if (error instanceof Error && error.message === 'ai_chat_timeout') {
+      return res.status(504).json({
+        ok: false,
+        error: 'ai_chat_timeout',
+        message: 'Guru Ads Agent 响应超时，请重试，或减少上下文后再发送。'
+      });
+    }
     return next(error);
   }
 });

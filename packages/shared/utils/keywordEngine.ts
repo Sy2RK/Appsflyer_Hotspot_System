@@ -23,6 +23,7 @@ interface PullAggRow {
   campaign: string;
   media_source: string;
   country: string;
+  impressions: string;
   installs: string;
   clicks: string;
   total_cost: string;
@@ -60,9 +61,58 @@ interface KeywordDailyAgg {
   average_ecpi: number;
 }
 
+interface KeywordValueRevenueAggRow {
+  install_date: string;
+  app_key: string;
+  platform: string;
+  media_source: string;
+  country: string;
+  campaign: string;
+  raw_event_count: number;
+  purchase_count: number;
+  revenue_d7: number;
+}
+
+interface KeywordValueCostAgg {
+  install_date: string;
+  app_key: string;
+  platform: string;
+  keyword: string;
+  match_type: string;
+  campaign: string;
+  media_source: string;
+  country: string;
+  impressions: number;
+  installs: number;
+  clicks: number;
+  total_cost: number;
+}
+
+interface KeywordValueFactRow {
+  install_date: string;
+  app_key: string;
+  platform: string;
+  media_source: string;
+  country: string;
+  campaign: string;
+  keyword: string;
+  match_type: string;
+  installs: number;
+  total_cost: number;
+  purchase_count: number;
+  revenue_d7: number;
+  ctr: number;
+  cvr: number;
+  cpi: number;
+  cpp: number;
+  d7_roas: number;
+  version: number;
+}
+
 export interface KeywordEngineCycleDetail {
   app_key: string;
   keyword_rows: number;
+  value_rows: number;
   lifecycle_rows: number;
   status: 'ok' | 'failed' | 'skipped';
   error?: string;
@@ -81,6 +131,7 @@ export interface KeywordEngineCycleResult {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const KEYWORD_VALUE_FACT_BACKFILL_DAYS = 45;
 
 function logInfo(
   logger: KeywordEngineLogger | undefined,
@@ -164,6 +215,7 @@ async function queryPullRows(appKey: string, from: string, to: string): Promise<
         campaign,
         media_source,
         country,
+        toString(argMax(impressions, ingest_time)) AS impressions,
         toString(argMax(installs, ingest_time)) AS installs,
         toString(argMax(clicks, ingest_time)) AS clicks,
         toString(argMax(total_cost, ingest_time)) AS total_cost,
@@ -177,6 +229,7 @@ async function queryPullRows(appKey: string, from: string, to: string): Promise<
           if(empty(campaign), 'unknown', campaign) AS campaign,
           if(empty(media_source), 'unknown', media_source) AS media_source,
           if(empty(country), 'unknown', country) AS country,
+          impressions,
           installs,
           clicks,
           total_cost,
@@ -190,6 +243,43 @@ async function queryPullRows(appKey: string, from: string, to: string): Promise<
       )
       GROUP BY date, app_key, platform, campaign, media_source, country
       ORDER BY date ASC`,
+    {
+      app_key: appKey,
+      from,
+      to
+    }
+  );
+}
+
+async function queryKeywordValueRevenueRows(appKey: string, from: string, to: string): Promise<KeywordValueRevenueAggRow[]> {
+  return chQuery<KeywordValueRevenueAggRow>(
+    `SELECT
+        toString(toDate(install_time)) AS install_date,
+        app_key,
+        if(empty(platform), 'unknown', lowerUTF8(platform)) AS platform,
+        if(empty(media_source), 'unknown', media_source) AS media_source,
+        if(empty(country), 'unknown', country) AS country,
+        if(empty(campaign), 'unknown', campaign) AS campaign,
+        toFloat64(count()) AS raw_event_count,
+        toFloat64(
+          countIf(
+            revenue > 0
+            AND dateDiff('second', install_time, event_time) >= 0
+            AND dateDiff('second', install_time, event_time) <= 604800
+          )
+        ) AS purchase_count,
+        sumIf(
+          toFloat64(revenue),
+          revenue > 0
+          AND dateDiff('second', install_time, event_time) >= 0
+          AND dateDiff('second', install_time, event_time) <= 604800
+        ) AS revenue_d7
+      FROM raw_events
+      WHERE app_key = {app_key:String}
+        AND toDate(install_time) >= toDate({from:String})
+        AND toDate(install_time) <= toDate({to:String})
+      GROUP BY install_date, app_key, platform, media_source, country, campaign
+      ORDER BY install_date ASC, platform ASC, media_source ASC, country ASC, campaign ASC`,
     {
       app_key: appKey,
       from,
@@ -268,6 +358,140 @@ function buildKeywordFactRows(
     row.cvr = row.clicks > 0 ? row.installs / row.clicks : 0;
   }
   return out;
+}
+
+function buildKeywordValueSourceKey(input: {
+  install_date: string;
+  platform: string;
+  media_source: string;
+  country: string;
+  campaign: string;
+}): string {
+  return [
+    input.install_date,
+    input.platform || 'unknown',
+    input.media_source || 'unknown',
+    input.country || 'unknown',
+    input.campaign || 'unknown'
+  ].join('|');
+}
+
+export function buildKeywordValueRows(
+  appKey: string,
+  rows: PullAggRow[],
+  revenueRows: KeywordValueRevenueAggRow[],
+  version: number,
+  rulesByApp: Map<string, KeywordExtractRuleRecord[]>
+): KeywordValueFactRow[] {
+  const rules = rulesByApp.get(appKey) ?? [];
+  const revenueMap = new Map<string, KeywordValueRevenueAggRow>();
+  for (const row of revenueRows) {
+    revenueMap.set(
+      buildKeywordValueSourceKey({
+        install_date: row.install_date,
+        platform: row.platform,
+        media_source: row.media_source,
+        country: row.country,
+        campaign: row.campaign
+      }),
+      row
+    );
+  }
+
+  const aggregate = new Map<string, KeywordValueCostAgg>();
+  for (const row of rows) {
+    const extracted = extractKeywordFromCampaign(row.campaign, rules);
+    const installDate = row.report_date;
+    const platform = row.platform || 'unknown';
+    const campaign = row.campaign || 'unknown';
+    const mediaSource = row.media_source || 'unknown';
+    const country = row.country || 'unknown';
+    const revenueKey = buildKeywordValueSourceKey({
+      install_date: installDate,
+      platform,
+      media_source: mediaSource,
+      country,
+      campaign
+    });
+    if (!revenueMap.has(revenueKey)) {
+      continue;
+    }
+
+    const key = [
+      installDate,
+      appKey,
+      platform,
+      extracted.keyword,
+      extracted.matchType,
+      campaign,
+      mediaSource,
+      country
+    ].join('|');
+    const impressions = toNumber(row.impressions);
+    const installs = toNumber(row.installs);
+    const clicks = toNumber(row.clicks);
+    const totalCost = toNumber(row.total_cost);
+    const existing = aggregate.get(key);
+    if (existing) {
+      existing.impressions += impressions;
+      existing.installs += installs;
+      existing.clicks += clicks;
+      existing.total_cost += totalCost;
+      continue;
+    }
+
+    aggregate.set(key, {
+      install_date: installDate,
+      app_key: appKey,
+      platform,
+      keyword: extracted.keyword,
+      match_type: extracted.matchType,
+      campaign,
+      media_source: mediaSource,
+      country,
+      impressions,
+      installs,
+      clicks,
+      total_cost: totalCost
+    });
+  }
+
+  return Array.from(aggregate.values()).flatMap((row) => {
+    const revenue = revenueMap.get(
+      buildKeywordValueSourceKey({
+        install_date: row.install_date,
+        platform: row.platform,
+        media_source: row.media_source,
+        country: row.country,
+        campaign: row.campaign
+      })
+    );
+    if (!revenue || revenue.raw_event_count <= 0) {
+      return [];
+    }
+    return [
+      {
+        install_date: row.install_date,
+        app_key: row.app_key,
+        platform: row.platform,
+        media_source: row.media_source,
+        country: row.country,
+        campaign: row.campaign,
+        keyword: row.keyword,
+        match_type: row.match_type,
+        installs: row.installs,
+        total_cost: row.total_cost,
+        purchase_count: revenue.purchase_count,
+        revenue_d7: revenue.revenue_d7,
+        ctr: row.impressions > 0 ? row.clicks / row.impressions : 0,
+        cvr: row.clicks > 0 ? row.installs / row.clicks : 0,
+        cpi: row.installs > 0 ? row.total_cost / row.installs : 0,
+        cpp: revenue.purchase_count > 0 ? row.total_cost / revenue.purchase_count : 0,
+        d7_roas: row.total_cost > 0 ? revenue.revenue_d7 / row.total_cost : 0,
+        version
+      }
+    ];
+  });
 }
 
 async function queryKeywordHistory(appKey: string, platform: string, days: number): Promise<KeywordDailyAgg[]> {
@@ -511,6 +735,7 @@ export async function runKeywordEngineCycle(
   const startedAt = new Date();
   const version = Date.now();
   const { from, to } = buildWindow(backfillDays);
+  const { from: valueFrom, to: valueTo } = buildWindow(Math.max(KEYWORD_VALUE_FACT_BACKFILL_DAYS, Math.max(1, Math.floor(backfillDays))));
   const apps = await listApps();
   const rules = await listKeywordExtractRules();
   const rulesByApp = new Map<string, KeywordExtractRuleRecord[]>();
@@ -527,6 +752,8 @@ export async function runKeywordEngineCycle(
     backfill_days: backfillDays,
     from,
     to,
+    value_from: valueFrom,
+    value_to: valueTo,
     apps: apps.length
   });
 
@@ -538,30 +765,51 @@ export async function runKeywordEngineCycle(
 
   for (const app of apps) {
     try {
-      const rawRows = await queryPullRows(app.app_key, from, to);
-      if (rawRows.length === 0) {
+      const requiresWideValueWindow = valueFrom !== from || valueTo !== to;
+      const [rawRows, valueWindowPullRows, rawEventValueRows] = await Promise.all([
+        queryPullRows(app.app_key, from, to),
+        requiresWideValueWindow ? queryPullRows(app.app_key, valueFrom, valueTo) : Promise.resolve([]),
+        queryKeywordValueRevenueRows(app.app_key, valueFrom, valueTo)
+      ]);
+      const valuePullRows = requiresWideValueWindow ? valueWindowPullRows : rawRows;
+      if (rawRows.length === 0 && valuePullRows.length === 0) {
         details.push({
           app_key: app.app_key,
           keyword_rows: 0,
+          value_rows: 0,
           lifecycle_rows: 0,
           status: 'skipped'
         });
         continue;
       }
 
-      const keywordRows = buildKeywordFactRows(app.app_key, rawRows, version, rulesByApp);
-      await chInsertJSON('keyword_daily_metrics', keywordRows);
       let lifecycleRows = 0;
-      const platforms = new Set(
-        keywordRows.map((item) => (item.platform || 'unknown').toLowerCase()).filter((item) => item.length > 0)
-      );
-      for (const platform of platforms) {
-        lifecycleRows += await computeLifecycleStates(app.app_key, platform, lifecycleLookbackDays);
+      let keywordRows: KeywordFactRow[] = [];
+      if (rawRows.length > 0) {
+        keywordRows = buildKeywordFactRows(app.app_key, rawRows, version, rulesByApp);
+        await chInsertJSON('keyword_daily_metrics', keywordRows);
+        const platforms = new Set(
+          keywordRows.map((item) => (item.platform || 'unknown').toLowerCase()).filter((item) => item.length > 0)
+        );
+        for (const platform of platforms) {
+          lifecycleRows += await computeLifecycleStates(app.app_key, platform, lifecycleLookbackDays);
+        }
       }
+
+      if (rawEventValueRows.length === 0 && valuePullRows.length > 0) {
+        logWarn(logger, 'keyword_engine_value_metrics_source_missing', {
+          app_key: app.app_key,
+          value_from: valueFrom,
+          value_to: valueTo
+        });
+      }
+      const valueRows = buildKeywordValueRows(app.app_key, valuePullRows, rawEventValueRows, version, rulesByApp);
+      await chInsertJSON('keyword_value_daily_metrics', valueRows);
 
       details.push({
         app_key: app.app_key,
         keyword_rows: keywordRows.length,
+        value_rows: valueRows.length,
         lifecycle_rows: lifecycleRows,
         status: 'ok'
       });
@@ -570,6 +818,7 @@ export async function runKeywordEngineCycle(
       details.push({
         app_key: app.app_key,
         keyword_rows: 0,
+        value_rows: 0,
         lifecycle_rows: 0,
         status: 'failed',
         error: errorText

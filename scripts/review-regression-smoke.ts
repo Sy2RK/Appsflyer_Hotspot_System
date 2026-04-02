@@ -25,6 +25,7 @@ import {
   didKeywordEngineCycleComplete,
   resolveKeywordEngineBackfillDays
 } from '../packages/shared/utils/keywordEngineWorkerPolicy.js';
+import { buildKeywordValueRows } from '../packages/shared/utils/keywordEngine.js';
 import {
   defaultRecommendationPolicyRule,
   evaluateSpendScenarios,
@@ -564,6 +565,72 @@ async function main(): Promise<void> {
   const asaTemplate = createPolicyTemplate({ platform: 'ios', appKey: 'demo', engine: 'asa' }, 'recommended');
   assert.equal(asaTemplate.trafficScope, 'asa_only');
   assert.deepEqual(asaTemplate.contextWindowDays, [7, 14, 21]);
+
+  const keywordValueRows = buildKeywordValueRows(
+    'demo',
+    [
+      {
+        report_date: '2026-03-20',
+        app_key: 'demo',
+        platform: 'android',
+        campaign: 'camera exact',
+        media_source: 'googleadwords_int',
+        country: 'US',
+        impressions: '1000',
+        installs: '10',
+        clicks: '100',
+        total_cost: '50',
+        average_ecpi: '5',
+        source_report: 'daily_report_v5'
+      }
+    ],
+    [
+      {
+        install_date: '2026-03-20',
+        app_key: 'demo',
+        platform: 'android',
+        media_source: 'googleadwords_int',
+        country: 'US',
+        campaign: 'camera exact',
+        raw_event_count: 4,
+        purchase_count: 2,
+        revenue_d7: 80
+      }
+    ],
+    123,
+    new Map()
+  );
+  assert.equal(keywordValueRows.length, 1);
+  assert.equal(keywordValueRows[0].keyword, 'camera exact');
+  assert.equal(keywordValueRows[0].purchase_count, 2);
+  assert.equal(keywordValueRows[0].revenue_d7, 80);
+  assert.equal(keywordValueRows[0].cpp, 25);
+  assert.equal(keywordValueRows[0].d7_roas, 1.6);
+  assert.equal(keywordValueRows[0].ctr, 0.1);
+
+  const keywordValueRowsWithoutSource = buildKeywordValueRows(
+    'demo',
+    [
+      {
+        report_date: '2026-03-20',
+        app_key: 'demo',
+        platform: 'android',
+        campaign: 'camera exact',
+        media_source: 'googleadwords_int',
+        country: 'US',
+        impressions: '1000',
+        installs: '10',
+        clicks: '100',
+        total_cost: '50',
+        average_ecpi: '5',
+        source_report: 'daily_report_v5'
+      }
+    ],
+    [],
+    123,
+    new Map()
+  );
+  assert.equal(keywordValueRowsWithoutSource.length, 0);
 
   const mergedRule = mergeRecommendationPolicyRule(
     {
