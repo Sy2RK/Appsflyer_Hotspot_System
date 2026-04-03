@@ -104,6 +104,12 @@ Web UI 新增能力:
   - 切换核心指标时，不再适用的隐藏阈值会自动清理，避免“界面看不到但规则仍生效”
 - ASA 关键词管理页面（真实 ASA keyword、阶段配置、专项简报 / 建议发送）
 - `keyword-engine` 的 `D7 ROAS` 价值回收直接使用 AppsFlyer cohort API 源数据，并在事实表中记录 `revenue_source_missing`
+- 预算建议、ASA 看板、ASA 简报、多维表中的 `D7 ROAS / CPP` 统一按成熟窗口读取
+  - 默认至少排除最近 7 天，再按策略 `decision_window_days` 聚合
+  - 同时显式输出 `roas_window_from / roas_window_to / roas_data_status`
+  - `roas_data_status=complete`：成熟窗口 Cohort 源数据完整
+  - `roas_data_status=pending`：成熟窗口内存在 Cohort 缺口，显示“待补齐”
+  - `roas_data_status=unavailable`：当前还没有可用于判断的成熟窗口，显示“暂无成熟数据”
 - 每日报告页面（结构化预览、飞书 `interactive` 卡片发送、阈值说明）
 - 投放执行表推送页面（通用投放建议 + ASA 关键词建议 -> 同一 Base 内按日期归档执行表 + 群通知）
 - 操作日志页面（查看手动操作与定时任务执行记录）
@@ -300,6 +306,11 @@ curl -s "http://localhost:8123/?query=SELECT%20install_date,app_key,platform,med
 重点观察：
 - `revenue_source_missing=0`：当前 cohort 已拿到价值回收来源
 - `revenue_source_missing=1`：当前 cohort 只有花费 / 安装，没有拿到价值回收来源
+- 预算 / ASA 的 `D7 ROAS` 不再把 `revenue_source_missing=1` 显示成 `0.00`
+- 需要结合 `roas_data_status` 判断：
+  - `complete`：可作为真实 D7 ROAS 使用
+  - `pending`：Cohort 源数据仍在补齐
+  - `unavailable`：当前没有成熟窗口数据
 - `d7_roas` 只在 `revenue_d7` 与 `total_cost` 都具备时有意义
 
 如果大量行都为 `revenue_source_missing=1`：

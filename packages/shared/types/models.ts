@@ -201,6 +201,7 @@ export type BudgetExecutionActionCode =
   | 'raise_roas_target'
   | 'scale_gradually';
 export type BudgetExecutionActionSource = 'scenario' | 'policy';
+export type RoasDataStatus = 'complete' | 'pending' | 'unavailable';
 
 export interface RecommendationThresholdTargets {
   ecpi_max?: number;
@@ -313,6 +314,9 @@ export interface BudgetRecommendationRow {
   metric_mode: 'active' | 'roas_pending_revenue';
   current_roas: number | null;
   target_roas: number | null;
+  roas_window_from: string | null;
+  roas_window_to: string | null;
+  roas_data_status: RoasDataStatus;
   volume_tier: string;
   expected_installs_delta: number;
   confidence: number;
@@ -401,6 +405,7 @@ export interface AsaKeywordDailyMetricRow {
   average_ecpi: number;
   cpp: number;
   d7_roas: number;
+  roas_source_missing: number;
   version: number;
 }
 
@@ -418,6 +423,9 @@ export interface AsaKeywordStateRow {
   current_ecpi: number;
   current_cpp: number;
   current_d7_roas: number;
+  roas_window_from: string | null;
+  roas_window_to: string | null;
+  roas_data_status: RoasDataStatus;
   target_ecpi: number;
   target_cpp: number;
   target_d7_roas: number;
@@ -448,6 +456,9 @@ export interface AsaKeywordRecommendationRow {
   current_ecpi: number;
   current_cpp: number;
   current_d7_roas: number;
+  roas_window_from: string | null;
+  roas_window_to: string | null;
+  roas_data_status: RoasDataStatus;
   target_ecpi: number;
   target_cpp: number;
   target_d7_roas: number;

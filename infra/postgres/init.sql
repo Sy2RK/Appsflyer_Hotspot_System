@@ -172,6 +172,9 @@ ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS primary_metric TEXT 
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS metric_mode TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS current_roas DOUBLE PRECISION;
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS target_roas DOUBLE PRECISION;
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS roas_window_from DATE;
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS roas_window_to DATE;
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS roas_data_status TEXT NOT NULL DEFAULT 'unavailable';
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS volume_tier TEXT NOT NULL DEFAULT 'low';
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS execution_actions JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS scenario_tags JSONB NOT NULL DEFAULT '[]'::jsonb;
@@ -505,6 +508,9 @@ CREATE TABLE IF NOT EXISTS asa_keyword_states (
   current_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
   current_cpp DOUBLE PRECISION NOT NULL DEFAULT 0,
   current_d7_roas DOUBLE PRECISION NOT NULL DEFAULT 0,
+  roas_window_from DATE,
+  roas_window_to DATE,
+  roas_data_status TEXT NOT NULL DEFAULT 'unavailable',
   target_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
   target_cpp DOUBLE PRECISION NOT NULL DEFAULT 0,
   target_d7_roas DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -516,6 +522,10 @@ CREATE TABLE IF NOT EXISTS asa_keyword_states (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_window_from DATE;
+ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_window_to DATE;
+ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_data_status TEXT NOT NULL DEFAULT 'unavailable';
 
 ALTER TABLE asa_keyword_states
   ADD COLUMN IF NOT EXISTS adset TEXT NOT NULL DEFAULT 'unknown';
@@ -543,6 +553,9 @@ CREATE TABLE IF NOT EXISTS asa_keyword_recommendations (
   current_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
   current_cpp DOUBLE PRECISION NOT NULL DEFAULT 0,
   current_d7_roas DOUBLE PRECISION NOT NULL DEFAULT 0,
+  roas_window_from DATE,
+  roas_window_to DATE,
+  roas_data_status TEXT NOT NULL DEFAULT 'unavailable',
   target_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
   target_cpp DOUBLE PRECISION NOT NULL DEFAULT 0,
   target_d7_roas DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -552,6 +565,10 @@ CREATE TABLE IF NOT EXISTS asa_keyword_recommendations (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE asa_keyword_recommendations ADD COLUMN IF NOT EXISTS roas_window_from DATE;
+ALTER TABLE asa_keyword_recommendations ADD COLUMN IF NOT EXISTS roas_window_to DATE;
+ALTER TABLE asa_keyword_recommendations ADD COLUMN IF NOT EXISTS roas_data_status TEXT NOT NULL DEFAULT 'unavailable';
 
 ALTER TABLE asa_keyword_recommendations
   ADD COLUMN IF NOT EXISTS adset TEXT NOT NULL DEFAULT 'unknown';

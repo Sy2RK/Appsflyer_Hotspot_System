@@ -244,6 +244,7 @@ CREATE TABLE IF NOT EXISTS hotspot.asa_keyword_daily_metrics_v2 (
   average_ecpi Float64,
   cpp Float64,
   d7_roas Float64,
+  roas_source_missing UInt8 DEFAULT 0,
   snapshot_id UInt64 DEFAULT 0,
   version UInt64
 )
@@ -284,4 +285,5 @@ ORDER BY (app_key, platform, date, snapshot_id);
 ALTER TABLE hotspot.asa_raw_installs ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;
 ALTER TABLE hotspot.asa_raw_in_app_events ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;
 ALTER TABLE hotspot.asa_keyword_daily_metrics_v2 ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;
+ALTER TABLE hotspot.asa_keyword_daily_metrics_v2 ADD COLUMN IF NOT EXISTS roas_source_missing UInt8 DEFAULT 0;
 ALTER TABLE hotspot.asa_keyword_country_daily_metrics ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;

@@ -141,9 +141,13 @@
 - `keyword`, `campaign`, `adset`
 - `installs`, `total_cost`, `purchase_count`
 - `revenue_d0`, `revenue_d7`
-- `ecpi`, `average_ecpi`, `cpp`, `d7_roas`
+- `ecpi`, `average_ecpi`, `cpp`, `d7_roas`, `roas_source_missing`
 - `snapshot_id`
 - `version`
+
+说明：
+- `d7_roas / cpp` 的展示与决策语义使用成熟窗口聚合
+- `roas_source_missing=1` 只表示 Cohort 源数据缺口，不等于真实 0 ROAS
 
 ### `asa_keyword_country_daily_metrics`
 - ASA keyword 国家切片日级事实表
@@ -272,6 +276,8 @@
 - `metric_mode`
 - `current_roas`
 - `target_roas`
+- `roas_window_from`, `roas_window_to`
+- `roas_data_status` (`complete|pending|unavailable`)
 - `volume_tier` (`low|medium|high`)
 - `expected_installs_delta`
 - `confidence`
@@ -283,6 +289,8 @@
 说明：
 - 飞书执行表回读后的 `执行状态 / 是否采纳 / 人工批复` 不直接写回该表，而是通过 `recommendation_execution_feedbacks` 关联展示
 - WebUI 查询预算建议时会按 `recommendation_id = budget_recommendations.id` 左联反馈快照
+- `current_roas` 仅表示成熟窗口内 Cohort API 源数据完整覆盖后的真实 D7 ROAS
+- `roas_data_status=pending` 表示成熟窗口内仍有 Cohort 缺口；`unavailable` 表示当前没有成熟窗口数据
 
 ### `recommendation_policy_configs`
 - 应用级预算 / ASA 规则配置表
@@ -325,6 +333,7 @@
 - `stage_score`
 - `first_seen_date`, `last_seen_date`
 - `current_ecpi`, `current_cpp`, `current_d7_roas`
+- `roas_window_from`, `roas_window_to`, `roas_data_status`
 - `target_ecpi`, `target_cpp`, `target_d7_roas`
 - `installs_7d`, `total_cost_7d`, `purchase_count_7d`, `revenue_d7_7d`
 - `trend_json`
@@ -342,6 +351,7 @@
 - `change_ratio`
 - `primary_metric` (`ecpi|d7_roas_cpp`)
 - `current_ecpi`, `current_cpp`, `current_d7_roas`
+- `roas_window_from`, `roas_window_to`, `roas_data_status`
 - `target_ecpi`, `target_cpp`, `target_d7_roas`
 - `reason_code`
 - `llm_summary`

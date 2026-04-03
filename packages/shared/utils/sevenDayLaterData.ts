@@ -42,6 +42,7 @@ interface AsaSevenDayMetricRow {
   purchase_count: number;
   revenue_d7: number;
   d7_roas: number;
+  roas_source_missing: number;
 }
 
 function escapeSqlLiteral(value: string): string {
@@ -82,10 +83,27 @@ function formatAsaSevenDayText(
   totalCost: number,
   purchaseCount: number,
   revenueD7: number,
-  d7Roas: number
+  d7Roas: number,
+  roasSourceMissing: number
 ): string {
   const cpp = purchaseCount > 0 ? totalCost / purchaseCount : 0;
-  return `D+7 ${targetDate}｜安装 ${installs.toFixed(0)}｜花费 ${formatUsd(totalCost)}｜CPP ${formatUsd(cpp)}｜购买 ${purchaseCount.toFixed(0)}｜ROAS ${d7Roas.toFixed(2)}`;
+  const cppText =
+    roasSourceMissing === 1
+      ? '待补齐（源数据缺失）'
+      : purchaseCount > 0
+        ? formatUsd(cpp)
+        : totalCost > 0
+          ? '—（成熟窗口无购买）'
+          : '-';
+  const roasText =
+    roasSourceMissing === 1
+      ? '待补齐（源数据缺失）'
+      : totalCost > 0
+        ? revenueD7 > 0
+          ? d7Roas.toFixed(2)
+          : `${d7Roas.toFixed(2)}（成熟窗口未观察到D7收入）`
+        : '-';
+  return `D+7 ${targetDate}｜安装 ${installs.toFixed(0)}｜花费 ${formatUsd(totalCost)}｜CPP ${cppText}｜购买 ${purchaseCount.toFixed(0)}｜ROAS ${roasText}`;
 }
 
 function budgetMetricKey(row: {
@@ -200,22 +218,38 @@ async function loadAsaSevenDayMetrics(lookups: SevenDayLaterLookupRow[]): Promis
 
   const rows = await chQuery<AsaSevenDayMetricRow>(
     `SELECT
-        toString(date) AS target_date,
+        target_date,
         app_key,
-        lowerUTF8(platform) AS platform_raw,
-        keyword AS item_name,
+        platform_raw,
+        item_name,
         campaign,
         adset,
-        sum(toFloat64(installs)) AS installs,
-        sum(toFloat64(total_cost)) AS total_cost,
-        sum(toFloat64(purchase_count)) AS purchase_count,
-        sum(toFloat64(revenue_d7)) AS revenue_d7,
-        if(sum(toFloat64(total_cost)) > 0, sum(toFloat64(d7_roas) * toFloat64(total_cost)) / sum(toFloat64(total_cost)), 0) AS d7_roas
-       FROM asa_keyword_daily_metrics_v2 FINAL
-      WHERE date IN (${targetDates.map(escapeSqlLiteral).join(', ')})
-        AND app_key IN (${appKeys.map(escapeSqlLiteral).join(', ')})
-        AND lowerUTF8(platform) IN (${platformValues.map(escapeSqlLiteral).join(', ')})
-      GROUP BY target_date, app_key, platform_raw, item_name, campaign, adset`
+        installs_sum AS installs,
+        total_cost_sum AS total_cost,
+        purchase_count_sum AS purchase_count,
+        revenue_d7_sum AS revenue_d7,
+        if(total_cost_sum > 0, weighted_roas_cost_sum / total_cost_sum, 0) AS d7_roas,
+        max(roas_source_missing_flag) AS roas_source_missing
+       FROM (
+         SELECT
+           toString(date) AS target_date,
+           app_key,
+           lowerUTF8(platform) AS platform_raw,
+           keyword AS item_name,
+           campaign,
+           adset,
+           sum(toFloat64(installs)) AS installs_sum,
+           sum(toFloat64(total_cost)) AS total_cost_sum,
+           sum(toFloat64(purchase_count)) AS purchase_count_sum,
+           sum(toFloat64(revenue_d7)) AS revenue_d7_sum,
+           sum(toFloat64(d7_roas) * toFloat64(total_cost)) AS weighted_roas_cost_sum,
+           max(toUInt8(roas_source_missing)) AS roas_source_missing_flag
+          FROM asa_keyword_daily_metrics_v2 FINAL
+         WHERE date IN (${targetDates.map(escapeSqlLiteral).join(', ')})
+           AND app_key IN (${appKeys.map(escapeSqlLiteral).join(', ')})
+           AND lowerUTF8(platform) IN (${platformValues.map(escapeSqlLiteral).join(', ')})
+         GROUP BY target_date, app_key, platform_raw, item_name, campaign, adset
+       )`
   );
 
   const metricMap = new Map(rows.map((row) => [asaMetricKey(row), row]));
@@ -248,7 +282,8 @@ async function loadAsaSevenDayMetrics(lookups: SevenDayLaterLookupRow[]): Promis
           Number(metric.total_cost || 0),
           Number(metric.purchase_count || 0),
           Number(metric.revenue_d7 || 0),
-          Number(metric.d7_roas || 0)
+          Number(metric.d7_roas || 0),
+          Number(metric.roas_source_missing || 0)
         )
       );
       continue;

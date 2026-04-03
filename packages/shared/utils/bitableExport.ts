@@ -850,8 +850,12 @@ function formatBudgetCurrentValue(row: Record<string, unknown>): string {
   if (String(row.primary_metric || '') === 'roas') {
     const currentRoas = Number(row.current_roas || 0);
     const currentEcpi = Number(row.current_ecpi || 0);
-    if (String(row.metric_mode || '') === 'roas_pending_revenue') {
+    const roasStatus = String(row.roas_data_status || '');
+    if (roasStatus === 'pending' || String(row.metric_mode || '') === 'roas_pending_revenue') {
       return `ROAS 回流中 / 当前 eCPI $${currentEcpi.toFixed(2)}`;
+    }
+    if (roasStatus === 'unavailable') {
+      return `ROAS 暂无成熟数据 / 当前 eCPI $${currentEcpi.toFixed(2)}`;
     }
     return `ROAS ${currentRoas.toFixed(2)} / eCPI $${currentEcpi.toFixed(2)}`;
   }
@@ -888,6 +892,13 @@ function formatAsaMetricLabel(primaryMetric: string): string {
 
 function formatAsaCurrentValue(row: Record<string, unknown>): string {
   if (String(row.primary_metric || '') === 'd7_roas_cpp') {
+    const roasStatus = String(row.roas_data_status || '');
+    if (roasStatus === 'pending') {
+      return 'ROAS 待补齐 / CPP 待补齐';
+    }
+    if (roasStatus === 'unavailable') {
+      return 'ROAS 暂无成熟数据 / CPP 暂无成熟数据';
+    }
     return `ROAS ${Number(row.current_d7_roas || 0).toFixed(2)} / CPP $${Number(row.current_cpp || 0).toFixed(2)}`;
   }
   const ecpi = Number(row.current_ecpi || 0);
@@ -933,6 +944,9 @@ async function queryBudgetActionRows(reportDate: string, options: BitableExportR
         br.target_ecpi,
         br.current_roas,
         br.target_roas,
+        br.roas_window_from,
+        br.roas_window_to,
+        br.roas_data_status,
         br.current_cost,
         br.volume_tier,
         COALESCE(ks.last_installs, 0) AS last_installs,
@@ -1013,6 +1027,9 @@ async function queryAsaActionRows(reportDate: string, options: BitableExportRunO
         ar.current_ecpi,
         ar.current_cpp,
         ar.current_d7_roas,
+        ar.roas_window_from,
+        ar.roas_window_to,
+        ar.roas_data_status,
         ar.target_ecpi,
         ar.target_cpp,
         ar.target_d7_roas,

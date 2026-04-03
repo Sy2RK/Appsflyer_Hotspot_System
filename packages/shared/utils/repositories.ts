@@ -24,6 +24,7 @@ import {
   RecommendationPolicyEngine,
   RecommendationExecutionFeedbackRecord,
   RecommendationType,
+  RoasDataStatus,
   RuntimeScheduleConfigRecord
 } from '../types/models.js';
 
@@ -251,6 +252,7 @@ let ensurePullReportReadinessSchemaPromise: Promise<void> | null = null;
 let ensureScheduledWorkerRunsSchemaPromise: Promise<void> | null = null;
 let ensureRecommendationPolicyConfigsSchemaPromise: Promise<void> | null = null;
 let ensureBudgetRecommendationsSchemaPromise: Promise<void> | null = null;
+let ensureAsaKeywordRoasSchemaPromise: Promise<void> | null = null;
 
 async function ensurePullReportReadinessSchema(): Promise<void> {
   if (!ensurePullReportReadinessSchemaPromise) {
@@ -293,6 +295,18 @@ export async function ensureBudgetRecommendationsSchema(): Promise<void> {
         `ALTER TABLE budget_recommendations
             ADD COLUMN IF NOT EXISTS scenario_tags JSONB NOT NULL DEFAULT '[]'::jsonb`
       );
+      await pgQuery(
+        `ALTER TABLE budget_recommendations
+            ADD COLUMN IF NOT EXISTS roas_window_from DATE`
+      );
+      await pgQuery(
+        `ALTER TABLE budget_recommendations
+            ADD COLUMN IF NOT EXISTS roas_window_to DATE`
+      );
+      await pgQuery(
+        `ALTER TABLE budget_recommendations
+            ADD COLUMN IF NOT EXISTS roas_data_status TEXT NOT NULL DEFAULT 'unavailable'`
+      );
     })()
       .then(() => undefined)
       .catch((error) => {
@@ -301,6 +315,43 @@ export async function ensureBudgetRecommendationsSchema(): Promise<void> {
       });
   }
   await ensureBudgetRecommendationsSchemaPromise;
+}
+
+export async function ensureAsaKeywordRoasSchema(): Promise<void> {
+  if (!ensureAsaKeywordRoasSchemaPromise) {
+    ensureAsaKeywordRoasSchemaPromise = (async () => {
+      await pgQuery(
+        `ALTER TABLE asa_keyword_states
+            ADD COLUMN IF NOT EXISTS roas_window_from DATE`
+      );
+      await pgQuery(
+        `ALTER TABLE asa_keyword_states
+            ADD COLUMN IF NOT EXISTS roas_window_to DATE`
+      );
+      await pgQuery(
+        `ALTER TABLE asa_keyword_states
+            ADD COLUMN IF NOT EXISTS roas_data_status TEXT NOT NULL DEFAULT 'unavailable'`
+      );
+      await pgQuery(
+        `ALTER TABLE asa_keyword_recommendations
+            ADD COLUMN IF NOT EXISTS roas_window_from DATE`
+      );
+      await pgQuery(
+        `ALTER TABLE asa_keyword_recommendations
+            ADD COLUMN IF NOT EXISTS roas_window_to DATE`
+      );
+      await pgQuery(
+        `ALTER TABLE asa_keyword_recommendations
+            ADD COLUMN IF NOT EXISTS roas_data_status TEXT NOT NULL DEFAULT 'unavailable'`
+      );
+    })()
+      .then(() => undefined)
+      .catch((error) => {
+        ensureAsaKeywordRoasSchemaPromise = null;
+        throw error;
+      });
+  }
+  await ensureAsaKeywordRoasSchemaPromise;
 }
 
 async function ensureScheduledWorkerRunsSchema(): Promise<void> {
@@ -1336,6 +1387,9 @@ export interface UpsertBudgetRecommendationInput {
   metric_mode: 'active' | 'roas_pending_revenue';
   current_roas?: number | null;
   target_roas?: number | null;
+  roas_window_from?: string | null;
+  roas_window_to?: string | null;
+  roas_data_status?: RoasDataStatus;
   volume_tier: string;
   expected_installs_delta: number;
   confidence: number;
@@ -1353,12 +1407,12 @@ export async function upsertBudgetRecommendation(
   const result = await pgQuery<BudgetRecommendationRow>(
     `INSERT INTO budget_recommendations (
       app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
-      current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas,
+      current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, roas_window_from, roas_window_to, roas_data_status,
       volume_tier, expected_installs_delta, confidence, reason_code, llm_summary, execution_actions, scenario_tags, status
     ) VALUES (
       $1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10,
-      $11, $12, $13, $14, $15, $16,
-      $17, $18, $19, $20, $21, $22, $23, COALESCE($24, 'pending')
+      $11, $12, $13, $14, $15, $16, $17::date, $18::date, $19,
+      $20, $21, $22, $23, $24, $25, $26, COALESCE($27, 'pending')
     )
     ON CONFLICT (app_key, platform, media_source, keyword, match_type, date) DO UPDATE SET
       action = EXCLUDED.action,
@@ -1371,6 +1425,9 @@ export async function upsertBudgetRecommendation(
       metric_mode = EXCLUDED.metric_mode,
       current_roas = EXCLUDED.current_roas,
       target_roas = EXCLUDED.target_roas,
+      roas_window_from = EXCLUDED.roas_window_from,
+      roas_window_to = EXCLUDED.roas_window_to,
+      roas_data_status = EXCLUDED.roas_data_status,
       volume_tier = EXCLUDED.volume_tier,
       expected_installs_delta = EXCLUDED.expected_installs_delta,
       confidence = EXCLUDED.confidence,
@@ -1384,7 +1441,7 @@ export async function upsertBudgetRecommendation(
       END,
       updated_at = NOW()
     RETURNING id, app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
-              current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, volume_tier,
+              current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, roas_window_from, roas_window_to, roas_data_status, volume_tier,
               expected_installs_delta, confidence, reason_code, llm_summary, execution_actions, scenario_tags, status,
               NULL::text AS execution_status, FALSE AS is_adopted, NULL::text AS validation_result,
               NULL::text AS feedback_synced_at, created_at, updated_at`,
@@ -1405,6 +1462,9 @@ export async function upsertBudgetRecommendation(
       input.metric_mode,
       input.current_roas ?? null,
       input.target_roas ?? null,
+      input.roas_window_from ?? null,
+      input.roas_window_to ?? null,
+      input.roas_data_status ?? 'unavailable',
       input.volume_tier,
       input.expected_installs_delta,
       input.confidence,
@@ -1484,7 +1544,7 @@ export async function queryBudgetRecommendations(
   const rowsResult = await pgQuery<BudgetRecommendationRow>(
     `SELECT br.id, br.app_key, br.platform, br.media_source, br.keyword, br.match_type, br.date, br.action, br.change_ratio,
             br.suggested_budget, br.current_cost, br.current_ecpi, br.target_ecpi, br.primary_metric, br.metric_mode,
-            br.current_roas, br.target_roas, br.volume_tier, br.expected_installs_delta, br.confidence, br.reason_code,
+            br.current_roas, br.target_roas, br.roas_window_from, br.roas_window_to, br.roas_data_status, br.volume_tier, br.expected_installs_delta, br.confidence, br.reason_code,
             br.llm_summary, br.execution_actions, br.scenario_tags, br.status,
             ref.execution_status,
             COALESCE(ref.is_adopted, FALSE) AS is_adopted,
@@ -1520,7 +1580,7 @@ export async function setBudgetRecommendationStatus(
             updated_at = NOW()
       WHERE id = $2
       RETURNING id, app_key, platform, media_source, keyword, match_type, date, action, change_ratio, suggested_budget, current_cost,
-                current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, volume_tier,
+                current_ecpi, target_ecpi, primary_metric, metric_mode, current_roas, target_roas, roas_window_from, roas_window_to, roas_data_status, volume_tier,
                 expected_installs_delta, confidence, reason_code, llm_summary, execution_actions, scenario_tags, status,
                 NULL::text AS execution_status, FALSE AS is_adopted, NULL::text AS validation_result,
                 NULL::text AS feedback_synced_at, created_at, updated_at`,
@@ -2461,6 +2521,7 @@ export async function queryAsaKeywordStates(filter: AsaKeywordStateFilter): Prom
   pageSize: number;
   totalPages: number;
 }> {
+  await ensureAsaKeywordRoasSchema();
   const values: unknown[] = [];
   const clauses: string[] = [];
 
@@ -2504,7 +2565,7 @@ export async function queryAsaKeywordStates(filter: AsaKeywordStateFilter): Prom
 
   const rowsResult = await pgQuery<AsaKeywordStateRow>(
     `SELECT id, app_key, platform, keyword, campaign, adset, current_stage, stage_score, first_seen_date, last_seen_date,
-            current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+            current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, target_ecpi, target_cpp, target_d7_roas,
             installs_7d, total_cost_7d, purchase_count_7d, revenue_d7_7d, trend_json, created_at, updated_at
        FROM asa_keyword_states
        ${where}
@@ -2530,6 +2591,9 @@ export async function upsertAsaKeywordState(input: {
   current_ecpi: number;
   current_cpp: number;
   current_d7_roas: number;
+  roas_window_from?: string | null;
+  roas_window_to?: string | null;
+  roas_data_status?: RoasDataStatus;
   target_ecpi: number;
   target_cpp: number;
   target_d7_roas: number;
@@ -2539,13 +2603,14 @@ export async function upsertAsaKeywordState(input: {
   revenue_d7_7d: number;
   trend_json: unknown;
 }): Promise<AsaKeywordStateRow> {
+  await ensureAsaKeywordRoasSchema();
   const result = await pgQuery<AsaKeywordStateRow>(
     `INSERT INTO asa_keyword_states (
       app_key, platform, keyword, campaign, adset, current_stage, stage_score, first_seen_date, last_seen_date,
-      current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+      current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, target_ecpi, target_cpp, target_d7_roas,
       installs_7d, total_cost_7d, purchase_count_7d, revenue_d7_7d, trend_json
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8::date, $9::date, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+      $1, $2, $3, $4, $5, $6, $7, $8::date, $9::date, $10, $11, $12, $13::date, $14::date, $15, $16, $17, $18, $19, $20, $21, $22, $23
     )
     ON CONFLICT (app_key, platform, keyword, campaign, adset) DO UPDATE SET
       current_stage = EXCLUDED.current_stage,
@@ -2555,6 +2620,9 @@ export async function upsertAsaKeywordState(input: {
       current_ecpi = EXCLUDED.current_ecpi,
       current_cpp = EXCLUDED.current_cpp,
       current_d7_roas = EXCLUDED.current_d7_roas,
+      roas_window_from = EXCLUDED.roas_window_from,
+      roas_window_to = EXCLUDED.roas_window_to,
+      roas_data_status = EXCLUDED.roas_data_status,
       target_ecpi = EXCLUDED.target_ecpi,
       target_cpp = EXCLUDED.target_cpp,
       target_d7_roas = EXCLUDED.target_d7_roas,
@@ -2565,7 +2633,7 @@ export async function upsertAsaKeywordState(input: {
       trend_json = EXCLUDED.trend_json,
       updated_at = NOW()
     RETURNING id, app_key, platform, keyword, campaign, adset, current_stage, stage_score, first_seen_date, last_seen_date,
-              current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+              current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, target_ecpi, target_cpp, target_d7_roas,
               installs_7d, total_cost_7d, purchase_count_7d, revenue_d7_7d, trend_json, created_at, updated_at`,
     [
       input.app_key,
@@ -2580,6 +2648,9 @@ export async function upsertAsaKeywordState(input: {
       input.current_ecpi,
       input.current_cpp,
       input.current_d7_roas,
+      input.roas_window_from ?? null,
+      input.roas_window_to ?? null,
+      input.roas_data_status ?? 'unavailable',
       input.target_ecpi,
       input.target_cpp,
       input.target_d7_roas,
@@ -2651,6 +2722,9 @@ export async function upsertAsaKeywordRecommendation(input: {
   current_ecpi: number;
   current_cpp: number;
   current_d7_roas: number;
+  roas_window_from?: string | null;
+  roas_window_to?: string | null;
+  roas_data_status?: RoasDataStatus;
   target_ecpi: number;
   target_cpp: number;
   target_d7_roas: number;
@@ -2658,14 +2732,15 @@ export async function upsertAsaKeywordRecommendation(input: {
   llm_summary: unknown;
   status?: 'pending' | 'sent' | 'applied' | 'rejected' | 'expired';
 }): Promise<AsaKeywordRecommendationRow> {
+  await ensureAsaKeywordRoasSchema();
   const result = await pgQuery<AsaKeywordRecommendationRow>(
     `INSERT INTO asa_keyword_recommendations (
       app_key, platform, keyword, campaign, adset, date, action, change_ratio, primary_metric,
-      current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+      current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, target_ecpi, target_cpp, target_d7_roas,
       reason_code, llm_summary, status
     ) VALUES (
       $1, $2, $3, $4, $5, $6::date, $7, $8, $9,
-      $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, 'pending')
+      $10, $11, $12, $13::date, $14::date, $15, $16, $17, $18, $19, $20, COALESCE($21, 'pending')
     )
     ON CONFLICT (app_key, platform, keyword, campaign, adset, date) DO UPDATE SET
       action = EXCLUDED.action,
@@ -2674,6 +2749,9 @@ export async function upsertAsaKeywordRecommendation(input: {
       current_ecpi = EXCLUDED.current_ecpi,
       current_cpp = EXCLUDED.current_cpp,
       current_d7_roas = EXCLUDED.current_d7_roas,
+      roas_window_from = EXCLUDED.roas_window_from,
+      roas_window_to = EXCLUDED.roas_window_to,
+      roas_data_status = EXCLUDED.roas_data_status,
       target_ecpi = EXCLUDED.target_ecpi,
       target_cpp = EXCLUDED.target_cpp,
       target_d7_roas = EXCLUDED.target_d7_roas,
@@ -2685,7 +2763,7 @@ export async function upsertAsaKeywordRecommendation(input: {
       END,
       updated_at = NOW()
     RETURNING id, app_key, platform, keyword, campaign, adset, date, action, change_ratio, primary_metric,
-              current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+              current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, target_ecpi, target_cpp, target_d7_roas,
               reason_code, llm_summary, status, created_at, updated_at`,
     [
       input.app_key,
@@ -2700,6 +2778,9 @@ export async function upsertAsaKeywordRecommendation(input: {
       input.current_ecpi,
       input.current_cpp,
       input.current_d7_roas,
+      input.roas_window_from ?? null,
+      input.roas_window_to ?? null,
+      input.roas_data_status ?? 'unavailable',
       input.target_ecpi,
       input.target_cpp,
       input.target_d7_roas,
@@ -2763,6 +2844,7 @@ export async function queryAsaKeywordRecommendations(filter: {
   pageSize: number;
   totalPages: number;
 }> {
+  await ensureAsaKeywordRoasSchema();
   const values: unknown[] = [];
   const clauses: string[] = [];
   if (filter.appKey) {
@@ -2799,7 +2881,7 @@ export async function queryAsaKeywordRecommendations(filter: {
   const listValues = [...values, filter.pageSize, offset];
   const rowsResult = await pgQuery<AsaKeywordRecommendationRow>(
     `SELECT id, app_key, platform, keyword, campaign, adset, date, action, change_ratio, primary_metric,
-            current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+            current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, target_ecpi, target_cpp, target_d7_roas,
             reason_code, llm_summary, status, created_at, updated_at
        FROM asa_keyword_recommendations
        ${where}
@@ -2815,13 +2897,14 @@ export async function setAsaKeywordRecommendationStatus(
   id: number,
   status: 'pending' | 'sent' | 'applied' | 'rejected' | 'expired'
 ): Promise<AsaKeywordRecommendationRow | null> {
+  await ensureAsaKeywordRoasSchema();
   const result = await pgQuery<AsaKeywordRecommendationRow>(
     `UPDATE asa_keyword_recommendations
         SET status = $1,
             updated_at = NOW()
       WHERE id = $2
       RETURNING id, app_key, platform, keyword, campaign, adset, date, action, change_ratio, primary_metric,
-                current_ecpi, current_cpp, current_d7_roas, target_ecpi, target_cpp, target_d7_roas,
+                current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, target_ecpi, target_cpp, target_d7_roas,
                 reason_code, llm_summary, status, created_at, updated_at`,
     [status, id]
   );

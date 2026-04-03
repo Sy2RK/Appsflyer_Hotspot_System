@@ -31,7 +31,8 @@
 11. 新增应用级预算 / ASA 规则配置表 `recommendation_policy_configs`
 12. 新增价值与国家切片事实表：`keyword_value_daily_metrics`、`asa_keyword_country_daily_metrics`
 13. `keyword-engine` 的 `D7 ROAS` 价值回收已切换为 AppsFlyer Cohort API 源数据，并用 `revenue_source_missing` 标记数据缺口
-14. `Guru Ads Agent` 改为多模型结构，支持 Qwen / OpenRouter / OpenAI 可选 provider
+14. 全系统 `D7 ROAS` 统一改为“Cohort API 源数据 + 成熟窗口”口径，并显式输出 `roas_window_* / roas_data_status`
+15. `Guru Ads Agent` 改为多模型结构，支持 Qwen / OpenRouter / OpenAI 可选 provider
 
 结论：
 
@@ -245,6 +246,32 @@ docker exec hotspot-clickhouse clickhouse-client --query "DESCRIBE TABLE hotspot
 
 - 存在列 `revenue_source_missing`
 - 价值回收缺口只表示 Cohort 源数据未返回，不再回退 `raw_events`
+
+检查 `asa_keyword_daily_metrics_v2` 新增字段：
+
+```bash
+docker exec hotspot-clickhouse clickhouse-client --query "DESCRIBE TABLE hotspot.asa_keyword_daily_metrics_v2"
+```
+
+预期：
+
+- 存在列 `roas_source_missing`
+
+检查 Postgres ROAS 元数据字段：
+
+```bash
+docker exec hotspot-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\
+SELECT table_name, column_name
+FROM information_schema.columns
+WHERE table_name IN ('budget_recommendations','asa_keyword_states','asa_keyword_recommendations')
+  AND column_name IN ('roas_window_from','roas_window_to','roas_data_status')
+ORDER BY table_name, column_name;"
+```
+
+预期：
+
+- 三张表都存在 `roas_window_from / roas_window_to / roas_data_status`
+- 后续 UI / 日报 / 多维表会基于这些元数据区分 `complete / pending / unavailable`
 
 检查快照表：
 

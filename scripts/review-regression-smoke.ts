@@ -24,9 +24,11 @@ import { shouldUpsertFeedbackRow } from '../packages/shared/utils/recommendation
 import {
   buildAsaContextWindow,
   buildAsaDecisionWindow,
+  buildAsaRoasWindow,
   buildAsaRelativeCompareDecision
 } from '../packages/shared/utils/asaKeywords.js';
 import { buildAiContextPrompt } from '../packages/shared/utils/aiChat.js';
+import { buildMatureRoasWindow, resolveRoasDataStatus } from '../packages/shared/utils/roasWindow.js';
 import {
   didKeywordEngineCycleComplete,
   resolveKeywordEngineBackfillDays
@@ -464,6 +466,47 @@ async function main(): Promise<void> {
     from: '2026-03-11',
     to: '2026-03-31'
   });
+  const asaRoasWindow = buildAsaRoasWindow('2026-03-31', {
+    ...validatedPolicy,
+    maturity_window: {
+      ...validatedPolicy.maturity_window,
+      exclude_recent_days: 0,
+      decision_window_days: 5
+    }
+  });
+  assert.deepEqual(asaRoasWindow, {
+    from: '2026-03-20',
+    to: '2026-03-24'
+  });
+  const matureBudgetRoasWindow = buildMatureRoasWindow('2026-04-02', null);
+  assert.deepEqual(matureBudgetRoasWindow, {
+    from: '2026-03-13',
+    to: '2026-03-26'
+  });
+  assert.equal(
+    resolveRoasDataStatus({
+      hasWindowRows: true,
+      hasSpend: true,
+      coverageMissing: true
+    }),
+    'pending'
+  );
+  assert.equal(
+    resolveRoasDataStatus({
+      hasWindowRows: false,
+      hasSpend: false,
+      coverageMissing: false
+    }),
+    'unavailable'
+  );
+  assert.equal(
+    resolveRoasDataStatus({
+      hasWindowRows: true,
+      hasSpend: true,
+      coverageMissing: false
+    }),
+    'complete'
+  );
   const asaRelativeIncrease = buildAsaRelativeCompareDecision({
     stage: 'rising',
     currentEcpi: 2,

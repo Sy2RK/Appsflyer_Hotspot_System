@@ -28,6 +28,7 @@ import {
   normalizeRecommendationPolicyRule,
   resolveRecommendationTarget
 } from './recommendationPolicies.js';
+import { buildMatureRoasWindow, resolveRoasDataStatus } from './roasWindow.js';
 
 export interface BudgetAdvisorLogger {
   info: (message: string, context?: Record<string, unknown>) => void;
@@ -1063,6 +1064,8 @@ export async function runBudgetAdvisorCycle(
         targetEcpi: number;
         volumeTier: VolumeTier;
         valueCoverageMissing: boolean;
+        roasWindow: { from: string; to: string };
+        roasDataStatus: 'complete' | 'pending' | 'unavailable';
         currentRoas: number | null;
         targetRoas: number | null;
         currentCpp: number | null;
@@ -1119,12 +1122,17 @@ export async function runBudgetAdvisorCycle(
           mediaSource: fact.media_source
         });
         const policyWindow = buildPolicyDecisionWindow(date, policy);
-        const relevantValueFacts = (valueFactsByKey.get(factKey(fact.platform, fact.media_source, fact.keyword, fact.match_type)) ?? []).filter(
-          (row) => row.date >= policyWindow.from && row.date <= policyWindow.to
-        );
+        const roasWindow = buildMatureRoasWindow(date, policy);
+        const relevantValueFacts = (
+          valueFactsByKey.get(factKey(fact.platform, fact.media_source, fact.keyword, fact.match_type)) ?? []
+        ).filter((row) => row.date >= roasWindow.from && row.date <= roasWindow.to);
         const valueCoverage = summarizeBudgetValueCoverage(relevantValueFacts);
-        const relevantValueFactsWithRevenue = valueCoverage.coveredRows;
         const valueCoverageMissing = valueCoverage.coverageMissing;
+        const roasDataStatus = resolveRoasDataStatus({
+          hasWindowRows: relevantValueFacts.length > 0,
+          hasSpend: relevantValueFacts.some((row) => Number(row.total_cost || 0) > 0),
+          coverageMissing: valueCoverageMissing
+        });
         const relevantCountryFacts = aggregateBudgetCountryWindowFacts(
           (countryFactsByKey.get(factKey(fact.platform, fact.media_source, fact.keyword, fact.match_type)) ?? []).filter(
             (row) => policy?.targets.country_targets?.[row.country]
@@ -1132,8 +1140,8 @@ export async function runBudgetAdvisorCycle(
           policyWindow.from,
           policyWindow.to
         );
-        const currentRoas = valueCoverage.currentRoas;
-        const currentCpp = valueCoverage.currentCpp;
+        const currentRoas = roasDataStatus === 'complete' ? valueCoverage.currentRoas : null;
+        const currentCpp = roasDataStatus === 'complete' ? valueCoverage.currentCpp : null;
         const currentCtr = averageOrNull(relevantValueFacts.map((row) => row.ctr));
         const currentCvr = fact.last7_clicks > 0 ? fact.last7_installs / fact.last7_clicks : null;
         const currentCpi = fact.current_ecpi > 0 ? fact.current_ecpi : null;
@@ -1154,9 +1162,9 @@ export async function runBudgetAdvisorCycle(
 
         const valueDriven =
           policy?.metric_family === 'd7_roas_cpp' &&
-          !valueCoverageMissing &&
-          relevantValueFactsWithRevenue.length > 0 &&
+          roasDataStatus === 'complete' &&
           ((thresholdTargets.roas_min ?? 0) > 0 || (thresholdTargets.cpp_max ?? 0) > 0);
+        const requiresCompleteRoas = policy?.metric_family === 'd7_roas_cpp';
         const relativeCompareDriven = policy?.metric_family === 'relative_compare';
         const peerFacts = (factsByPlatformMedia.get(`${fact.platform}|${fact.media_source}`) ?? []).filter(
           (peer) => !(peer.keyword === fact.keyword && peer.match_type === fact.match_type)
@@ -1165,7 +1173,7 @@ export async function runBudgetAdvisorCycle(
           .map((peer) => {
             const peerValueRows = (valueFactsByKey.get(
               factKey(peer.platform, peer.media_source, peer.keyword, peer.match_type)
-            ) ?? []).filter((row) => row.date >= policyWindow.from && row.date <= policyWindow.to);
+            ) ?? []).filter((row) => row.date >= roasWindow.from && row.date <= roasWindow.to);
             return summarizeBudgetValueCoverage(peerValueRows).currentRoas ?? NaN;
           })
           .filter((value) => Number.isFinite(value)) as number[];
@@ -1173,7 +1181,7 @@ export async function runBudgetAdvisorCycle(
           .map((peer) =>
             averageOrNull(
               ((valueFactsByKey.get(factKey(peer.platform, peer.media_source, peer.keyword, peer.match_type)) ?? []).filter(
-                (row) => row.date >= policyWindow.from && row.date <= policyWindow.to
+                (row) => row.date >= roasWindow.from && row.date <= roasWindow.to
               )).map((row) => row.ctr)
             )
           )
@@ -1206,8 +1214,16 @@ export async function runBudgetAdvisorCycle(
           : null;
         const relativeTargetEcpi = relativeCompareDriven && peerCpiValues.length > 0 ? median(peerCpiValues) : effectiveTargetEcpi;
 
-        let decision = valueDriven
-          ? buildValueWindowDecision({
+        let decision = requiresCompleteRoas && roasDataStatus !== 'complete'
+          ? {
+              action: 'hold' as const,
+              changeRatio: 0,
+              confidence: roasDataStatus === 'pending' ? 0.52 : 0.46,
+              reasonCode: roasDataStatus === 'pending' ? 'roas_pending_revenue' : 'roas_window_unavailable',
+              volumeTier
+            }
+          : valueDriven
+            ? buildValueWindowDecision({
               state,
               currentRoas: currentRoas ?? 0,
               currentCpp: currentCpp ?? 0,
@@ -1220,8 +1236,8 @@ export async function runBudgetAdvisorCycle(
               volumeTier,
               avgDailySpend
             })
-          : relativeDecision ??
-            buildDeterministicDecision({
+            : relativeDecision ??
+              buildDeterministicDecision({
               state,
               currentEcpi: fact.current_ecpi,
               targetEcpi: effectiveTargetEcpi,
@@ -1257,6 +1273,8 @@ export async function runBudgetAdvisorCycle(
           targetEcpi: relativeTargetEcpi,
           volumeTier,
           valueCoverageMissing,
+          roasWindow,
+          roasDataStatus,
           currentRoas,
           targetRoas:
             policy?.metric_family === 'd7_roas_cpp'
@@ -1286,6 +1304,8 @@ export async function runBudgetAdvisorCycle(
           finalDecision,
           metricSettings,
           valueCoverageMissing,
+          roasWindow,
+          roasDataStatus,
           currentRoas,
           targetRoas,
           currentCpp,
@@ -1341,7 +1361,10 @@ export async function runBudgetAdvisorCycle(
             target_cpp: targetCpp,
             current_roas: currentRoas,
             target_roas: targetRoas,
-            value_coverage_missing: valueCoverageMissing
+            value_coverage_missing: valueCoverageMissing,
+            roas_data_status: roasDataStatus,
+            roas_window_from: roasWindow.from,
+            roas_window_to: roasWindow.to
           },
           manualPromptMarkdown:
             policyMap.get(buildRecommendationPolicyKey(app.app_key, fact.platform, 'budget'))?.manual_prompt_markdown ?? null,
@@ -1375,6 +1398,9 @@ export async function runBudgetAdvisorCycle(
           metric_mode: metricSettings.metricMode,
           current_roas: currentRoas,
           target_roas: targetRoas,
+          roas_window_from: metricSettings.primaryMetric === 'roas' ? roasWindow.from : null,
+          roas_window_to: metricSettings.primaryMetric === 'roas' ? roasWindow.to : null,
+          roas_data_status: metricSettings.primaryMetric === 'roas' ? roasDataStatus : 'unavailable',
           volume_tier: finalDecision.volumeTier,
           expected_installs_delta: expectedInstallsDelta,
           confidence: finalDecision.confidence,
@@ -1391,6 +1417,9 @@ export async function runBudgetAdvisorCycle(
             last7_installs: fact.last7_installs,
             current_roas: currentRoas,
             target_roas: targetRoas,
+            roas_window_from: metricSettings.primaryMetric === 'roas' ? roasWindow.from : null,
+            roas_window_to: metricSettings.primaryMetric === 'roas' ? roasWindow.to : null,
+            roas_data_status: metricSettings.primaryMetric === 'roas' ? roasDataStatus : 'unavailable',
             current_cpp: currentCpp,
             target_cpp: targetCpp,
             value_coverage_missing: valueCoverageMissing,

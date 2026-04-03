@@ -66,6 +66,7 @@ router.get('/api/asa-keywords', async (req, res, next) => {
       ok: true,
       data: result.rows,
       summary: result.summary,
+      summary_window: result.summary_window,
       meta: {
         page: result.page,
         pageSize: result.pageSize,

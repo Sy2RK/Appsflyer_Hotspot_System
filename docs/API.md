@@ -411,16 +411,23 @@ Request:
 - `keyword / campaign / adset / 收入事件`：来自 AppsFlyer Raw Data
 - `cost / installs / average_ecpi`：来自 AppsFlyer Master API
 - ASA 主粒度：`keyword + campaign + adset`
+- `D7 ROAS / CPP`：统一使用 Cohort API 源数据 + 成熟窗口口径
+- 返回中的 `roas_data_status` 用于区分：
+  - `complete`：成熟窗口 Cohort 数据完整
+  - `pending`：成熟窗口内存在 Cohort 源数据缺口
+  - `unavailable`：当前还没有可用于判断的成熟窗口数据
 
 返回：
 - `data`: ASA 关键词状态列表
 - `summary`: `keyword_count / installs / total_cost / ecpi / cpp / d7_roas`
+- `summary_window`: ASA 简报与看板摘要使用的成熟窗口
 - `meta`: 分页信息
 
 返回字段补充：
 - `adset`
 - `current_ecpi / current_cpp / current_d7_roas`
 - `target_ecpi / target_cpp / target_d7_roas`
+- `roas_window_from / roas_window_to / roas_data_status`
 
 ### `GET /api/asa-keywords/:keyword/trend?appKey=&platform=&campaign=&adset=`
 查询单个 ASA keyword 的日级趋势（来源 `asa_keyword_daily_metrics_v2`）。

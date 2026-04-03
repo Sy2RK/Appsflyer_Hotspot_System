@@ -26,12 +26,16 @@
   - 国家 / 媒体阈值、上下文窗口、补充说明都支持结构化编辑
   - 保存前会显示影响摘要，并拦截不支持的平台组合 / 无效同类对比配置
   - `D7 ROAS` 价值链路改为直接使用 AppsFlyer cohort API 源数据
+  - `D7 ROAS` 统一按成熟窗口读取：至少排除最近 7 天，再按策略窗口聚合
   - 价值事实会显式标记 `revenue_source_missing`，避免把“数据缺口”误当成真实 0 收入
+  - 预算建议与导出会额外输出 `roas_window_from / roas_window_to / roas_data_status`
 - ASA 关键词专项管理
   - Raw Data 获取关键词与收入
   - Master API 获取关键词级 cost / installs / average eCPI
   - Raw / Master API 请求级超时与 30 秒本地复核，缓解网络抖动
   - 独立 ASA 简报与飞书推送
+  - `D7 ROAS / CPP` 已统一切到 Cohort API 源数据 + 成熟窗口口径
+  - `待补齐 / 暂无成熟数据 / 真实 0.00` 三种状态会显式区分，不再混用
 - 每日简报
   - 通用简报
   - ASA 专项简报
@@ -122,6 +126,8 @@ docker compose up -d --build
 - WebUI 全局 `Guru Ads Agent` 悬浮入口
 - `Guru Ads Agent` 新增模型列表接口与多模型切换（Qwen / OpenRouter / OpenAI）
 - `keyword-engine` 的 `D7 ROAS` 链路已切换为 AppsFlyer cohort API 源数据，并为缺口数据打 `revenue_source_missing`
+- 预算建议、ASA 建议、ASA 简报、多维表中的 `D7 ROAS` 已统一为“Cohort API 源数据 + 成熟窗口”口径
+- ROAS 缺口会显示 `待补齐 / 暂无成熟数据`，不再把源数据缺失展示成 `0.00`
 - ASA keyword 成本切换到 AppsFlyer Master API
 - Feishu 多维表格按日期留档、反馈回读与 `七天后数据` 自动补列
 - 每日 worker 改为数据库持久化运行状态，避免多实例串行重复跑

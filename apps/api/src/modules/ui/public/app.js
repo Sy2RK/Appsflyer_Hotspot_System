@@ -5435,7 +5435,14 @@ function openBudgetDetail(row) {
   el.budgetDetailTier.textContent = volumeTierLabel(row.volume_tier);
   el.budgetDetailEcpi.textContent = toFixed2(row.current_ecpi);
   el.budgetDetailTargetEcpi.textContent = toFixed2(row.target_ecpi);
-  el.budgetDetailCurrentRoas.textContent = row.current_roas == null ? '-' : toFixed2(row.current_roas);
+  el.budgetDetailCurrentRoas.textContent =
+    row.roas_data_status === 'pending'
+      ? '待补齐（源数据缺失）'
+      : row.roas_data_status === 'unavailable'
+        ? '暂无成熟数据'
+        : row.current_roas == null
+          ? '-'
+          : toFixed2(row.current_roas);
   el.budgetDetailTargetRoas.textContent = row.target_roas == null ? '-' : toFixed2(row.target_roas);
   el.budgetDetailBudgetAction.textContent = actionLabel(row.action);
   el.budgetDetailExecutionActions.textContent = executionActionSummary || '-';
@@ -5507,13 +5514,22 @@ function updateAsaSummary(summary = {}) {
   const totalCost = Number(summary.total_cost || 0);
   const installs = Number(summary.installs || 0);
   const revenueD7 = Number(summary.revenue_d7 || 0);
+  const purchaseCount = Number(summary.purchase_count || 0);
+  const roasStatus = normalizeRoasDataStatus(summary.roas_data_status);
   el.asaSummaryKeywordCount.textContent = String(summary.keyword_count || 0);
   el.asaSummaryInstalls.textContent = toFixed2(summary.installs || 0);
   el.asaSummaryCost.textContent = `$${toFixed2(summary.total_cost || 0)}`;
   el.asaSummaryEcpi.textContent = totalCost > 0 && installs <= 0 ? '—' : `$${toFixed2(summary.ecpi || 0)}`;
-  el.asaSummaryCpp.textContent = Number(summary.cpp || 0) > 0 ? `$${toFixed2(summary.cpp || 0)}` : '-';
-  el.asaSummaryRoas.textContent = totalCost > 0 ? `${toFixed2(summary.d7_roas || 0)}x` : '-';
-  el.asaSummaryRoas.title = totalCost > 0 && revenueD7 <= 0 ? '当前未观察到 D7 收入' : '';
+  el.asaSummaryCpp.textContent = formatAsaCppDisplay(summary.cpp || 0, totalCost, purchaseCount, roasStatus);
+  el.asaSummaryRoas.textContent = formatAsaD7RoasDisplay(summary.d7_roas || 0, totalCost, revenueD7, roasStatus);
+  el.asaSummaryRoas.title =
+    roasStatus === 'pending'
+      ? 'Cohort 源数据仍在补齐'
+      : roasStatus === 'unavailable'
+        ? '当前没有可用的成熟窗口 D7 数据'
+        : totalCost > 0 && revenueD7 <= 0
+          ? '成熟窗口内未观察到 D7 收入'
+          : '';
   el.asaSummaryEcpi.title = totalCost > 0 && installs <= 0 ? '当前有花费但没有安装，eCPI 不可计算' : '';
 }
 
@@ -5606,6 +5622,14 @@ function asaHasCostWithoutD7Revenue(totalCost, revenueD7) {
   return Number(totalCost || 0) > 0 && Number(revenueD7 || 0) <= 0;
 }
 
+function normalizeRoasDataStatus(value) {
+  const status = String(value || '').trim().toLowerCase();
+  if (status === 'complete' || status === 'pending' || status === 'unavailable') {
+    return status;
+  }
+  return 'unavailable';
+}
+
 function formatAsaEcpiDisplay(value, totalCost, installs, options = {}) {
   const withCurrency = options.withCurrency !== false;
   if (asaHasSpendWithoutInstalls(totalCost, installs)) {
@@ -5622,19 +5646,47 @@ function formatAsaEcpiDisplayWithReason(value, totalCost, installs, options = {}
   return withCurrency ? `$${toFixed2(value || 0)}` : `${toFixed2(value || 0)}`;
 }
 
-function formatAsaD7RoasDisplay(value, totalCost, revenueD7) {
+function formatAsaCppDisplay(value, totalCost, purchaseCount, roasDataStatus) {
+  const status = normalizeRoasDataStatus(roasDataStatus);
+  if (status === 'pending') {
+    return '待补齐（源数据缺失）';
+  }
+  if (status === 'unavailable') {
+    return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
+  }
+  if (Number(purchaseCount || 0) <= 0) {
+    return Number(totalCost || 0) > 0 ? '—（成熟窗口无购买）' : '-';
+  }
+  return `$${toFixed2(value || 0)}`;
+}
+
+function formatAsaD7RoasDisplay(value, totalCost, revenueD7, roasDataStatus) {
+  const status = normalizeRoasDataStatus(roasDataStatus);
+  if (status === 'pending') {
+    return '待补齐（源数据缺失）';
+  }
+  if (status === 'unavailable') {
+    return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
+  }
   if (Number(totalCost || 0) <= 0) {
     return '-';
   }
   return `${toFixed2(value || 0)}x`;
 }
 
-function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7) {
+function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7, roasDataStatus) {
+  const status = normalizeRoasDataStatus(roasDataStatus);
+  if (status === 'pending') {
+    return '待补齐（源数据缺失）';
+  }
+  if (status === 'unavailable') {
+    return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
+  }
   if (Number(totalCost || 0) <= 0) {
     return '-';
   }
   const base = `${toFixed2(value || 0)}x`;
-  return asaHasCostWithoutD7Revenue(totalCost, revenueD7) ? `${base}（未观察到D7收入）` : base;
+  return asaHasCostWithoutD7Revenue(totalCost, revenueD7) ? `${base}（成熟窗口未观察到D7收入）` : base;
 }
 
 function asaRecommendationBadgeClass(action) {
@@ -5664,7 +5716,15 @@ function renderAsaKeywordTable() {
         <td>${toFixed2(row.purchase_count_7d || 0)}</td>
         <td title="${escapeHtml(asaHasSpendWithoutInstalls(row.total_cost_7d, row.installs_7d || row.last_installs || 0) ? '当前有花费但没有安装，eCPI 不可计算' : '')}">${escapeHtml(formatAsaEcpiDisplay(row.current_ecpi || 0, row.total_cost_7d || 0, row.installs_7d || row.last_installs || 0))}</td>
         <td>${row.current_cpp > 0 ? `$${toFixed2(row.current_cpp)}` : '-'}</td>
-        <td title="${escapeHtml(asaHasCostWithoutD7Revenue(row.total_cost_7d, row.revenue_d7_7d) ? '当前未观察到 D7 收入' : '')}">${escapeHtml(formatAsaD7RoasDisplay(row.current_d7_roas, row.total_cost_7d, row.revenue_d7_7d))}</td>
+        <td title="${escapeHtml(
+          normalizeRoasDataStatus(row.roas_data_status) === 'pending'
+            ? 'Cohort 源数据仍在补齐'
+            : normalizeRoasDataStatus(row.roas_data_status) === 'unavailable'
+              ? '当前没有可用的成熟窗口 D7 数据'
+              : asaHasCostWithoutD7Revenue(row.total_cost_7d, row.revenue_d7_7d)
+                ? '成熟窗口内未观察到 D7 收入'
+                : ''
+        )}">${escapeHtml(formatAsaD7RoasDisplay(row.current_d7_roas, row.total_cost_7d, row.revenue_d7_7d, row.roas_data_status))}</td>
         <td><span class="badge badge-stage-${escapeHtml(row.current_stage)}">${asaStageLabel(row.current_stage)}</span></td>
         <td>${row.recommendation_action ? `<span class="badge ${asaRecommendationBadgeClass(row.recommendation_action)}">${escapeHtml(actionLabel(row.recommendation_action))}</span>` : '-'}</td>
         <td>${escapeHtml(asaRecommendationStatusLabel(row.recommendation_status))}</td>
@@ -5781,8 +5841,8 @@ async function openAsaKeywordDetail(row) {
       `购买次数：${toFixed2(item.purchase_count)}`,
       `eCPI：${formatAsaEcpiDisplayWithReason(item.ecpi, item.total_cost, item.installs)}`,
       `官方 eCPI：$${toFixed2(item.average_ecpi || 0)}`,
-      `CPP：${Number(item.cpp || 0) > 0 ? `$${toFixed2(item.cpp)}` : '-'}`,
-      `D7 ROAS：${formatAsaD7RoasDisplayWithReason(item.d7_roas, item.total_cost, item.revenue_d7)}`
+      `CPP：${formatAsaCppDisplay(item.cpp, item.total_cost, item.purchase_count, item.roas_source_missing === 1 ? 'pending' : 'complete')}`,
+      `D7 ROAS：${formatAsaD7RoasDisplayWithReason(item.d7_roas, item.total_cost, item.revenue_d7, item.roas_source_missing === 1 ? 'pending' : 'complete')}`
     ]
   }));
   drawLineChart(el.asaKeywordTrendCanvas, chartRows);
@@ -5792,7 +5852,7 @@ async function openAsaKeywordDetail(row) {
     `产品视图 ${productViewName(row.app_key, row.platform || 'unknown')} · 应用标识 ${row.app_key} · 平台 ${platformLabel(row.platform || 'unknown')} · 关键词 ${row.keyword} · 广告系列 ${row.campaign} · 广告组 ${row.adset || '-'} · 当前阶段 ${asaStageLabel(row.current_stage)} · 建议指标 ${asaPrimaryMetricLabel(row.primary_metric)}`;
   const last = trendRows.at(-1);
   el.asaKeywordTrendLegend.textContent =
-    `数据点 ${trendRows.length} · 最新安装量 ${toFixed2(last?.installs)} · 最新 eCPI ${formatAsaEcpiDisplayWithReason(last?.ecpi, last?.total_cost, last?.installs)} · 参考 eCPI $${toFixed2(last?.average_ecpi || 0)} · 最新 D7 ROAS ${formatAsaD7RoasDisplayWithReason(last?.d7_roas, last?.total_cost, last?.revenue_d7)}`;
+    `数据点 ${trendRows.length} · 最新安装量 ${toFixed2(last?.installs)} · 最新 eCPI ${formatAsaEcpiDisplayWithReason(last?.ecpi, last?.total_cost, last?.installs)} · 参考 eCPI $${toFixed2(last?.average_ecpi || 0)} · 最新 D7 ROAS ${formatAsaD7RoasDisplayWithReason(last?.d7_roas, last?.total_cost, last?.revenue_d7, last?.roas_source_missing === 1 ? 'pending' : 'complete')}`;
   el.asaKeywordActionItems.innerHTML = actionItems.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('');
   el.asaKeywordTrendRaw.textContent = JSON.stringify(
     {
@@ -5804,7 +5864,7 @@ async function openAsaKeywordDetail(row) {
         action_items: actionItems,
         scenario_tags: llmSummary.scenario_tags || []
       },
-      note: 'ASA 关键词成本来自 AppsFlyer 的关键词级成本接口。eCPI 显示为“—”表示有花费但没有安装；D7 ROAS 显示 0.00x 表示当前未观察到 D7 收入。',
+      note: 'ASA 关键词成本来自 AppsFlyer 的关键词级成本接口。eCPI 显示为“—”表示有花费但没有安装；D7 ROAS 显示“待补齐/暂无成熟数据”表示 Cohort 源数据尚未完整。',
       trend: trendRows
     },
     null,
@@ -5854,8 +5914,8 @@ function asaBriefSummaryItems(report) {
     { label: '安装量', value: toFixed2(summary.installs || 0) },
     { label: '成本', value: `$${toFixed2(summary.total_cost || 0)}` },
     { label: '每次安装成本（eCPI）', value: formatAsaEcpiDisplay(summary.ecpi || 0, summary.total_cost || 0, summary.installs || 0) },
-    { label: cppLabel, value: Number(summary.cpp || 0) > 0 ? `$${toFixed2(summary.cpp || 0)}` : '-' },
-    { label: roasLabel, value: formatAsaD7RoasDisplay(summary.d7_roas || 0, summary.total_cost || 0, summary.revenue_d7 || 0) }
+    { label: cppLabel, value: formatAsaCppDisplay(summary.cpp || 0, summary.total_cost || 0, summary.purchase_count || 0, summary.roas_data_status) },
+    { label: roasLabel, value: formatAsaD7RoasDisplay(summary.d7_roas || 0, summary.total_cost || 0, summary.revenue_d7 || 0, summary.roas_data_status) }
   ];
 }
 
@@ -5901,7 +5961,7 @@ function renderAsaBriefModal(payload, mode) {
               <p>广告组：${escapeHtml(row.adset || '-')}</p>
               <p>${escapeHtml(
                 row.primary_metric === 'd7_roas_cpp'
-                  ? `D7 ROAS ${formatAsaD7RoasDisplayWithReason(row.current_d7_roas, row.total_cost_7d, row.revenue_d7_7d)} / 目标 ${toFixed2(row.target_d7_roas)}x ｜ CPP ${row.current_cpp > 0 ? `$${toFixed2(row.current_cpp)}` : '-'} / 目标 ${row.target_cpp > 0 ? `$${toFixed2(row.target_cpp)}` : '-'}`
+                  ? `D7 ROAS ${formatAsaD7RoasDisplayWithReason(row.current_d7_roas, row.total_cost_7d, row.revenue_d7_7d, row.roas_data_status)} / 目标 ${toFixed2(row.target_d7_roas)}x ｜ CPP ${formatAsaCppDisplay(row.current_cpp, row.total_cost_7d, row.purchase_count_7d, row.roas_data_status)} / 目标 ${row.target_cpp > 0 ? `$${toFixed2(row.target_cpp)}` : '-'}`
                   : `当前 eCPI ${formatAsaEcpiDisplayWithReason(row.current_ecpi, row.total_cost_7d, row.installs_7d)} / 目标 $${toFixed2(row.target_ecpi)}`
               )}</p>
               <p>${escapeHtml(String(llmSummary.summary_cn || row.reason_code || '暂无补充说明'))}</p>
