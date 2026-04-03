@@ -25,7 +25,7 @@
   - 内置“应用级规则配置”向导，按 `app + platform + 建议类型` 单独维护规则
   - 国家 / 媒体阈值、上下文窗口、补充说明都支持结构化编辑
   - 保存前会显示影响摘要，并拦截不支持的平台组合 / 无效同类对比配置
-  - `D7 ROAS` 价值链路优先走 AppsFlyer cohort API，失败时回退 `raw_events`
+  - `D7 ROAS` 价值链路改为直接使用 AppsFlyer cohort API 源数据
   - 价值事实会显式标记 `revenue_source_missing`，避免把“数据缺口”误当成真实 0 收入
 - ASA 关键词专项管理
   - Raw Data 获取关键词与收入
@@ -121,7 +121,7 @@ docker compose up -d --build
 - 顶部全局调度配置（Pull / Push 时间统一管理）
 - WebUI 全局 `Guru Ads Agent` 悬浮入口
 - `Guru Ads Agent` 新增模型列表接口与多模型切换（Qwen / OpenRouter / OpenAI）
-- `keyword-engine` 的 `D7 ROAS` 链路优先接入 AppsFlyer cohort API，并为缺口数据打 `revenue_source_missing`
+- `keyword-engine` 的 `D7 ROAS` 链路已切换为 AppsFlyer cohort API 源数据，并为缺口数据打 `revenue_source_missing`
 - ASA keyword 成本切换到 AppsFlyer Master API
 - Feishu 多维表格按日期留档、反馈回读与 `七天后数据` 自动补列
 - 每日 worker 改为数据库持久化运行状态，避免多实例串行重复跑

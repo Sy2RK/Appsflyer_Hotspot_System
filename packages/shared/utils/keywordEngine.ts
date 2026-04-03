@@ -76,6 +76,8 @@ interface KeywordValueRevenueAggRow {
   raw_event_count: number;
   purchase_count: number;
   revenue_d7: number;
+  d7_roas: number;
+  source_complete: boolean;
 }
 
 interface DateWindow {
@@ -323,7 +325,7 @@ function buildKeywordValueCohortUrl(appKey: string, appId: string): string {
     .replace('{app_id}', encodeURIComponent(appId));
 }
 
-function buildKeywordValueCohortBody(window: DateWindow): string {
+function buildKeywordValueCohortBody(window: DateWindow, kpi: 'revenue' | 'roas'): string {
   return JSON.stringify({
     cohort_type: 'user_acquisition',
     from: window.from,
@@ -332,7 +334,7 @@ function buildKeywordValueCohortBody(window: DateWindow): string {
     preferred_timezone: true,
     preferred_currency: true,
     groupings: ['date', 'pid', 'c', 'geo'],
-    kpis: ['revenue']
+    kpis: [kpi]
   });
 }
 
@@ -376,23 +378,11 @@ function accumulateKeywordValueRevenueRow(
     existing.raw_event_count += row.raw_event_count;
     existing.purchase_count += row.purchase_count;
     existing.revenue_d7 += row.revenue_d7;
+    existing.d7_roas = row.source_complete && row.d7_roas > 0 ? row.d7_roas : existing.d7_roas;
+    existing.source_complete = existing.source_complete || row.source_complete;
     return;
   }
   aggregate.set(key, { ...row });
-}
-
-function expandKeywordValueRevenueRowsForUnknownCountry(
-  rows: KeywordValueRevenueAggRow[]
-): KeywordValueRevenueAggRow[] {
-  const aggregate = new Map<string, KeywordValueRevenueAggRow>();
-  for (const row of rows) {
-    accumulateKeywordValueRevenueRow(aggregate, row);
-    accumulateKeywordValueRevenueRow(aggregate, {
-      ...row,
-      country: 'unknown'
-    });
-  }
-  return Array.from(aggregate.values());
 }
 
 function aggregateKeywordValueRevenueRows(rows: KeywordValueRevenueAggRow[]): Map<string, KeywordValueRevenueAggRow> {
@@ -403,13 +393,21 @@ function aggregateKeywordValueRevenueRows(rows: KeywordValueRevenueAggRow[]): Ma
   return aggregate;
 }
 
-export function mergeKeywordValueRevenueRows(
-  preferredRows: KeywordValueRevenueAggRow[],
-  fallbackRows: KeywordValueRevenueAggRow[]
-): KeywordValueRevenueAggRow[] {
-  const merged = aggregateKeywordValueRevenueRows(expandKeywordValueRevenueRowsForUnknownCountry(fallbackRows));
-  for (const [key, row] of aggregateKeywordValueRevenueRows(expandKeywordValueRevenueRowsForUnknownCountry(preferredRows))) {
-    merged.set(key, row);
+export function mergeKeywordValueRevenueRows(rowsList: KeywordValueRevenueAggRow[][]): KeywordValueRevenueAggRow[] {
+  const merged = new Map<string, KeywordValueRevenueAggRow>();
+  for (const rows of rowsList) {
+    for (const [key, row] of aggregateKeywordValueRevenueRows(rows)) {
+      const existing = merged.get(key);
+      if (existing) {
+        existing.raw_event_count += row.raw_event_count;
+        existing.purchase_count += row.purchase_count;
+        existing.revenue_d7 += row.revenue_d7;
+        existing.d7_roas = row.source_complete && row.d7_roas > 0 ? row.d7_roas : existing.d7_roas;
+        existing.source_complete = existing.source_complete || row.source_complete;
+      } else {
+        merged.set(key, { ...row });
+      }
+    }
   }
   return Array.from(merged.values());
 }
@@ -469,47 +467,11 @@ async function queryPullRows(appKey: string, from: string, to: string): Promise<
   );
 }
 
-async function queryKeywordValueRevenueRows(appKey: string, from: string, to: string): Promise<KeywordValueRevenueAggRow[]> {
-  return chQuery<KeywordValueRevenueAggRow>(
-    `SELECT
-        toString(toDate(install_time)) AS install_date,
-        app_key,
-        if(empty(platform), 'unknown', lowerUTF8(platform)) AS platform,
-        if(empty(media_source), 'unknown', media_source) AS media_source,
-        if(empty(country), 'unknown', country) AS country,
-        if(empty(campaign), 'unknown', campaign) AS campaign,
-        toFloat64(count()) AS raw_event_count,
-        toFloat64(
-          countIf(
-            revenue > 0
-            AND dateDiff('second', install_time, event_time) >= 0
-            AND dateDiff('second', install_time, event_time) <= 604800
-          )
-        ) AS purchase_count,
-        sumIf(
-          toFloat64(revenue),
-          revenue > 0
-          AND dateDiff('second', install_time, event_time) >= 0
-          AND dateDiff('second', install_time, event_time) <= 604800
-        ) AS revenue_d7
-      FROM raw_events
-      WHERE app_key = {app_key:String}
-        AND toDate(install_time) >= toDate({from:String})
-        AND toDate(install_time) <= toDate({to:String})
-      GROUP BY install_date, app_key, platform, media_source, country, campaign
-      ORDER BY install_date ASC, platform ASC, media_source ASC, country ASC, campaign ASC`,
-    {
-      app_key: appKey,
-      from,
-      to
-    }
-  );
-}
-
 function parseKeywordValueCohortRows(
   appKey: string,
   platform: string,
-  rows: CsvRow[]
+  rows: CsvRow[],
+  kpi: 'revenue' | 'roas'
 ): KeywordValueRevenueAggRow[] {
   return rows.map((row) => ({
     install_date: String(row.date || '').trim(),
@@ -518,9 +480,11 @@ function parseKeywordValueCohortRows(
     media_source: String(row.pid || 'unknown').trim() || 'unknown',
     country: String(row.geo || 'unknown').trim() || 'unknown',
     campaign: String(row.c || 'unknown').trim() || 'unknown',
-    raw_event_count: toNumber(row.revenue_count_day_7 || '0'),
-    purchase_count: toNumber(row.revenue_count_day_7 || '0'),
-    revenue_d7: toNumber(row.revenue_sum_day_7 || '0')
+    raw_event_count: kpi === 'revenue' ? toNumber(row.revenue_count_day_7 || '0') : 0,
+    purchase_count: kpi === 'revenue' ? toNumber(row.revenue_count_day_7 || '0') : 0,
+    revenue_d7: kpi === 'revenue' ? toNumber(row.revenue_sum_day_7 || '0') : 0,
+    d7_roas: kpi === 'roas' ? toNumber(row.roas_rate_day_7 || '0') : 0,
+    source_complete: kpi === 'roas'
   }));
 }
 
@@ -528,31 +492,66 @@ async function queryKeywordValueCohortRows(
   app: AppConfigRecord,
   platform: string,
   appId: string,
-  windows: DateWindow[]
+  windows: DateWindow[],
+  logger?: KeywordEngineLogger
 ): Promise<KeywordValueRevenueAggRow[]> {
   if (windows.length === 0) {
     return [];
   }
   const url = buildKeywordValueCohortUrl(app.app_key, appId);
-  const allRows: KeywordValueRevenueAggRow[] = [];
+  const mergedRows: KeywordValueRevenueAggRow[] = [];
+  const failedWindows: Array<{ window: DateWindow; error: unknown }> = [];
   for (let index = 0; index < windows.length; index += 1) {
+    const window = windows[index];
     if (index > 0) {
       await sleepMs(env.cohortRequestIntervalMs);
     }
-    const csv = await fetchAppsflyerText(url, {
-      headers: {
-        Authorization: `Bearer ${env.masterApiToken}`,
-        'Content-Type': 'application/json',
-        Accept: 'text/csv'
-      },
-      timeoutMs: env.cohortRequestTimeoutMs,
-      label: 'cohort_api',
-      method: 'POST',
-      body: buildKeywordValueCohortBody(windows[index])
-    });
-    allRows.push(...parseKeywordValueCohortRows(app.app_key, platform, parseCsv(csv)));
+    try {
+      const revenueCsv = await fetchAppsflyerText(url, {
+        headers: {
+          Authorization: `Bearer ${env.masterApiToken}`,
+          'Content-Type': 'application/json',
+          Accept: 'text/csv'
+        },
+        timeoutMs: env.cohortRequestTimeoutMs,
+        label: 'cohort_api',
+        method: 'POST',
+        body: buildKeywordValueCohortBody(window, 'revenue')
+      });
+      await sleepMs(env.cohortRequestIntervalMs);
+      const roasCsv = await fetchAppsflyerText(url, {
+        headers: {
+          Authorization: `Bearer ${env.masterApiToken}`,
+          'Content-Type': 'application/json',
+          Accept: 'text/csv'
+        },
+        timeoutMs: env.cohortRequestTimeoutMs,
+        label: 'cohort_api',
+        method: 'POST',
+        body: buildKeywordValueCohortBody(window, 'roas')
+      });
+      mergedRows.push(
+        ...mergeKeywordValueRevenueRows([
+          parseKeywordValueCohortRows(app.app_key, platform, parseCsv(revenueCsv), 'revenue'),
+          parseKeywordValueCohortRows(app.app_key, platform, parseCsv(roasCsv), 'roas')
+        ])
+      );
+    } catch (error) {
+      failedWindows.push({ window, error });
+      logWarn(logger, 'keyword_engine_value_metrics_cohort_window_failed', {
+        app_key: app.app_key,
+        platform,
+        app_id: appId,
+        from: window.from,
+        to: window.to,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
-  return allRows;
+  if (mergedRows.length === 0 && failedWindows.length > 0) {
+    throw failedWindows[0].error instanceof Error ? failedWindows[0].error : new Error(String(failedWindows[0].error));
+  }
+  return mergeKeywordValueRevenueRows([mergedRows]);
 }
 
 function buildKeywordFactRows(
@@ -729,7 +728,7 @@ export function buildKeywordValueRows(
         campaign: row.campaign
       })
     );
-    const revenueSourceMissing = revenue ? 0 : 1;
+    const revenueSourceMissing = revenue?.source_complete ? 0 : 1;
     const purchaseCount = revenue ? revenue.purchase_count : 0;
     const revenueD7 = revenue ? revenue.revenue_d7 : 0;
     return [
@@ -751,7 +750,7 @@ export function buildKeywordValueRows(
         cvr: row.clicks > 0 ? row.installs / row.clicks : 0,
         cpi: row.installs > 0 ? row.total_cost / row.installs : 0,
         cpp: purchaseCount > 0 ? row.total_cost / purchaseCount : 0,
-        d7_roas: row.total_cost > 0 ? revenueD7 / row.total_cost : 0,
+        d7_roas: revenue?.source_complete ? revenue.d7_roas : 0,
         version
       }
     ];
@@ -1033,10 +1032,9 @@ export async function runKeywordEngineCycle(
   for (const app of apps) {
     try {
       const requiresWideValueWindow = valueFrom !== from || valueTo !== to;
-      const [rawRows, valueWindowPullRows, rawEventValueRows] = await Promise.all([
+      const [rawRows, valueWindowPullRows] = await Promise.all([
         queryPullRows(app.app_key, from, to),
-        requiresWideValueWindow ? queryPullRows(app.app_key, valueFrom, valueTo) : Promise.resolve([]),
-        queryKeywordValueRevenueRows(app.app_key, valueFrom, valueTo)
+        requiresWideValueWindow ? queryPullRows(app.app_key, valueFrom, valueTo) : Promise.resolve([])
       ]);
       const valuePullRows = requiresWideValueWindow ? valueWindowPullRows : rawRows;
       if (rawRows.length === 0 && valuePullRows.length === 0) {
@@ -1075,7 +1073,7 @@ export async function runKeywordEngineCycle(
       }
       for (const target of cohortTargets) {
         try {
-          cohortValueRows.push(...(await queryKeywordValueCohortRows(app, target.platform, target.appId, cohortWindows)));
+          cohortValueRows.push(...(await queryKeywordValueCohortRows(app, target.platform, target.appId, cohortWindows, logger)));
         } catch (error) {
           logWarn(logger, 'keyword_engine_value_metrics_cohort_failed', {
             app_key: app.app_key,
@@ -1089,8 +1087,7 @@ export async function runKeywordEngineCycle(
         }
       }
 
-      const mergedValueRows = mergeKeywordValueRevenueRows(cohortValueRows, rawEventValueRows);
-      if (mergedValueRows.length === 0 && valuePullRows.length > 0) {
+      if (cohortValueRows.length === 0 && valuePullRows.length > 0) {
         logWarn(logger, 'keyword_engine_value_metrics_source_missing', {
           app_key: app.app_key,
           value_from: valueFrom,
@@ -1098,7 +1095,7 @@ export async function runKeywordEngineCycle(
           cohort_window_count: cohortWindows.length
         });
       }
-      const valueRows = buildKeywordValueRows(app.app_key, valuePullRows, mergedValueRows, version, rulesByApp);
+      const valueRows = buildKeywordValueRows(app.app_key, valuePullRows, cohortValueRows, version, rulesByApp);
       await chInsertJSON('keyword_value_daily_metrics', valueRows);
 
       details.push({

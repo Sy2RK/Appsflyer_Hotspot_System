@@ -30,7 +30,7 @@
 10. `keyword-engine` 已改为按 `Pull 时间 + scheduled_worker_runs` 调度，不再依赖固定间隔轮询
 11. 新增应用级预算 / ASA 规则配置表 `recommendation_policy_configs`
 12. 新增价值与国家切片事实表：`keyword_value_daily_metrics`、`asa_keyword_country_daily_metrics`
-13. `keyword-engine` 的 `D7 ROAS` 价值回收主来源改为 AppsFlyer cohort API，并用 `revenue_source_missing` 标记数据缺口
+13. `keyword-engine` 的 `D7 ROAS` 价值回收已切换为 AppsFlyer Cohort API 源数据，并用 `revenue_source_missing` 标记数据缺口
 14. `Guru Ads Agent` 改为多模型结构，支持 Qwen / OpenRouter / OpenAI 可选 provider
 
 结论：
@@ -244,6 +244,7 @@ docker exec hotspot-clickhouse clickhouse-client --query "DESCRIBE TABLE hotspot
 预期：
 
 - 存在列 `revenue_source_missing`
+- 价值回收缺口只表示 Cohort 源数据未返回，不再回退 `raw_events`
 
 检查快照表：
 

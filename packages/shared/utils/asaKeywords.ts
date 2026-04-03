@@ -130,6 +130,19 @@ interface AsaKeywordDailyMetricInsertRow {
   version: number;
 }
 
+interface AsaCohortMetricRow {
+  date: string;
+  app_key: string;
+  platform: string;
+  keyword: string;
+  campaign: string;
+  adset: string;
+  purchase_count: number;
+  revenue_d7: number;
+  d7_roas: number;
+  source_complete: boolean;
+}
+
 interface AsaKeywordCountryMetricInsertRow {
   date: string;
   app_key: string;
@@ -158,6 +171,8 @@ interface AsaKeywordAccumulator {
   purchase_count: number;
   revenue_d0: number;
   revenue_d7: number;
+  d7_roas: number;
+  roas_source_complete: boolean;
   average_ecpi: number;
 }
 
@@ -298,20 +313,21 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
       ${buildLatestAsaSliceRangeCtes(ASA_KEYWORD_METRICS_TABLE, 'date')}
       SELECT
         keyword_count,
-        installs,
-        total_cost,
-        purchase_count,
-        revenue_d7,
-        if(installs > 0, total_cost / installs, 0) AS ecpi,
-        if(purchase_count > 0, total_cost / purchase_count, 0) AS cpp,
-        if(total_cost > 0, revenue_d7 / total_cost, 0) AS d7_roas
+        installs_sum AS installs,
+        total_cost_sum AS total_cost,
+        purchase_count_sum AS purchase_count,
+        revenue_d7_sum AS revenue_d7,
+        if(installs_sum > 0, total_cost_sum / installs_sum, 0) AS ecpi,
+        if(purchase_count_sum > 0, total_cost_sum / purchase_count_sum, 0) AS cpp,
+        if(total_cost_sum > 0, weighted_roas_cost_sum / total_cost_sum, 0) AS d7_roas
       FROM (
         SELECT
           countDistinct(keyword, campaign, adset, platform, app_key) AS keyword_count,
-          sum(installs) AS installs,
-          sum(total_cost) AS total_cost,
-          sum(purchase_count) AS purchase_count,
-          sum(revenue_d7) AS revenue_d7
+          sum(installs) AS installs_sum,
+          sum(total_cost) AS total_cost_sum,
+          sum(purchase_count) AS purchase_count_sum,
+          sum(revenue_d7) AS revenue_d7_sum,
+          sum(d7_roas * total_cost) AS weighted_roas_cost_sum
         FROM (
           SELECT *
           FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL
@@ -348,6 +364,112 @@ const ASA_SLICE_SNAPSHOT_TABLE = 'asa_slice_snapshots';
 const ASA_KEYWORD_BRIEF_SEND_LOCK_PREFIX = 'asa_keyword_brief:send';
 const ASA_KEYWORD_BRIEF_SEND_LOCK_TTL_MS = 30 * 60 * 1000;
 const ASA_FETCH_REVIEW_RETRY_DELAY_MS = 30 * 1000;
+
+function buildAsaCohortUrl(appKey: string, appId: string): string {
+  return env.cohortEndpointTemplate
+    .replace('{app_key}', appKey)
+    .replace('{app_id}', encodeURIComponent(appId));
+}
+
+function buildAsaCohortBody(date: string, kpi: 'revenue' | 'roas'): string {
+  return JSON.stringify({
+    cohort_type: 'user_acquisition',
+    from: date,
+    to: date,
+    aggregation_type: 'cumulative',
+    preferred_timezone: true,
+    preferred_currency: true,
+    groupings: ['date', 'pid', 'c', 'af_adset', 'af_keywords'],
+    kpis: [kpi]
+  });
+}
+
+function buildAsaCohortMetricKey(input: {
+  date: string;
+  app_key: string;
+  platform: string;
+  keyword: string;
+  campaign: string;
+  adset: string;
+}): string {
+  return [
+    input.date,
+    input.app_key,
+    input.platform,
+    input.keyword,
+    input.campaign,
+    input.adset
+  ].join('|');
+}
+
+function parseAsaCohortMetricRows(
+  appKey: string,
+  platform: string,
+  rows: CsvRow[],
+  kpi: 'revenue' | 'roas'
+): AsaCohortMetricRow[] {
+  return rows
+    .filter((row) => firstNonEmpty(row, ['pid', 'media_source']).trim().toLowerCase() === MASTER_MEDIA_SOURCE)
+    .map((row) => ({
+      date: String(row.date || '').trim(),
+      app_key: appKey,
+      platform,
+      keyword: String(row.af_keywords || row.keyword || '').trim(),
+      campaign: String(firstNonEmpty(row, ['c', 'campaign'], 'unknown')).trim() || 'unknown',
+      adset: String(row.af_adset || row.adset || 'unknown').trim() || 'unknown',
+      purchase_count: kpi === 'revenue' ? toNumber(row.revenue_count_day_7) : 0,
+      revenue_d7: kpi === 'revenue' ? toNumber(row.revenue_sum_day_7) : 0,
+      d7_roas: kpi === 'roas' ? toNumber(row.roas_rate_day_7) : 0,
+      source_complete: kpi === 'roas'
+    }))
+    .filter((row) => row.date.length > 0 && row.keyword.length > 0);
+}
+
+function mergeAsaCohortMetricRows(rowsList: AsaCohortMetricRow[][]): AsaCohortMetricRow[] {
+  const merged = new Map<string, AsaCohortMetricRow>();
+  for (const rows of rowsList) {
+    for (const row of rows) {
+      const key = buildAsaCohortMetricKey(row);
+      const existing = merged.get(key);
+      if (existing) {
+        existing.purchase_count += row.purchase_count;
+        existing.revenue_d7 += row.revenue_d7;
+        existing.d7_roas = row.source_complete && row.d7_roas > 0 ? row.d7_roas : existing.d7_roas;
+        existing.source_complete = existing.source_complete || row.source_complete;
+      } else {
+        merged.set(key, { ...row });
+      }
+    }
+  }
+  return Array.from(merged.values());
+}
+
+async function fetchAsaCohortMetrics(appId: string, appKey: string, platform: string, date: string): Promise<AsaCohortMetricRow[]> {
+  const url = buildAsaCohortUrl(appKey, appId);
+  const baseRequest = {
+    headers: {
+      Authorization: `Bearer ${env.masterApiToken}`,
+      'Content-Type': 'application/json',
+      Accept: 'text/csv'
+    },
+    timeoutMs: env.cohortRequestTimeoutMs,
+    label: 'cohort_api',
+    method: 'POST' as const
+  };
+  const revenueCsv = await fetchAppsflyerText(url, {
+    ...baseRequest,
+    body: buildAsaCohortBody(date, 'revenue')
+  });
+  await sleep(env.cohortRequestIntervalMs);
+  const roasCsv = await fetchAppsflyerText(url, {
+    ...baseRequest,
+    body: buildAsaCohortBody(date, 'roas')
+  });
+  return mergeAsaCohortMetricRows([
+    parseAsaCohortMetricRows(appKey, platform, parseCsv(revenueCsv), 'revenue'),
+    parseAsaCohortMetricRows(appKey, platform, parseCsv(roasCsv), 'roas')
+  ]);
+}
 
 function buildAsaKeywordBriefSendLockName(
   reportDate: string,
@@ -753,18 +875,20 @@ async function fetchAsaSliceInputsWithRetry(
   installsCsv: CsvRow[];
   eventsCsv: CsvRow[];
   masterMetrics: AsaMasterMetricRow[];
+  cohortMetrics: AsaCohortMetricRow[];
   recoveredByRetry: boolean;
 }> {
   const runAttempt = async () =>
     Promise.all([
       fetchRawCsv(target.appId, 'installs', date),
       fetchRawCsv(target.appId, 'events', date),
-      fetchMasterKeywordMetrics(target.appId, target.app.app_key, target.platform, date)
+      fetchMasterKeywordMetrics(target.appId, target.app.app_key, target.platform, date),
+      fetchAsaCohortMetrics(target.appId, target.app.app_key, target.platform, date)
     ]);
 
   try {
-    const [installsCsv, eventsCsv, masterMetrics] = await runAttempt();
-    return { installsCsv, eventsCsv, masterMetrics, recoveredByRetry: false };
+    const [installsCsv, eventsCsv, masterMetrics, cohortMetrics] = await runAttempt();
+    return { installsCsv, eventsCsv, masterMetrics, cohortMetrics, recoveredByRetry: false };
   } catch (error) {
     const requestError = normalizeAsaRequestError(error);
     if (!requestError.immediateRetryable) {
@@ -780,14 +904,14 @@ async function fetchAsaSliceInputsWithRetry(
     });
     await sleep(ASA_FETCH_REVIEW_RETRY_DELAY_MS);
 
-    const [installsCsv, eventsCsv, masterMetrics] = await runAttempt();
+    const [installsCsv, eventsCsv, masterMetrics, cohortMetrics] = await runAttempt();
     logInfo(logger, 'asa_keyword_slice_retry_recovered', {
       app_key: target.app.app_key,
       date,
       platform: target.platform,
       failure_kind: requestError.kind
     });
-    return { installsCsv, eventsCsv, masterMetrics, recoveredByRetry: true };
+    return { installsCsv, eventsCsv, masterMetrics, cohortMetrics, recoveredByRetry: true };
   }
 }
 
@@ -1045,6 +1169,20 @@ function average(values: number[]): number {
   return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
 }
 
+function weightedAsaRoas(rows: Array<Pick<AsaKeywordDailyMetricInsertRow, 'total_cost' | 'd7_roas'>>): number {
+  const eligibleRows = rows.filter((row) => Number(row.total_cost || 0) > 0 && Number.isFinite(Number(row.d7_roas || 0)));
+  if (eligibleRows.length === 0) {
+    return 0;
+  }
+  const totalCost = eligibleRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
+  if (totalCost <= 0) {
+    return 0;
+  }
+  return (
+    eligibleRows.reduce((sum, row) => sum + Number(row.d7_roas || 0) * Number(row.total_cost || 0), 0) / totalCost
+  );
+}
+
 export function buildAsaDecisionWindow(
   reportDate: string,
   policy: RecommendationPolicyRuleJson | null
@@ -1272,7 +1410,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     const revenueD7Window = effectiveDecisionRows.reduce((sum, row) => sum + Number(row.revenue_d7 || 0), 0);
     const currentEcpi = installs7d > 0 ? totalCost7d / installs7d : Number(current.ecpi || 0);
     const currentCpp = purchaseCount7d > 0 ? totalCost7d / purchaseCount7d : 0;
-    const currentD7Roas = totalCost7d > 0 ? revenueD7Window / totalCost7d : 0;
+    const currentD7Roas = weightedAsaRoas(effectiveDecisionRows);
 
     const peerStats = peerStatsByDate.get(`${current.app_key}|${current.platform}|${current.date}`) ?? {
       ecpi: [],
@@ -1527,7 +1665,8 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
 function aggregateDailyMetrics(
   installRows: AsaInstallRow[],
   eventRows: AsaInAppEventRow[],
-  masterRows: AsaMasterMetricRow[]
+  masterRows: AsaMasterMetricRow[],
+  cohortRows: AsaCohortMetricRow[]
 ): AsaKeywordDailyMetricInsertRow[] {
   const aggregate = new Map<string, AsaKeywordAccumulator>();
 
@@ -1557,6 +1696,8 @@ function aggregateDailyMetrics(
       purchase_count: 0,
       revenue_d0: 0,
       revenue_d7: 0,
+      d7_roas: 0,
+      roas_source_complete: false,
       average_ecpi: 0
     };
     aggregate.set(key, created);
@@ -1575,18 +1716,22 @@ function aggregateDailyMetrics(
     current.raw_installs += 1;
   }
 
+  for (const row of cohortRows) {
+    const current = ensureAccumulator(row.date, row.app_key, row.platform, row.keyword, row.campaign, row.adset);
+    current.purchase_count += Number(row.purchase_count || 0);
+    current.revenue_d7 += Number(row.revenue_d7 || 0);
+    current.d7_roas = row.source_complete ? Number(row.d7_roas || 0) : current.d7_roas;
+    current.roas_source_complete = current.roas_source_complete || row.source_complete;
+  }
+
   for (const row of eventRows) {
     const current = ensureAccumulator(row.install_date, row.app_key, row.platform, row.keyword, row.campaign, row.adset);
     const installTime = new Date(row.install_time).getTime();
     const eventTime = new Date(row.event_time).getTime();
     const deltaMs = Number.isFinite(installTime) && Number.isFinite(eventTime) ? eventTime - installTime : Number.POSITIVE_INFINITY;
     if (row.event_revenue_usd > 0) {
-      current.purchase_count += 1;
       if (deltaMs <= ONE_DAY_MS) {
         current.revenue_d0 += row.event_revenue_usd;
-      }
-      if (deltaMs <= 7 * ONE_DAY_MS) {
-        current.revenue_d7 += row.event_revenue_usd;
       }
     }
   }
@@ -1608,7 +1753,7 @@ function aggregateDailyMetrics(
       ecpi: installs > 0 ? row.total_cost / installs : 0,
       average_ecpi: row.average_ecpi,
       cpp: row.purchase_count > 0 ? row.total_cost / row.purchase_count : 0,
-      d7_roas: row.total_cost > 0 ? row.revenue_d7 / row.total_cost : 0,
+      d7_roas: row.roas_source_complete ? row.d7_roas : 0,
       snapshot_id: 0,
       version: Date.now()
     };
@@ -1780,11 +1925,13 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
       let installsCsv: CsvRow[] = [];
       let eventsCsv: CsvRow[] = [];
       let masterMetrics: AsaMasterMetricRow[] = [];
+      let cohortMetrics: AsaCohortMetricRow[] = [];
       try {
         const payload = await fetchAsaSliceInputsWithRetry(target, date, logger);
         installsCsv = payload.installsCsv;
         eventsCsv = payload.eventsCsv;
         masterMetrics = payload.masterMetrics;
+        cohortMetrics = payload.cohortMetrics;
         if (payload.recoveredByRetry) {
           recoveredSliceCount += 1;
         }
@@ -1811,7 +1958,7 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
 
       const installRows = toAsaInstallRows(target.app, target.platform, installsCsv);
       const eventRows = toAsaEventRows(target.app, target.platform, eventsCsv);
-      const metricRows = aggregateDailyMetrics(installRows, eventRows, masterMetrics);
+      const metricRows = aggregateDailyMetrics(installRows, eventRows, masterMetrics, cohortMetrics);
       const countryMetricRows = aggregateAsaCountryMetrics(installRows);
       const snapshotId = createAsaSnapshotId();
 

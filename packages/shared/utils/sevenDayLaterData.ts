@@ -41,6 +41,7 @@ interface AsaSevenDayMetricRow {
   total_cost: number;
   purchase_count: number;
   revenue_d7: number;
+  d7_roas: number;
 }
 
 function escapeSqlLiteral(value: string): string {
@@ -80,10 +81,10 @@ function formatAsaSevenDayText(
   installs: number,
   totalCost: number,
   purchaseCount: number,
-  revenueD7: number
+  revenueD7: number,
+  d7Roas: number
 ): string {
   const cpp = purchaseCount > 0 ? totalCost / purchaseCount : 0;
-  const d7Roas = totalCost > 0 ? revenueD7 / totalCost : 0;
   return `D+7 ${targetDate}｜安装 ${installs.toFixed(0)}｜花费 ${formatUsd(totalCost)}｜CPP ${formatUsd(cpp)}｜购买 ${purchaseCount.toFixed(0)}｜ROAS ${d7Roas.toFixed(2)}`;
 }
 
@@ -208,7 +209,8 @@ async function loadAsaSevenDayMetrics(lookups: SevenDayLaterLookupRow[]): Promis
         sum(toFloat64(installs)) AS installs,
         sum(toFloat64(total_cost)) AS total_cost,
         sum(toFloat64(purchase_count)) AS purchase_count,
-        sum(toFloat64(revenue_d7)) AS revenue_d7
+        sum(toFloat64(revenue_d7)) AS revenue_d7,
+        if(sum(toFloat64(total_cost)) > 0, sum(toFloat64(d7_roas) * toFloat64(total_cost)) / sum(toFloat64(total_cost)), 0) AS d7_roas
        FROM asa_keyword_daily_metrics_v2 FINAL
       WHERE date IN (${targetDates.map(escapeSqlLiteral).join(', ')})
         AND app_key IN (${appKeys.map(escapeSqlLiteral).join(', ')})
@@ -245,7 +247,8 @@ async function loadAsaSevenDayMetrics(lookups: SevenDayLaterLookupRow[]): Promis
           Number(metric.installs || 0),
           Number(metric.total_cost || 0),
           Number(metric.purchase_count || 0),
-          Number(metric.revenue_d7 || 0)
+          Number(metric.revenue_d7 || 0),
+          Number(metric.d7_roas || 0)
         )
       );
       continue;

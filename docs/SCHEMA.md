@@ -94,8 +94,8 @@
 
 说明：
 - 供 `budget-advisor` 的 `d7_roas_cpp` / `relative_compare` evaluator 使用
-- 使用 `install_time` 作为 cohort 起点，回收窗口固定按安装后 7 天聚合
-- `revenue_source_missing=1` 表示该安装 cohort 没有匹配到收入来源，只代表回收数据缺口，不等于真实 0 收入
+- `revenue_d7 / purchase_count / d7_roas` 直接来自 AppsFlyer Cohort API 的 D+7 源数据
+- `revenue_source_missing=1` 表示该安装 cohort 没有拿到可用的 Cohort 源数据，只代表回收数据缺口，不等于真实 0 收入
 
 ### `asa_raw_installs`
 - ASA Raw Data 安装明细（仅 `Apple Search Ads`）

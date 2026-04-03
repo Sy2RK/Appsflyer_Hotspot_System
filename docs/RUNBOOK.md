@@ -103,7 +103,7 @@ Web UI 新增能力:
   - 不支持的平台组合不会出现在应用选择里；接口层也会兜底拦截
   - 切换核心指标时，不再适用的隐藏阈值会自动清理，避免“界面看不到但规则仍生效”
 - ASA 关键词管理页面（真实 ASA keyword、阶段配置、专项简报 / 建议发送）
-- `keyword-engine` 的 `D7 ROAS` 价值回收优先走 AppsFlyer cohort API，并在事实表中记录 `revenue_source_missing`
+- `keyword-engine` 的 `D7 ROAS` 价值回收直接使用 AppsFlyer cohort API 源数据，并在事实表中记录 `revenue_source_missing`
 - 每日报告页面（结构化预览、飞书 `interactive` 卡片发送、阈值说明）
 - 投放执行表推送页面（通用投放建议 + ASA 关键词建议 -> 同一 Base 内按日期归档执行表 + 群通知）
 - 操作日志页面（查看手动操作与定时任务执行记录）
@@ -305,7 +305,7 @@ curl -s "http://localhost:8123/?query=SELECT%20install_date,app_key,platform,med
 如果大量行都为 `revenue_source_missing=1`：
 - 先检查 `APPSFLYER_COHORT_*` 配置
 - 再检查 AppsFlyer `Master API token` 是否可用
-- 最后检查 `raw_events` 是否存在对应安装 cohort 的收入事件可作为 fallback
+- 最后检查对应安装日 / 媒体 / campaign 的 cohort 切片是否被 AppsFlyer 返回 404、416 或超时
 
 预算建议页面联动验证：
 - 当价值回收尚未补齐时，建议主指标会显示“收入数据待补齐”

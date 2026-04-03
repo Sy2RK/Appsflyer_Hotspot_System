@@ -104,6 +104,15 @@ interface BudgetValueFact {
   d7_roas: number;
 }
 
+interface BudgetValueCoverageSummary<T> {
+  coverageMissing: boolean;
+  coveredRows: T[];
+  currentRoas: number | null;
+  currentCpp: number | null;
+  totalCost: number;
+  totalPurchases: number;
+}
+
 export interface BudgetCountryFact {
   date: string;
   platform: string;
@@ -754,6 +763,50 @@ function averageOrNull(values: number[]): number | null {
   return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
 }
 
+function weightedRoasOrNull(rows: Array<Pick<BudgetValueFact, 'total_cost' | 'd7_roas'>>): number | null {
+  const eligibleRows = rows.filter((row) => Number(row.total_cost || 0) > 0 && Number.isFinite(Number(row.d7_roas || 0)));
+  if (eligibleRows.length === 0) {
+    return null;
+  }
+  const totalCost = eligibleRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
+  if (totalCost <= 0) {
+    return null;
+  }
+  const weightedRoas = eligibleRows.reduce(
+    (sum, row) => sum + Number(row.d7_roas || 0) * Number(row.total_cost || 0),
+    0
+  );
+  return weightedRoas / totalCost;
+}
+
+export function summarizeBudgetValueCoverage<
+  T extends Pick<BudgetValueFact, 'total_cost' | 'purchase_count' | 'd7_roas' | 'revenue_source_missing'>
+>(rows: T[]): BudgetValueCoverageSummary<T> {
+  const coveredRows = rows.filter((row) => row.revenue_source_missing !== 1);
+  const coverageMissing = rows.some((row) => row.revenue_source_missing === 1);
+  if (coverageMissing) {
+    return {
+      coverageMissing,
+      coveredRows,
+      currentRoas: null,
+      currentCpp: null,
+      totalCost: 0,
+      totalPurchases: 0
+    };
+  }
+
+  const totalCost = coveredRows.reduce((sum, row) => sum + row.total_cost, 0);
+  const totalPurchases = coveredRows.reduce((sum, row) => sum + row.purchase_count, 0);
+  return {
+    coverageMissing,
+    coveredRows,
+    currentRoas: weightedRoasOrNull(coveredRows),
+    currentCpp: totalPurchases > 0 ? totalCost / totalPurchases : null,
+    totalCost,
+    totalPurchases
+  };
+}
+
 function buildRelativeCompareDecision(input: {
   state: KeywordLifecycleStateRow;
   volumeTier: VolumeTier;
@@ -1069,8 +1122,9 @@ export async function runBudgetAdvisorCycle(
         const relevantValueFacts = (valueFactsByKey.get(factKey(fact.platform, fact.media_source, fact.keyword, fact.match_type)) ?? []).filter(
           (row) => row.date >= policyWindow.from && row.date <= policyWindow.to
         );
-        const relevantValueFactsWithRevenue = relevantValueFacts.filter((row) => row.revenue_source_missing !== 1);
-        const valueCoverageMissing = relevantValueFacts.length > 0 && relevantValueFactsWithRevenue.length === 0;
+        const valueCoverage = summarizeBudgetValueCoverage(relevantValueFacts);
+        const relevantValueFactsWithRevenue = valueCoverage.coveredRows;
+        const valueCoverageMissing = valueCoverage.coverageMissing;
         const relevantCountryFacts = aggregateBudgetCountryWindowFacts(
           (countryFactsByKey.get(factKey(fact.platform, fact.media_source, fact.keyword, fact.match_type)) ?? []).filter(
             (row) => policy?.targets.country_targets?.[row.country]
@@ -1078,11 +1132,8 @@ export async function runBudgetAdvisorCycle(
           policyWindow.from,
           policyWindow.to
         );
-        const totalValueCost = relevantValueFactsWithRevenue.reduce((sum, row) => sum + row.total_cost, 0);
-        const totalValueRevenue = relevantValueFactsWithRevenue.reduce((sum, row) => sum + row.revenue_d7, 0);
-        const totalValuePurchases = relevantValueFactsWithRevenue.reduce((sum, row) => sum + row.purchase_count, 0);
-        const currentRoas = totalValueCost > 0 ? totalValueRevenue / totalValueCost : null;
-        const currentCpp = totalValuePurchases > 0 ? totalValueCost / totalValuePurchases : null;
+        const currentRoas = valueCoverage.currentRoas;
+        const currentCpp = valueCoverage.currentCpp;
         const currentCtr = averageOrNull(relevantValueFacts.map((row) => row.ctr));
         const currentCvr = fact.last7_clicks > 0 ? fact.last7_installs / fact.last7_clicks : null;
         const currentCpi = fact.current_ecpi > 0 ? fact.current_ecpi : null;
@@ -1103,6 +1154,7 @@ export async function runBudgetAdvisorCycle(
 
         const valueDriven =
           policy?.metric_family === 'd7_roas_cpp' &&
+          !valueCoverageMissing &&
           relevantValueFactsWithRevenue.length > 0 &&
           ((thresholdTargets.roas_min ?? 0) > 0 || (thresholdTargets.cpp_max ?? 0) > 0);
         const relativeCompareDriven = policy?.metric_family === 'relative_compare';
@@ -1114,10 +1166,7 @@ export async function runBudgetAdvisorCycle(
             const peerValueRows = (valueFactsByKey.get(
               factKey(peer.platform, peer.media_source, peer.keyword, peer.match_type)
             ) ?? []).filter((row) => row.date >= policyWindow.from && row.date <= policyWindow.to);
-            const peerValueRowsWithRevenue = peerValueRows.filter((row) => row.revenue_source_missing !== 1);
-            const peerCost = peerValueRowsWithRevenue.reduce((sum, row) => sum + row.total_cost, 0);
-            const peerRevenue = peerValueRowsWithRevenue.reduce((sum, row) => sum + row.revenue_d7, 0);
-            return peerCost > 0 ? peerRevenue / peerCost : NaN;
+            return summarizeBudgetValueCoverage(peerValueRows).currentRoas ?? NaN;
           })
           .filter((value) => Number.isFinite(value)) as number[];
         const peerCtrValues = peerFacts

@@ -10,7 +10,11 @@ import {
   buildRecommendationPolicyTableSummary,
   getRecommendationPolicyErrorMessage
 } from '../apps/api/src/modules/ui/public/recommendationPolicyWizard.js';
-import { aggregateBudgetCountryWindowFacts, finalizeBudgetDecisionPlan } from '../packages/shared/utils/budgetAdvisor.js';
+import {
+  aggregateBudgetCountryWindowFacts,
+  finalizeBudgetDecisionPlan,
+  summarizeBudgetValueCoverage
+} from '../packages/shared/utils/budgetAdvisor.js';
 import {
   classifyAppsflyerHttpFailure,
   classifyAppsflyerTransportFailure
@@ -522,6 +526,37 @@ async function main(): Promise<void> {
     }
   ]);
 
+  const partialValueCoverage = summarizeBudgetValueCoverage([
+    {
+      total_cost: 40,
+      purchase_count: 2,
+      d7_roas: 1.5,
+      revenue_source_missing: 0
+    },
+    {
+      total_cost: 20,
+      purchase_count: 0,
+      d7_roas: 0,
+      revenue_source_missing: 1
+    }
+  ]);
+  assert.equal(partialValueCoverage.coverageMissing, true);
+  assert.equal(partialValueCoverage.currentRoas, null);
+  assert.equal(partialValueCoverage.currentCpp, null);
+  assert.equal(partialValueCoverage.coveredRows.length, 1);
+
+  const completeValueCoverage = summarizeBudgetValueCoverage([
+    {
+      total_cost: 40,
+      purchase_count: 2,
+      d7_roas: 1.5,
+      revenue_source_missing: 0
+    }
+  ]);
+  assert.equal(completeValueCoverage.coverageMissing, false);
+  assert.equal(completeValueCoverage.currentRoas, 1.5);
+  assert.equal(completeValueCoverage.currentCpp, 20);
+
   assert.equal(resolveKeywordEngineBackfillDays(false, 30, 3), 30);
   assert.equal(resolveKeywordEngineBackfillDays(true, 30, 3), 3);
   assert.equal(didKeywordEngineCycleComplete({ failed_count: 0 }), true);
@@ -605,7 +640,9 @@ async function main(): Promise<void> {
         campaign: 'camera exact',
         raw_event_count: 4,
         purchase_count: 2,
-        revenue_d7: 80
+        revenue_d7: 80,
+        d7_roas: 1.7,
+        source_complete: true
       }
     ],
     123,
@@ -617,7 +654,7 @@ async function main(): Promise<void> {
   assert.equal(keywordValueRows[0].revenue_d7, 80);
   assert.equal(keywordValueRows[0].revenue_source_missing, 0);
   assert.equal(keywordValueRows[0].cpp, 25);
-  assert.equal(keywordValueRows[0].d7_roas, 1.6);
+  assert.equal(keywordValueRows[0].d7_roas, 1.7);
   assert.equal(keywordValueRows[0].ctr, 0.1);
 
   const keywordValueRowsWithoutSource = buildKeywordValueRows(
@@ -656,7 +693,7 @@ async function main(): Promise<void> {
   ]);
   assert.deepEqual(buildKeywordValueCohortWindows('2026-04-02', '2026-04-08', '2026-04-08'), []);
 
-  const mergedValueRevenueRows = mergeKeywordValueRevenueRows(
+  const mergedValueRevenueRows = mergeKeywordValueRevenueRows([
     [
       {
         install_date: '2026-03-20',
@@ -667,7 +704,9 @@ async function main(): Promise<void> {
         campaign: 'camera exact',
         raw_event_count: 5,
         purchase_count: 3,
-        revenue_d7: 90
+        revenue_d7: 90,
+        d7_roas: 0,
+        source_complete: false
       }
     ],
     [
@@ -679,18 +718,19 @@ async function main(): Promise<void> {
         country: 'US',
         campaign: 'camera exact',
         raw_event_count: 4,
-        purchase_count: 2,
-        revenue_d7: 80
+        purchase_count: 0,
+        revenue_d7: 0,
+        d7_roas: 1.8,
+        source_complete: true
       }
     ]
-  );
+  ]);
   const mergedExactCountry = mergedValueRevenueRows.find((row) => row.country === 'US');
-  const mergedUnknownCountry = mergedValueRevenueRows.find((row) => row.country === 'unknown');
-  assert.equal(mergedValueRevenueRows.length, 2);
+  assert.equal(mergedValueRevenueRows.length, 1);
   assert.equal(mergedExactCountry?.purchase_count, 3);
   assert.equal(mergedExactCountry?.revenue_d7, 90);
-  assert.equal(mergedUnknownCountry?.purchase_count, 3);
-  assert.equal(mergedUnknownCountry?.revenue_d7, 90);
+  assert.equal(mergedExactCountry?.d7_roas, 1.8);
+  assert.equal(mergedExactCountry?.source_complete, true);
 
   const keywordValueRowsUnknownCountry = buildKeywordValueRows(
     'demo',
@@ -715,9 +755,52 @@ async function main(): Promise<void> {
     new Map()
   );
   assert.equal(keywordValueRowsUnknownCountry.length, 1);
-  assert.equal(keywordValueRowsUnknownCountry[0].revenue_source_missing, 0);
-  assert.equal(keywordValueRowsUnknownCountry[0].purchase_count, 3);
-  assert.equal(keywordValueRowsUnknownCountry[0].revenue_d7, 90);
+  assert.equal(keywordValueRowsUnknownCountry[0].revenue_source_missing, 1);
+  assert.equal(keywordValueRowsUnknownCountry[0].purchase_count, 0);
+  assert.equal(keywordValueRowsUnknownCountry[0].revenue_d7, 0);
+  assert.equal(keywordValueRowsUnknownCountry[0].d7_roas, 0);
+
+  const keywordValueRowsMixedCountry = buildKeywordValueRows(
+    'demo',
+    [
+      {
+        report_date: '2026-03-20',
+        app_key: 'demo',
+        platform: 'android',
+        campaign: 'camera exact',
+        media_source: 'googleadwords_int',
+        country: 'US',
+        impressions: '1000',
+        installs: '10',
+        clicks: '100',
+        total_cost: '50',
+        average_ecpi: '5',
+        source_report: 'daily_report_v5'
+      },
+      {
+        report_date: '2026-03-20',
+        app_key: 'demo',
+        platform: 'android',
+        campaign: 'camera exact',
+        media_source: 'googleadwords_int',
+        country: 'unknown',
+        impressions: '200',
+        installs: '2',
+        clicks: '20',
+        total_cost: '10',
+        average_ecpi: '5',
+        source_report: 'daily_report_v5'
+      }
+    ],
+    mergedValueRevenueRows,
+    123,
+    new Map()
+  );
+  const mixedUsRow = keywordValueRowsMixedCountry.find((row) => row.country === 'US');
+  const mixedUnknownRow = keywordValueRowsMixedCountry.find((row) => row.country === 'unknown');
+  assert.equal(mixedUsRow?.purchase_count, 3);
+  assert.equal(mixedUnknownRow?.purchase_count, 0);
+  assert.equal(mixedUnknownRow?.revenue_source_missing, 1);
 
   assert.throws(
     () =>

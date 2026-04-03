@@ -2991,7 +2991,7 @@ body.ai-dock-scroll-locked #appShell {
 
 .ai-chat-pack-card {
   display: grid;
-  gap: 6px;
+  gap: 10px;
   width: 100%;
   padding: 12px 14px;
   text-align: left;
@@ -3037,6 +3037,33 @@ body.ai-dock-scroll-locked #appShell {
   font-size: 11px;
   color: var(--text-secondary);
   line-height: 1.55;
+}
+
+.ai-chat-pack-card-meta {
+  color: rgba(2, 132, 168, 0.82);
+  font-weight: 600;
+}
+
+.ai-chat-pack-card-block {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(214, 234, 244, 0.9);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.ai-chat-pack-card-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(93, 123, 160, 0.72);
+}
+
+.ai-chat-pack-card-body {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
 }
 
 .ai-chat-builder-grid {
@@ -3187,6 +3214,16 @@ body.ai-dock-scroll-locked #appShell {
   border-radius: 18px;
   border: 1px solid #d6ebf5;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(243, 249, 255, 0.96));
+}
+
+.ai-chat-strip-summary {
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(191, 224, 238, 0.92);
+  background: rgba(236, 248, 255, 0.86);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .ai-chat-strip-section {

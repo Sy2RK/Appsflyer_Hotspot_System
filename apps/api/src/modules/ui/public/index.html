@@ -1839,15 +1839,15 @@
                   <summary class="ai-chat-fold-summary">
                     <span class="ai-chat-fold-title">
                       <strong>数据库上下文</strong>
-                      <small>推荐入口 / 核心数据包 / 自定义模板</small>
+                      <small>直接看到会附加什么，再决定要不要一键带上</small>
                     </span>
                   </summary>
 
                   <div class="ai-chat-fold-body">
                     <details class="ai-chat-subfold" data-ai-tool-subsection="recommended" open>
                       <summary class="ai-chat-subfold-summary">
-                        <span>当前模块推荐</span>
-                        <small>根据你正在看的页面给出最近手的上下文入口</small>
+                        <span>基于当前页面，一键附加</span>
+                        <small>每张卡片都会明确写出应用、平台、时间范围和当前筛选条件</small>
                       </summary>
                       <div class="ai-chat-subfold-body">
                         <div id="aiChatRecommendedPacks" class="ai-chat-pack-grid"></div>
@@ -1989,6 +1989,7 @@
               multiple
             />
             <div id="aiChatAttachmentStrip" class="ai-chat-attachment-strip hidden">
+              <div id="aiChatAttachmentSummary" class="ai-chat-strip-summary"></div>
               <div class="ai-chat-strip-section">
                 <p class="ai-chat-strip-title">当前已附加图片</p>
                 <div id="aiChatImageList" class="ai-chat-chip-list"></div>
