@@ -173,6 +173,8 @@ interface AsaKeywordSummary {
   keyword_count: number;
   installs: number;
   total_cost: number;
+  purchase_count: number;
+  revenue_d7: number;
   ecpi: number;
   cpp: number;
   d7_roas: number;
@@ -209,6 +211,10 @@ export interface AsaBriefPreview {
   report_date: string;
   title: string;
   summary: AsaKeywordSummary;
+  summary_window: {
+    from: string;
+    to: string;
+  };
   current_stage: ProductStage | 'mixed';
   today_judgment: string;
   rows: AsaKeywordDashboardRow[];
@@ -240,6 +246,97 @@ export interface ScheduledAsaKeywordBriefRunSummary {
   sent_count: number;
   failed_count: number;
   skipped_count: number;
+}
+
+function buildAsaSummaryFilter(filter: AsaKeywordQueryFilter): {
+  rangeFrom: string;
+  rangeTo: string;
+  query: string;
+  params: Record<string, unknown>;
+} {
+  const rangeFrom = filter.from ?? '1970-01-01';
+  const rangeTo = filter.to ?? '2099-12-31';
+  const summaryWhere: string[] = [];
+  const summaryParams: Record<string, unknown> = {
+    from: rangeFrom,
+    to: rangeTo
+  };
+  if (filter.appKey) {
+    summaryWhere.push('m.app_key = {appKey:String}');
+    summaryParams.appKey = filter.appKey;
+  }
+  if (filter.platform) {
+    summaryWhere.push('m.platform = {platform:String}');
+    summaryParams.platform = filter.platform;
+  }
+  if (filter.from) {
+    summaryWhere.push('m.date >= toDate({from:String})');
+  }
+  if (filter.to) {
+    summaryWhere.push('m.date <= toDate({to:String})');
+  }
+  if (filter.keyword) {
+    summaryWhere.push('positionCaseInsensitive(m.keyword, {keyword:String}) > 0');
+    summaryParams.keyword = filter.keyword;
+  }
+  if (filter.campaign) {
+    summaryWhere.push('positionCaseInsensitive(m.campaign, {campaign:String}) > 0');
+    summaryParams.campaign = filter.campaign;
+  }
+  return {
+    rangeFrom,
+    rangeTo,
+    query: summaryWhere.length ? `WHERE ${summaryWhere.join(' AND ')}` : '',
+    params: summaryParams
+  };
+}
+
+async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<AsaKeywordSummary> {
+  const summaryFilter = buildAsaSummaryFilter(filter);
+  const summaryRows = await chQuery<AsaKeywordSummary>(
+    `WITH
+      ${buildLatestAsaSliceRangeCtes(ASA_KEYWORD_METRICS_TABLE, 'date')}
+      SELECT
+        keyword_count,
+        installs,
+        total_cost,
+        purchase_count,
+        revenue_d7,
+        if(installs > 0, total_cost / installs, 0) AS ecpi,
+        if(purchase_count > 0, total_cost / purchase_count, 0) AS cpp,
+        if(total_cost > 0, revenue_d7 / total_cost, 0) AS d7_roas
+      FROM (
+        SELECT
+          countDistinct(keyword, campaign, adset, platform, app_key) AS keyword_count,
+          sum(installs) AS installs,
+          sum(total_cost) AS total_cost,
+          sum(purchase_count) AS purchase_count,
+          sum(revenue_d7) AS revenue_d7
+        FROM (
+          SELECT *
+          FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL
+        ) AS m
+        INNER JOIN latest_slices AS s
+          ON s.app_key = m.app_key
+         AND s.platform = m.platform
+         AND s.date = m.date
+         AND s.snapshot_id = m.snapshot_id
+        ${summaryFilter.query}
+      )`,
+    summaryFilter.params
+  );
+  return (
+    summaryRows[0] ?? {
+      keyword_count: 0,
+      installs: 0,
+      total_cost: 0,
+      purchase_count: 0,
+      revenue_d7: 0,
+      ecpi: 0,
+      cpp: 0,
+      d7_roas: 0
+    }
+  );
 }
 
 const RAW_MEDIA_SOURCE = 'apple search ads';
@@ -1765,8 +1862,6 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
 export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): Promise<AsaKeywordQueryResult> {
   const page = Math.max(1, Math.floor(filter.page ?? 1));
   const pageSize = Math.min(100, Math.max(1, Math.floor(filter.pageSize ?? 20)));
-  const rangeFrom = filter.from ?? '1970-01-01';
-  const rangeTo = filter.to ?? '2099-12-31';
   const stateResult = await queryAsaKeywordStates({
     appKey: filter.appKey,
     platform: filter.platform,
@@ -1794,73 +1889,7 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
       .filter((row) => keySet.has(`${row.app_key}|${row.platform}|${row.keyword}|${row.campaign}|${row.adset}`))
       .map((row) => [`${row.app_key}|${row.platform}|${row.keyword}|${row.campaign}|${row.adset}`, row])
   );
-
-  const summaryWhere: string[] = [];
-  const summaryParams: Record<string, unknown> = {
-    from: rangeFrom,
-    to: rangeTo
-  };
-  if (filter.appKey) {
-    summaryWhere.push('m.app_key = {appKey:String}');
-    summaryParams.appKey = filter.appKey;
-  }
-  if (filter.platform) {
-    summaryWhere.push('m.platform = {platform:String}');
-    summaryParams.platform = filter.platform;
-  }
-  if (filter.from) {
-    summaryWhere.push('m.date >= toDate({from:String})');
-  }
-  if (filter.to) {
-    summaryWhere.push('m.date <= toDate({to:String})');
-  }
-  if (filter.keyword) {
-    summaryWhere.push('positionCaseInsensitive(m.keyword, {keyword:String}) > 0');
-    summaryParams.keyword = filter.keyword;
-  }
-  if (filter.campaign) {
-    summaryWhere.push('positionCaseInsensitive(m.campaign, {campaign:String}) > 0');
-    summaryParams.campaign = filter.campaign;
-  }
-  const summaryQuery = summaryWhere.length ? `WHERE ${summaryWhere.join(' AND ')}` : '';
-  const summaryRows = await chQuery<AsaKeywordSummary & { keyword_count: number }>(
-    `WITH
-      ${buildLatestAsaSliceRangeCtes(ASA_KEYWORD_METRICS_TABLE, 'date')}
-      SELECT
-        keyword_count,
-        installs,
-        total_cost,
-        if(installs > 0, total_cost / installs, 0) AS ecpi,
-        if(purchase_count > 0, total_cost / purchase_count, 0) AS cpp,
-        if(total_cost > 0, revenue_d7 / total_cost, 0) AS d7_roas
-      FROM (
-        SELECT
-          countDistinct(keyword, campaign, adset, platform, app_key) AS keyword_count,
-          sum(installs) AS installs,
-          sum(total_cost) AS total_cost,
-          sum(purchase_count) AS purchase_count,
-          sum(revenue_d7) AS revenue_d7
-        FROM (
-          SELECT *
-          FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL
-        ) AS m
-        INNER JOIN latest_slices AS s
-          ON s.app_key = m.app_key
-         AND s.platform = m.platform
-         AND s.date = m.date
-         AND s.snapshot_id = m.snapshot_id
-        ${summaryQuery}
-      )`,
-    summaryParams
-  );
-  const summary = summaryRows[0] ?? {
-    keyword_count: 0,
-    installs: 0,
-    total_cost: 0,
-    ecpi: 0,
-    cpp: 0,
-    d7_roas: 0
-  };
+  const summary = await queryAsaKeywordSummary(filter);
 
   const rows: AsaKeywordDashboardRow[] = stateRows.map((row) => {
     const reco = recoMap.get(`${row.app_key}|${row.platform}|${row.keyword}|${row.campaign}|${row.adset}`);
@@ -2044,6 +2073,20 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
     page: 1,
     pageSize: 100
   });
+  const summaryWindow = buildAsaDecisionWindow(filters.reportDate, null);
+  const matureSummary = await queryAsaKeywordSummary({
+    appKey: filters.appKey,
+    platform: filters.platform,
+    from: summaryWindow.from,
+    to: summaryWindow.to
+  });
+  const briefSummary: AsaKeywordSummary = {
+    ...result.summary,
+    purchase_count: matureSummary.purchase_count,
+    revenue_d7: matureSummary.revenue_d7,
+    cpp: matureSummary.cpp,
+    d7_roas: matureSummary.d7_roas
+  };
   const appByKey = new Map((await listApps()).map((app) => [app.app_key, app]));
   const rows = result.rows;
   const rowContextMap = new Map(rows.map((row) => [[row.app_key, row.platform, row.keyword, row.campaign, row.adset].join('|'), row] as const));
@@ -2071,11 +2114,12 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
   const title = `ASA 关键词简报｜${filters.reportDate}`;
   const lines = [
     `报告日期：${filters.reportDate}`,
+    `D7 / CPP 成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}`,
     '',
     '【核心概览】',
     `- 当前阶段：${stageTitle(currentStage)}`,
     `- 关键词数：${result.summary.keyword_count}`,
-    `- 核心指标：安装 ${result.summary.installs.toFixed(0)} ｜ 成本 $${result.summary.total_cost.toFixed(2)} ｜ eCPI ${formatAsaSummaryEcpi(result.summary)} ｜ CPP $${result.summary.cpp.toFixed(2)} ｜ D7 ROAS ${formatAsaSummaryRoas(result.summary)}`,
+    `- 核心指标：安装 ${result.summary.installs.toFixed(0)} ｜ 成本 $${result.summary.total_cost.toFixed(2)} ｜ eCPI ${formatAsaSummaryEcpi(result.summary)} ｜ CPP（成熟窗口） ${briefSummary.cpp > 0 ? `$${briefSummary.cpp.toFixed(2)}` : '-'} ｜ D7 ROAS（成熟窗口） ${formatAsaSummaryRoas(briefSummary)}`,
     '',
     '【今日判断】',
     `- ${todayJudgment}`,
@@ -2112,7 +2156,8 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
     '【口径说明】',
     '- ASA 关键词成本直接来自 AppsFlyer Master API（关键词 + 广告系列 + 广告组）。',
     '- 建议操作已并入 ASA 简报，不再单独发送。',
-    '- eCPI 显示为 “—” 表示有花费无安装；D7 ROAS 显示 0.00 表示当前未观察到 D7 收入。'
+    `- CPP 与 D7 ROAS 按成熟窗口（${summaryWindow.from} 至 ${summaryWindow.to}）汇总。`,
+    '- eCPI 显示为 “—” 表示有花费无安装；D7 ROAS 显示 0.00 表示当前成熟窗口内未观察到 D7 收入。'
   ];
 
   const headerTitle = filters.appKey
@@ -2127,7 +2172,10 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
     elements: [
       {
         tag: 'div',
-        text: { tag: 'lark_md', content: `📅 **报告日期**\n${filters.reportDate}\n当前阶段：${stageTitle(currentStage)}` }
+        text: {
+          tag: 'lark_md',
+          content: `📅 **报告日期**\n${filters.reportDate}\n当前阶段：${stageTitle(currentStage)}\nD7 / CPP 成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}`
+        }
       },
       {
         tag: 'div',
@@ -2136,8 +2184,8 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
           { is_short: true, text: { tag: 'lark_md', content: `**安装量**\n${result.summary.installs.toFixed(0)}` } },
           { is_short: true, text: { tag: 'lark_md', content: `**成本**\n$${result.summary.total_cost.toFixed(2)}` } },
           { is_short: true, text: { tag: 'lark_md', content: `**eCPI**\n${formatAsaSummaryEcpi(result.summary)}` } },
-          { is_short: true, text: { tag: 'lark_md', content: `**CPP**\n$${result.summary.cpp.toFixed(2)}` } },
-          { is_short: true, text: { tag: 'lark_md', content: `**D7 ROAS**\n${formatAsaSummaryRoas(result.summary)}` } }
+          { is_short: true, text: { tag: 'lark_md', content: `**CPP（成熟窗口）**\n${briefSummary.cpp > 0 ? `$${briefSummary.cpp.toFixed(2)}` : '-'}` } },
+          { is_short: true, text: { tag: 'lark_md', content: `**D7 ROAS（成熟窗口）**\n${formatAsaSummaryRoas(briefSummary)}` } }
         ]
       },
       { tag: 'hr' },
@@ -2192,7 +2240,7 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
         elements: [
           {
             tag: 'plain_text',
-            content: '口径说明：ASA 关键词成本直接来自 AppsFlyer Master API（关键词 + 广告系列 + 广告组）。建议操作已并入 ASA 简报，不再单独发送。eCPI 显示为“—”表示有花费无安装；D7 ROAS 显示 0.00 表示当前未观察到 D7 收入。'
+            content: `口径说明：ASA 关键词成本直接来自 AppsFlyer Master API（关键词 + 广告系列 + 广告组）。建议操作已并入 ASA 简报，不再单独发送。CPP 与 D7 ROAS 按成熟窗口（${summaryWindow.from} 至 ${summaryWindow.to}）汇总。eCPI 显示为“—”表示有花费无安装；D7 ROAS 显示 0.00 表示当前成熟窗口内未观察到 D7 收入。`
           }
         ]
       }
@@ -2202,7 +2250,8 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
   return {
     report_date: filters.reportDate,
     title,
-    summary: result.summary,
+    summary: briefSummary,
+    summary_window: summaryWindow,
     current_stage: currentStage,
     today_judgment: todayJudgment,
     rows,

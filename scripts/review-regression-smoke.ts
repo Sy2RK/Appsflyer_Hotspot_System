@@ -450,6 +450,11 @@ async function main(): Promise<void> {
     from: '2026-03-11',
     to: '2026-03-24'
   });
+  const defaultAsaDecisionWindow = buildAsaDecisionWindow('2026-04-02', null);
+  assert.deepEqual(defaultAsaDecisionWindow, {
+    from: '2026-03-13',
+    to: '2026-03-26'
+  });
   const asaContextWindow = buildAsaContextWindow('2026-03-31', validatedPolicy);
   assert.deepEqual(asaContextWindow, {
     from: '2026-03-11',

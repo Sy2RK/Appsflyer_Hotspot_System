@@ -439,6 +439,7 @@ const el = {
   aiChatCorePacks: document.getElementById('aiChatCorePacks'),
   aiChatMessages: document.getElementById('aiChatMessages'),
   aiChatAttachmentStrip: document.getElementById('aiChatAttachmentStrip'),
+  aiChatAttachmentSummary: document.getElementById('aiChatAttachmentSummary'),
   aiChatImageList: document.getElementById('aiChatImageList'),
   aiChatContextPackList: document.getElementById('aiChatContextPackList'),
   aiChatForm: document.getElementById('aiChatForm'),
@@ -898,27 +899,114 @@ function aiChatPackKey(spec) {
   });
 }
 
+function aiChatSourceSectionLabel(sectionId) {
+  const mapping = {
+    'section-overview': '总览看板',
+    'section-metrics': '指标看板',
+    'section-budget': '预算建议',
+    'section-asa-keywords': 'ASA 关键词',
+    'section-pull-records': '拉取记录'
+  };
+  return mapping[String(sectionId || '').trim()] || '当前页面';
+}
+
+function aiChatBooleanLabel(value, positive, negative) {
+  if (value === true) return positive;
+  if (value === false) return negative;
+  return '';
+}
+
+function aiChatPackQuestionHint(spec) {
+  if (spec.type === 'metrics_trend' && spec.templateId === 'media_source') {
+    return '最近的量级或成本变化，主要来自哪个媒体源？';
+  }
+  if (spec.type === 'metrics_trend' && spec.templateId === 'country') {
+    return '最近哪些国家在拖累成本，或拉动整体表现？';
+  }
+  if (spec.type === 'metrics_trend' && spec.templateId === 'campaign') {
+    return '最近最值得优先排查的是哪些 campaign？';
+  }
+  if (spec.type === 'budget_summary' && spec.templateId === 'platform_media_source') {
+    return '当前预算建议里，哪些平台或媒体源最值得先处理？';
+  }
+  if (spec.type === 'budget_summary' && spec.templateId === 'action_status') {
+    return '当前建议主要集中在哪些动作和处理状态上？';
+  }
+  if (spec.type === 'budget_summary' && spec.templateId === 'keyword') {
+    return '有哪些关键词是当前最需要关注的预算对象？';
+  }
+  if (spec.type === 'asa_keyword_summary' && spec.templateId === 'stage') {
+    return '当前 ASA 关键词的阶段分布说明了什么问题？';
+  }
+  if (spec.type === 'asa_keyword_summary' && spec.templateId === 'campaign_adset') {
+    return '哪些广告组或 campaign 是当前主要问题来源？';
+  }
+  return '这份上下文最适合先让模型做一轮面板级概览。';
+}
+
 function buildAIChatPackDisplay(spec) {
   const lines = [];
+  const payloadParts = [];
+  const appName = spec.appKey ? productViewName(spec.appKey, spec.platform || 'unknown') : '';
   const title = `${aiChatPackTypeLabel(spec.type)} · ${aiChatPackTemplateLabel(spec.type, spec.templateId)}`;
-  if (spec.appKey) {
-    lines.push(spec.appKey);
+  if (appName || spec.appKey) {
+    lines.push(appName || spec.appKey);
+    payloadParts.push(`应用：${appName || spec.appKey}`);
   }
   if (spec.platform) {
     lines.push(platformLabel(spec.platform));
+    payloadParts.push(`平台：${platformLabel(spec.platform)}`);
+  } else {
+    payloadParts.push('平台：全部平台');
   }
   if (spec.from || spec.to) {
     lines.push(`${spec.from || '不限'} ~ ${spec.to || '不限'}`);
+    payloadParts.push(`时间：${spec.from || '不限'} ~ ${spec.to || '不限'}`);
+  } else {
+    payloadParts.push('时间：沿用当前页面默认窗口');
   }
   if (spec.type === 'metrics_trend' && spec.metric) {
     lines.push(metricLabel(spec.metric));
+    payloadParts.push(`指标：${metricLabel(spec.metric)}`);
+  }
+  if (spec.type === 'metrics_trend' && spec.source) {
+    payloadParts.push(`来源：${spec.source === 'push' ? '实时回传' : '广告日报'}`);
+  }
+  if (spec.type === 'metrics_trend' && spec.eventName) {
+    payloadParts.push(`事件：${spec.eventName}`);
+  }
+  if (spec.type === 'budget_summary' && spec.status) {
+    payloadParts.push(`建议状态：${budgetStatusLabel(spec.status)}`);
+  }
+  if (spec.type === 'budget_summary' && spec.executionStatus) {
+    payloadParts.push(`执行状态：${spec.executionStatus}`);
+  }
+  if (spec.type === 'budget_summary') {
+    const adoptedLabel = aiChatBooleanLabel(spec.isAdopted, '已采纳', '未采纳');
+    if (adoptedLabel) {
+      payloadParts.push(`采纳情况：${adoptedLabel}`);
+    }
+    const reviewLabel = aiChatBooleanLabel(spec.hasManualReview, '已人工批复', '未人工批复');
+    if (reviewLabel) {
+      payloadParts.push(`人工批复：${reviewLabel}`);
+    }
   }
   if (spec.type === 'asa_keyword_summary' && spec.stage) {
-    lines.push(spec.stage);
+    lines.push(asaStageLabel(spec.stage));
+    payloadParts.push(`阶段：${asaStageLabel(spec.stage)}`);
+  }
+  if (spec.type === 'asa_keyword_summary' && spec.keyword) {
+    payloadParts.push(`关键词：${spec.keyword}`);
+  }
+  if (spec.type === 'asa_keyword_summary' && spec.campaign) {
+    payloadParts.push(`Campaign：${spec.campaign}`);
   }
   return {
     title,
-    meta: lines.join(' · ') || '当前工作台上下文'
+    meta: lines.join(' · ') || '当前工作台上下文',
+    sourceLabel: `来自当前页面：${aiChatSourceSectionLabel(spec.sourceSection)}`,
+    payloadSummary: payloadParts.join('；') || '沿用当前页面的默认应用、平台和时间范围。',
+    promptHint: aiChatPackQuestionHint(spec)
   };
 }
 
@@ -1056,17 +1144,7 @@ function syncAIChatPackBuilderPreview() {
   try {
     const spec = buildCustomAIChatPackSpec();
     const display = buildAIChatPackDisplay(spec);
-    const extra = [];
-    if (spec.type === 'metrics_trend' && spec.source) {
-      extra.push(spec.source === 'push' ? '实时回传' : '广告日报');
-    }
-    if (spec.type === 'metrics_trend' && spec.eventName) {
-      extra.push(`事件 ${spec.eventName}`);
-    }
-    if (spec.type === 'asa_keyword_summary' && spec.stage) {
-      extra.push(`阶段 ${spec.stage}`);
-    }
-    el.aiChatPackBuilderPreview.textContent = `即将附加：${display.title}｜${[display.meta, ...extra].filter(Boolean).join(' ｜ ')}`;
+    el.aiChatPackBuilderPreview.textContent = `即将附加：${display.title}｜${display.payloadSummary}｜适合问：${display.promptHint}`;
   } catch (error) {
     el.aiChatPackBuilderPreview.textContent = '先选择应用、模板和时间范围，再附加自定义数据包。';
   }
@@ -1133,6 +1211,7 @@ function revokeAIChatImagePreview(image) {
 function renderAIChatAttachmentStrip() {
   if (
     !(el.aiChatAttachmentStrip instanceof HTMLElement) ||
+    !(el.aiChatAttachmentSummary instanceof HTMLElement) ||
     !(el.aiChatImageList instanceof HTMLElement) ||
     !(el.aiChatContextPackList instanceof HTMLElement)
   ) {
@@ -1142,6 +1221,18 @@ function renderAIChatAttachmentStrip() {
   const packs = Array.isArray(state.aiChat.selectedContextPacks) ? state.aiChat.selectedContextPacks : [];
   const hasAttachments = images.length > 0 || packs.length > 0;
   el.aiChatAttachmentStrip.classList.toggle('hidden', !hasAttachments);
+  if (hasAttachments) {
+    const summaryParts = [];
+    if (packs.length > 0) {
+      summaryParts.push(`数据包 ${packs.length} 个：${packs.map((item) => `${item.title}（${item.meta}）`).join('；')}`);
+    }
+    if (images.length > 0) {
+      summaryParts.push(`图片 ${images.length} 张`);
+    }
+    el.aiChatAttachmentSummary.textContent = `本次发送会附带：${summaryParts.join('；')}`;
+  } else {
+    el.aiChatAttachmentSummary.textContent = '';
+  }
   el.aiChatImageList.innerHTML = images
     .map(
       (item) => `
@@ -1261,8 +1352,10 @@ function createAIChatPackCard(spec, meta, desc) {
   return {
     spec,
     title: info.title,
-    meta: meta || info.meta,
-    desc,
+    meta: info.meta,
+    sourceLabel: meta ? `${meta} · ${info.sourceLabel}` : info.sourceLabel,
+    payloadSummary: info.payloadSummary,
+    promptHint: desc || info.promptHint,
     disabled: !spec.appKey
   };
 }
@@ -1311,8 +1404,9 @@ function renderAIChatPackCards(container, cards, role) {
     return;
   }
   container.innerHTML = cards
-    .map((card) => {
+    .map((card, index) => {
       const payload = encodeURIComponent(JSON.stringify(card.spec));
+      const badgeText = role === 'recommended' ? (index === 0 ? '首选' : '备选') : role === 'core' ? '固定' : '模板';
       return `
         <button
           class="ai-chat-pack-card"
@@ -1323,10 +1417,17 @@ function renderAIChatPackCards(container, cards, role) {
         >
           <span class="ai-chat-pack-card-title">
             <span>${escapeHtml(card.title)}</span>
-            <span class="badge badge-open">${escapeHtml(role === 'recommended' ? '推荐' : '核心')}</span>
+            <span class="badge badge-open">${escapeHtml(badgeText)}</span>
           </span>
-          <span class="ai-chat-pack-card-meta">${escapeHtml(card.meta || '当前上下文')}</span>
-          <span class="ai-chat-pack-card-desc">${escapeHtml(card.desc || '')}</span>
+          <span class="ai-chat-pack-card-meta">${escapeHtml(card.sourceLabel || card.meta || '当前上下文')}</span>
+          <span class="ai-chat-pack-card-block">
+            <span class="ai-chat-pack-card-label">本次会附加</span>
+            <span class="ai-chat-pack-card-body">${escapeHtml(card.payloadSummary || card.meta || '当前页面上下文')}</span>
+          </span>
+          <span class="ai-chat-pack-card-block">
+            <span class="ai-chat-pack-card-label">适合提问</span>
+            <span class="ai-chat-pack-card-body">${escapeHtml(card.promptHint || '先让模型基于当前页面做一轮概览。')}</span>
+          </span>
         </button>
       `;
     })
@@ -1354,7 +1455,7 @@ function addAIChatContextPack(spec) {
   state.aiChat.selectedContextPacks = [...(state.aiChat.selectedContextPacks || []), { key, spec, ...display }];
   renderAIChatAttachmentStrip();
   setAIChatContextMenuOpen(false);
-  showToast(`已附加 ${display.title}`);
+  showToast(`已附加 ${display.title}：${display.meta}`);
 }
 
 function buildCustomAIChatPackSpec() {
@@ -5744,14 +5845,17 @@ async function triggerAsaKeywordRecompute() {
 
 function asaBriefSummaryItems(report) {
   const summary = report.summary || {};
+  const summaryWindow = report.summary_window || null;
+  const cppLabel = summaryWindow ? '每次购买成本（CPP，成熟窗口）' : '每次购买成本（CPP）';
+  const roasLabel = summaryWindow ? '7 日回收率（D7 ROAS，成熟窗口）' : '7 日回收率（D7 ROAS）';
   return [
     { label: '当前阶段', value: asaStageLabel(report.current_stage) },
     { label: '关键词数', value: String(summary.keyword_count || 0) },
     { label: '安装量', value: toFixed2(summary.installs || 0) },
     { label: '成本', value: `$${toFixed2(summary.total_cost || 0)}` },
     { label: '每次安装成本（eCPI）', value: formatAsaEcpiDisplay(summary.ecpi || 0, summary.total_cost || 0, summary.installs || 0) },
-    { label: '每次购买成本（CPP）', value: Number(summary.cpp || 0) > 0 ? `$${toFixed2(summary.cpp || 0)}` : '-' },
-    { label: '7 日回收率（D7 ROAS）', value: formatAsaD7RoasDisplay(summary.d7_roas || 0, summary.total_cost || 0, summary.revenue_d7 || 0) }
+    { label: cppLabel, value: Number(summary.cpp || 0) > 0 ? `$${toFixed2(summary.cpp || 0)}` : '-' },
+    { label: roasLabel, value: formatAsaD7RoasDisplay(summary.d7_roas || 0, summary.total_cost || 0, summary.revenue_d7 || 0) }
   ];
 }
 
@@ -5760,10 +5864,12 @@ function renderAsaBriefModal(payload, mode) {
   const notify = payload?.notify || null;
   const skipped = payload?.skipped === true;
   const actionRows = Array.isArray(report.action_rows) ? report.action_rows : [];
+  const summaryWindow = report.summary_window || null;
   el.asaBriefModalTitle.textContent = mode === 'send' ? 'ASA 简报发送结果' : 'ASA 简报预览';
   const sendStatus = notify?.ok ? (skipped ? '今日已发送，已跳过重复发送' : '已发送到飞书') : '发送失败';
   el.asaBriefMeta.textContent =
     `报告日期 ${report.report_date || '-'} · 当前阶段 ${asaStageLabel(report.current_stage)} · 关键词数 ${report.summary?.keyword_count || 0}` +
+    (summaryWindow ? ` · D7/CPP 窗口 ${summaryWindow.from}~${summaryWindow.to}` : '') +
     (notify || skipped ? ` · ${sendStatus}` : '');
   el.asaBriefSummaryGrid.innerHTML = asaBriefSummaryItems(report)
     .map(
