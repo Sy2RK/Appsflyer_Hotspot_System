@@ -15,7 +15,9 @@
     "dev:daily-brief": "tsx watch workers/daily-brief/src/index.ts",
     "dev:bitable-export": "tsx watch workers/bitable-export/src/index.ts",
     "dev:bitable-feedback-sync": "tsx watch workers/bitable-feedback-sync/src/index.ts",
+    "dev:mcp-server": "tsx watch apps/mcp-server/src/main.ts",
     "start:api": "tsx apps/api/src/main.ts",
+    "start:mcp-server": "tsx apps/mcp-server/src/main.ts",
     "start:aggregator": "tsx workers/aggregator/src/index.ts",
     "start:detector": "tsx workers/detector/src/index.ts",
     "start:puller": "tsx workers/puller/src/index.ts",
@@ -35,9 +37,11 @@
   },
   "dependencies": {
     "@clickhouse/client": "^1.11.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "pg": "^8.12.0"
+    "pg": "^8.12.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

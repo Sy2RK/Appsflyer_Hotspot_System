@@ -117,6 +117,7 @@ export const env = {
   asaKeywordRunOnBoot: (process.env.ASA_KEYWORD_RUN_ON_BOOT ?? 'false').toLowerCase() === 'true',
   asaKeywordRequestIntervalMs: optionalNumber('ASA_KEYWORD_REQUEST_INTERVAL_MS', 1200),
   asaKeywordRequestTimeoutMs: optionalNumber('ASA_KEYWORD_REQUEST_TIMEOUT_MS', 20 * 1000),
+  asaRecommendationLlmConcurrency: optionalNumber('ASA_RECOMMENDATION_LLM_CONCURRENCY', 12),
   asaMasterApiRequestIntervalMs: optionalNumber(
     'ASA_MASTER_API_REQUEST_INTERVAL_MS',
     optionalNumber('ASA_KEYWORD_REQUEST_INTERVAL_MS', 1200)
@@ -163,6 +164,16 @@ export const env = {
     model: process.env.OPENAI_MODEL ?? 'gpt-5.4',
     timeoutMs: optionalNumber('OPENAI_TIMEOUT_MS', 15000),
     maxTokens: optionalNumber('OPENAI_MAX_TOKENS', 1200)
+  },
+
+  mcp: {
+    bindHost: process.env.MCP_BIND_HOST ?? '127.0.0.1',
+    port: optionalNumber('MCP_PORT', 3100),
+    baseUrl: process.env.MCP_BASE_URL ?? 'http://127.0.0.1:3100/mcp',
+    timeoutMs: optionalNumber('MCP_TIMEOUT_MS', 15000),
+    internalToken: isProduction
+      ? requireEnv('MCP_INTERNAL_TOKEN')
+      : requireEnv('MCP_INTERNAL_TOKEN', 'dev-hotspot-mcp-token')
   }
 };
 

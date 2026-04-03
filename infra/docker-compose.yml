@@ -46,6 +46,8 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
       CLICKHOUSE_DB: hotspot
+      MCP_BASE_URL: http://mcp-server:3100/mcp
+      MCP_INTERNAL_TOKEN: ${MCP_INTERNAL_TOKEN:-dev-hotspot-mcp-token}
       AGGREGATOR_LOOKBACK_HOURS: 6
       AGGREGATOR_INTERVAL_MS: 300000
       DETECTOR_INTERVAL_MS: 300000
@@ -53,6 +55,30 @@ services:
     dns:
       - 1.1.1.1
       - 8.8.8.8
+    depends_on:
+      - clickhouse
+      - postgres
+      - mcp-server
+
+  mcp-server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hotspot-mcp-server
+    restart: unless-stopped
+    command: sh -lc 'export POSTGRES_URL="postgres://$${POSTGRES_USER:?missing}:$${POSTGRES_PASSWORD:?missing}@postgres:5432/$${POSTGRES_DB:-hotspot}"; npm run start:mcp-server'
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: hotspot
+      MCP_BIND_HOST: 0.0.0.0
+      MCP_PORT: 3100
+      MCP_BASE_URL: http://mcp-server:3100/mcp
+      MCP_INTERNAL_TOKEN: ${MCP_INTERNAL_TOKEN:-dev-hotspot-mcp-token}
     depends_on:
       - clickhouse
       - postgres

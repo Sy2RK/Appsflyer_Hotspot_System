@@ -699,11 +699,11 @@ function getAIChatErrorMessage(code, fallbackMessage = '') {
   if (code === 'ai_model_images_unsupported') {
     return '当前模型仅支持文本对话，请切回支持图片的模型，或移除图片后再试。';
   }
-  if (code === 'openrouter_image_not_supported') {
-    return '当前 Kimi-K2.5（OpenRouter）通道暂不支持这次图片请求，请切回 Qwen 或移除图片后重试。';
-  }
   if (code === 'openrouter_region_unavailable') {
     return '当前 OpenRouter 的 Kimi-K2.5 在你这个地区或账号下不可用，请先切回 Qwen，或更换可用地区 / 账号后再试。';
+  }
+  if (code === 'mcp_context_unavailable') {
+    return '当前业务数据暂时不可用，请稍后重试，或先直接进行文本对话。';
   }
   if (code === 'internal_error') {
     return 'Guru Ads Agent 暂时不可用，请稍后重试。';
@@ -848,7 +848,6 @@ function maybeFallbackAIChatModelAfterFailure(errorCode, options = {}) {
   const stickyFailureCodes = new Set([
     'ai_model_unavailable',
     'ai_model_images_unsupported',
-    'openrouter_image_not_supported',
     'openrouter_region_unavailable'
   ]);
   if (!stickyFailureCodes.has(String(errorCode || ''))) {
@@ -1168,6 +1167,27 @@ function renderAIChatMessageAttachments(items) {
     .join('')}</div>`;
 }
 
+function renderAIChatMessageToolTrace(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return '';
+  }
+  return `
+    <div class="ai-chat-message-trace">
+      <span class="ai-chat-message-trace-label">已自动查询</span>
+      <div class="ai-chat-message-attachments">
+        ${items
+          .map((item) => {
+            const title = String(item.title || '').trim();
+            const brief = String(item.brief || '').trim();
+            const text = brief ? `${title}｜${brief}` : title || '工具结果';
+            return `<span class="ai-chat-message-chip">${escapeHtml(text)}</span>`;
+          })
+          .join('')}
+      </div>
+    </div>
+  `;
+}
+
 function renderAIChatMessages() {
   if (!(el.aiChatMessages instanceof HTMLElement)) {
     return;
@@ -1185,15 +1205,18 @@ function renderAIChatMessages() {
   }
   el.aiChatMessages.innerHTML = rows
     .map((item) => {
-      const roleClass = item.role === 'assistant' ? 'is-assistant' : item.role === 'system' ? 'is-system' : 'is-user';
-      const roleLabel = item.role === 'assistant' ? 'Guru Ads Agent' : item.role === 'system' ? '系统提示' : '你';
+      const isClarification = item.role === 'assistant' && item.meta?.agentAction === 'clarification';
+      const roleClass = item.role === 'user' ? 'is-user' : isClarification || item.role === 'system' ? 'is-system' : 'is-assistant';
+      const roleLabel = item.role === 'user' ? '你' : isClarification ? '系统追问' : item.role === 'system' ? '系统提示' : 'Guru Ads Agent';
       const modelLabel = item.role === 'assistant' ? String(item.modelLabel || '').trim() : '';
       const metaPrefix = [roleLabel, modelLabel].filter(Boolean).join(' · ');
       const metaText = item.pending ? `${metaPrefix} · 正在生成…` : `${metaPrefix} · ${fmtTime(item.createdAt)}`;
+      const bubble = renderAIChatMessageBubble(item);
       return `
         <div class="ai-chat-message ${roleClass}">
           <div class="ai-chat-message-meta">${escapeHtml(metaText)}</div>
-          <div class="ai-chat-message-bubble">${escapeHtml(item.content || '')}</div>
+          <div class="ai-chat-message-bubble ${bubble.bubbleClass}">${bubble.bubbleHtml}</div>
+          ${renderAIChatMessageToolTrace(item.toolTrace)}
           ${renderAIChatMessageAttachments(item.attachments)}
         </div>
       `;
@@ -1397,6 +1420,43 @@ function buildCoreAIChatPackCards() {
     createAIChatPackCard(resolveBudgetPack({ templateId: 'platform_media_source' }), '核心包', '预算建议默认按平台 / 媒体源聚合。'),
     createAIChatPackCard(resolveAsaPack({ templateId: 'stage' }), '核心包', 'ASA 默认按阶段聚合。')
   ];
+}
+
+function buildAIChatPageContext() {
+  const recommendedCards = buildRecommendedAIChatPackCards().filter((card) => card && card.spec && card.spec.appKey);
+  const coreCards = buildCoreAIChatPackCards().filter((card) => card && card.spec && card.spec.appKey);
+  const primarySpec =
+    recommendedCards[0]?.spec ||
+    coreCards[0]?.spec ||
+    resolveDefaultMetricsPack({ templateId: 'media_source' });
+
+  const defaults = {
+    appKey: String(primarySpec.appKey || '').trim() || undefined,
+    platform: String(primarySpec.platform || '').trim() || undefined,
+    from: String(primarySpec.from || '').trim() || undefined,
+    to: String(primarySpec.to || '').trim() || undefined
+  };
+
+  const currentFilters = {};
+  if (primarySpec.source) currentFilters.source = primarySpec.source;
+  if (primarySpec.metric) currentFilters.metric = primarySpec.metric;
+  if (primarySpec.eventName) currentFilters.eventName = primarySpec.eventName;
+  if (primarySpec.status) currentFilters.status = primarySpec.status;
+  if (primarySpec.executionStatus) currentFilters.executionStatus = primarySpec.executionStatus;
+  if (typeof primarySpec.isAdopted === 'boolean') currentFilters.isAdopted = primarySpec.isAdopted;
+  if (typeof primarySpec.hasManualReview === 'boolean') currentFilters.hasManualReview = primarySpec.hasManualReview;
+  if (primarySpec.stage) currentFilters.stage = primarySpec.stage;
+  if (primarySpec.keyword) currentFilters.keyword = primarySpec.keyword;
+  if (primarySpec.campaign) currentFilters.campaign = primarySpec.campaign;
+
+  return {
+    activeSection: state.activeSection,
+    pageLabel: aiChatSourceSectionLabel(state.activeSection),
+    defaults,
+    currentFilters,
+    recommendedSpecs: recommendedCards.map((card) => ({ ...card.spec })),
+    coreSpecs: coreCards.map((card) => ({ ...card.spec }))
+  };
 }
 
 function renderAIChatPackCards(container, cards, role) {
@@ -1673,8 +1733,22 @@ async function sendAIChat(event) {
     .slice(-80)
     .map((item) => ({
       role: item.role,
-      content: item.content
+      content: item.content,
+      meta: item.meta
+        ? {
+            agent_action: item.meta.agentAction || undefined,
+            clarification_round: item.meta.clarificationRound || undefined,
+            tool_trace: Array.isArray(item.toolTrace)
+              ? item.toolTrace.map((trace) => ({
+                  tool: trace.tool,
+                  title: trace.title,
+                  brief: trace.brief
+                }))
+              : undefined
+          }
+        : undefined
     }));
+  const pageContext = buildAIChatPageContext();
 
   const attachmentSnapshot = [
     ...images.map((item) => ({ type: 'image', title: item.file.name })),
@@ -1721,6 +1795,7 @@ async function sendAIChat(event) {
         }))
       )
     );
+    formData.set('page_context_json', JSON.stringify(pageContext));
     for (const image of images) {
       formData.append('images', image.file, image.file.name);
     }
@@ -1744,11 +1819,28 @@ async function sendAIChat(event) {
 
     const result = body.data || {};
     state.aiChat.messages = (state.aiChat.messages || []).filter((item) => item.id !== pendingMessage.id);
+    const toolTrace = Array.isArray(result.tool_trace)
+      ? result.tool_trace
+          .filter((item) => item && typeof item === 'object')
+          .map((item) => ({
+            tool: String(item.tool || '').trim(),
+            title: String(item.title || '').trim(),
+            brief: String(item.brief || '').trim()
+          }))
+          .filter((item) => item.title)
+      : [];
+    const agentAction = String(result.agent_action || '').trim() === 'clarification' ? 'clarification' : 'answer';
+    const clarificationCount = Number(result.clarification_count || 0) || 0;
     state.aiChat.messages.push({
       id: aiChatMessageId(),
       role: 'assistant',
       content: String(result.reply || '').trim() || '模型没有返回可展示内容。',
       modelLabel: String(result.model_label || currentModelLabel || '').trim() || undefined,
+      toolTrace,
+      meta: {
+        agentAction,
+        clarificationRound: clarificationCount
+      },
       attachments: (result.attachments_used?.context_packs || []).map((item) => ({
         type: 'context',
         title: item.title || '上下文包'
@@ -1907,8 +1999,10 @@ function primaryMetricLabel(metric) {
   return '每次安装成本（eCPI）';
 }
 
-function metricModeLabel(mode) {
-  if (mode === 'roas_pending_revenue') return '收入数据待补齐';
+function metricModeLabel(mode, roasDataStatus) {
+  if (roasDataStatus === 'pending' || mode === 'roas_pending_revenue') return '收入数据待补齐';
+  if (roasDataStatus === 'partial') return '覆盖率达阈值（按已覆盖成本计算）';
+  if (roasDataStatus === 'unavailable') return '暂无成熟数据';
   return '当前生效';
 }
 
@@ -2369,6 +2463,111 @@ function escapeHtml(raw) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function renderPlainTextHtml(raw) {
+  return escapeHtml(raw).replace(/\n/g, '<br />');
+}
+
+function renderMarkdownInline(raw) {
+  const tokens = [];
+  let html = escapeHtml(raw ?? '');
+
+  html = html.replace(/`([^`\n]+)`/g, (_match, content) => {
+    const token = `__AI_MD_TOKEN_${tokens.length}__`;
+    tokens.push(`<code>${content}</code>`);
+    return token;
+  });
+
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_match, label, url) => {
+    const token = `__AI_MD_TOKEN_${tokens.length}__`;
+    tokens.push(
+      `<a href="${url}" target="_blank" rel="noreferrer">${label}</a>`
+    );
+    return token;
+  });
+
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  tokens.forEach((tokenHtml, index) => {
+    html = html.replaceAll(`__AI_MD_TOKEN_${index}__`, tokenHtml);
+  });
+
+  return html;
+}
+
+function renderMarkdownBlock(block) {
+  const lines = String(block || '')
+    .split('\n')
+    .map((line) => line.trimEnd());
+  if (lines.length === 0) {
+    return '';
+  }
+
+  if (lines.every((line) => /^\s*```/.test(line))) {
+    return '';
+  }
+
+  const codeFenceMatch = block.match(/^```([\w-]+)?\n([\s\S]*?)\n```$/);
+  if (codeFenceMatch) {
+    return `<pre><code>${escapeHtml(codeFenceMatch[2])}</code></pre>`;
+  }
+
+  if (lines.every((line) => /^\s*[-*]\s+/.test(line))) {
+    const items = lines
+      .map((line) => line.replace(/^\s*[-*]\s+/, '').trim())
+      .filter(Boolean)
+      .map((line) => `<li>${renderMarkdownInline(line)}</li>`)
+      .join('');
+    return items ? `<ul>${items}</ul>` : '';
+  }
+
+  if (lines.every((line) => /^\s*\d+\.\s+/.test(line))) {
+    const items = lines
+      .map((line) => line.replace(/^\s*\d+\.\s+/, '').trim())
+      .filter(Boolean)
+      .map((line) => `<li>${renderMarkdownInline(line)}</li>`)
+      .join('');
+    return items ? `<ol>${items}</ol>` : '';
+  }
+
+  const headingMatch = block.match(/^\s{0,3}(#{1,3})\s+(.+)$/);
+  if (headingMatch) {
+    const level = Math.min(3, headingMatch[1].length);
+    return `<h${level}>${renderMarkdownInline(headingMatch[2].trim())}</h${level}>`;
+  }
+
+  if (lines.every((line) => /^\s*>\s?/.test(line))) {
+    const quoteText = lines.map((line) => line.replace(/^\s*>\s?/, '')).join('<br />');
+    return `<blockquote>${renderMarkdownInline(quoteText)}</blockquote>`;
+  }
+
+  return `<p>${lines.map((line) => renderMarkdownInline(line)).join('<br />')}</p>`;
+}
+
+function renderMarkdownHtml(raw) {
+  const normalized = String(raw ?? '').replace(/\r\n/g, '\n').trim();
+  if (!normalized) {
+    return '';
+  }
+  return normalized
+    .split(/\n{2,}/)
+    .map((block) => renderMarkdownBlock(block))
+    .filter(Boolean)
+    .join('');
+}
+
+function renderAIChatMessageBubble(item) {
+  if (item.role === 'user') {
+    return {
+      bubbleClass: 'is-plain',
+      bubbleHtml: renderPlainTextHtml(item.content || '')
+    };
+  }
+  return {
+    bubbleClass: 'is-markdown',
+    bubbleHtml: renderMarkdownHtml(item.content || '')
+  };
 }
 
 function toFixed2(value) {
@@ -5431,13 +5630,17 @@ function openBudgetDetail(row) {
   el.budgetDetailDisplayName.textContent = productViewName(row.app_key, row.platform || 'unknown');
   el.budgetDetailMediaSource.textContent = String(row.media_source || '-');
   el.budgetDetailPrimaryMetric.textContent = primaryMetricLabel(row.primary_metric || 'ecpi');
-  el.budgetDetailMetricMode.textContent = metricModeLabel(row.metric_mode || 'active');
+  el.budgetDetailMetricMode.textContent = metricModeLabel(row.metric_mode || 'active', row.roas_data_status);
   el.budgetDetailTier.textContent = volumeTierLabel(row.volume_tier);
   el.budgetDetailEcpi.textContent = toFixed2(row.current_ecpi);
   el.budgetDetailTargetEcpi.textContent = toFixed2(row.target_ecpi);
   el.budgetDetailCurrentRoas.textContent =
     row.roas_data_status === 'pending'
       ? '待补齐（源数据缺失）'
+      : row.roas_data_status === 'partial'
+        ? row.current_roas == null
+          ? '覆盖率达阈值（按已覆盖成本计算）'
+          : `${toFixed2(row.current_roas)}（按已覆盖成本计算）`
       : row.roas_data_status === 'unavailable'
         ? '暂无成熟数据'
         : row.current_roas == null
@@ -5525,6 +5728,8 @@ function updateAsaSummary(summary = {}) {
   el.asaSummaryRoas.title =
     roasStatus === 'pending'
       ? 'Cohort 源数据仍在补齐'
+      : roasStatus === 'partial'
+        ? 'Cohort 覆盖率已达可采纳阈值，当前值按已覆盖成本计算'
       : roasStatus === 'unavailable'
         ? '当前没有可用的成熟窗口 D7 数据'
         : totalCost > 0 && revenueD7 <= 0
@@ -5624,7 +5829,7 @@ function asaHasCostWithoutD7Revenue(totalCost, revenueD7) {
 
 function normalizeRoasDataStatus(value) {
   const status = String(value || '').trim().toLowerCase();
-  if (status === 'complete' || status === 'pending' || status === 'unavailable') {
+  if (status === 'complete' || status === 'partial' || status === 'pending' || status === 'unavailable') {
     return status;
   }
   return 'unavailable';
@@ -5651,6 +5856,12 @@ function formatAsaCppDisplay(value, totalCost, purchaseCount, roasDataStatus) {
   if (status === 'pending') {
     return '待补齐（源数据缺失）';
   }
+  if (status === 'partial') {
+    if (Number(purchaseCount || 0) <= 0) {
+      return Number(totalCost || 0) > 0 ? '—（覆盖率达阈值，但成熟窗口无购买）' : '-';
+    }
+    return `$${toFixed2(value || 0)}（按已覆盖成本计算）`;
+  }
   if (status === 'unavailable') {
     return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
   }
@@ -5665,6 +5876,12 @@ function formatAsaD7RoasDisplay(value, totalCost, revenueD7, roasDataStatus) {
   if (status === 'pending') {
     return '待补齐（源数据缺失）';
   }
+  if (status === 'partial') {
+    if (Number(totalCost || 0) <= 0) {
+      return '-';
+    }
+    return `${toFixed2(value || 0)}x（按已覆盖成本计算）`;
+  }
   if (status === 'unavailable') {
     return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
   }
@@ -5678,6 +5895,15 @@ function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7, roasDataS
   const status = normalizeRoasDataStatus(roasDataStatus);
   if (status === 'pending') {
     return '待补齐（源数据缺失）';
+  }
+  if (status === 'partial') {
+    if (Number(totalCost || 0) <= 0) {
+      return '-';
+    }
+    const base = `${toFixed2(value || 0)}x（按已覆盖成本计算）`;
+    return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
+      ? `${base}（成熟窗口未观察到D7收入）`
+      : base;
   }
   if (status === 'unavailable') {
     return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
@@ -5715,10 +5941,12 @@ function renderAsaKeywordTable() {
         <td>$${toFixed2(row.total_cost_7d || 0)}</td>
         <td>${toFixed2(row.purchase_count_7d || 0)}</td>
         <td title="${escapeHtml(asaHasSpendWithoutInstalls(row.total_cost_7d, row.installs_7d || row.last_installs || 0) ? '当前有花费但没有安装，eCPI 不可计算' : '')}">${escapeHtml(formatAsaEcpiDisplay(row.current_ecpi || 0, row.total_cost_7d || 0, row.installs_7d || row.last_installs || 0))}</td>
-        <td>${row.current_cpp > 0 ? `$${toFixed2(row.current_cpp)}` : '-'}</td>
+        <td>${escapeHtml(formatAsaCppDisplay(row.current_cpp, row.total_cost_7d, row.purchase_count_7d, row.roas_data_status))}</td>
         <td title="${escapeHtml(
           normalizeRoasDataStatus(row.roas_data_status) === 'pending'
             ? 'Cohort 源数据仍在补齐'
+            : normalizeRoasDataStatus(row.roas_data_status) === 'partial'
+              ? 'Cohort 覆盖率已达可采纳阈值，当前值按已覆盖成本计算'
             : normalizeRoasDataStatus(row.roas_data_status) === 'unavailable'
               ? '当前没有可用的成熟窗口 D7 数据'
               : asaHasCostWithoutD7Revenue(row.total_cost_7d, row.revenue_d7_7d)

@@ -1,6 +1,19 @@
 import { env } from '../config/env.js';
 import { chQuery } from './clickhouse.js';
+import {
+  buildAiContextPacksViaMcp,
+  callGuruMcpTool,
+  isMcpTimeoutErrorMessage,
+  toGuruMcpUserMessage
+} from './mcpClient.js';
 import { pgQuery } from './postgres.js';
+import {
+  GURU_MCP_TOOL_NAMES,
+  resolveGuruMcpToolForContextPack,
+  type GuruMcpAppsListResult,
+  type GuruMcpStructuredResult,
+  type GuruMcpToolName
+} from './guruMcp.js';
 
 export type AiContextPackType = 'metrics_trend' | 'budget_summary' | 'asa_keyword_summary';
 export type AiContextPackTemplateId =
@@ -16,6 +29,33 @@ export type AiContextPackTemplateId =
 export interface AiChatHistoryMessage {
   role: 'user' | 'assistant';
   content: string;
+  meta?: AiChatHistoryMeta;
+}
+
+export interface AiChatToolTrace {
+  tool: GuruMcpToolName;
+  title: string;
+  brief: string;
+}
+
+export interface AiChatHistoryMeta {
+  agent_action?: 'answer' | 'clarification';
+  clarification_round?: number;
+  tool_trace?: AiChatToolTrace[];
+}
+
+export interface AiChatPageContext {
+  activeSection?: string;
+  pageLabel?: string;
+  defaults?: {
+    appKey?: string;
+    platform?: string;
+    from?: string;
+    to?: string;
+  };
+  currentFilters?: Record<string, string | number | boolean | null>;
+  recommendedSpecs?: AiContextPackSpec[];
+  coreSpecs?: AiContextPackSpec[];
 }
 
 export interface AiChatImageInput {
@@ -62,6 +102,9 @@ export interface AiChatResult {
   model_label: string;
   provider: string;
   reply: string;
+  agent_action: 'answer' | 'clarification';
+  tool_trace: AiChatToolTrace[];
+  clarification_count: number;
   usage: Record<string, unknown> | null;
   warnings: string[];
   attachments_used: {
@@ -105,14 +148,55 @@ interface AiChatProviderConfig {
   extraHeaders?: Record<string, string>;
 }
 
+interface AiChatToolDefinition {
+  type: 'function';
+  function: {
+    name: GuruMcpToolName;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+interface AiChatToolCall {
+  id: string;
+  name: GuruMcpToolName;
+  arguments: Record<string, unknown>;
+  rawArguments: string;
+}
+
+interface AiChatCompletionStepResult {
+  content: string;
+  toolCalls: AiChatToolCall[];
+  usage: Record<string, unknown> | null;
+  raw: Record<string, unknown>;
+  rawMessage: Record<string, unknown>;
+}
+
+interface AiChatToolExecutionResult {
+  trace: AiChatToolTrace;
+  content: string;
+  warnings: string[];
+  success: boolean;
+}
+
+interface AiChatRuntimeDeps {
+  buildAiContextPacksViaMcp: typeof buildAiContextPacksViaMcp;
+  callGuruMcpTool: typeof callGuruMcpTool;
+  requestCompletion: typeof requestAiChatCompletion;
+}
+
 const MAX_HISTORY_MESSAGES = 96;
 const MAX_HISTORY_CHARS_PER_MESSAGE = 32000;
 const MAX_HISTORY_TOTAL_CHARS = 120000;
+const MAX_TOOL_CALL_ROUNDS = 3;
+const MAX_TOOL_CALL_TYPES = 2;
+const MAX_CLARIFICATION_ROUNDS = 2;
 const MAX_BUCKET_ROWS = 40;
 const MAX_GROUP_ROWS = 10;
 const MAX_CONTEXT_PACK_PROMPT_CHARS = 24000;
 const MAX_CONTEXT_PACK_SUMMARY_CHARS = 7000;
 const MIN_CONTEXT_PACK_SUMMARY_CHARS = 240;
+const MAX_PAGE_CONTEXT_PROMPT_CHARS = 8000;
 const AI_CHAT_TIMEOUT_ERROR = 'ai_chat_timeout';
 
 const PULL_METRICS = new Set(['installs', 'clicks', 'total_cost']);
@@ -134,16 +218,114 @@ const AI_CHAT_PROVIDER_LABELS: Record<AiChatProviderId, string> = {
   openrouter: 'OpenRouter',
   openai: 'OpenAI'
 };
-const OPENROUTER_IMAGE_UNSUPPORTED_PATTERNS = [
-  /does not support images?/i,
-  /doesn't support images?/i,
-  /image_url/i,
-  /vision[^.]{0,40}not supported/i,
-  /multimodal[^.]{0,40}not supported/i,
-  /unsupported[^.]{0,30}(image|vision|multimodal)/i,
-  /content[^.]{0,40}type[^.]{0,30}image/i,
-  /input[^.]{0,30}image[^.]{0,30}not supported/i
+
+const AI_CHAT_TOOL_DEFINITIONS: AiChatToolDefinition[] = [
+  {
+    type: 'function',
+    function: {
+      name: GURU_MCP_TOOL_NAMES.appsList,
+      description:
+        '列出当前系统里可查询的应用。当用户只说应用中文名、品牌名，或不确定 appKey 时，先调用这个工具辅助确认应用。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {}
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: GURU_MCP_TOOL_NAMES.metricsGetTrend,
+      description:
+        '查询指标时序聚合。适用于趋势、波动、媒体源/国家/campaign 对比、安装/点击/花费/收入相关问题。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['appKey', 'templateId'],
+        properties: {
+          appKey: { type: 'string', description: '应用 appKey' },
+          templateId: {
+            type: 'string',
+            enum: ['media_source', 'country', 'campaign'],
+            description: '聚合维度'
+          },
+          platform: { type: 'string', description: 'ios / android / unknown，可为空' },
+          from: { type: 'string', description: '开始日期，YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss' },
+          to: { type: 'string', description: '结束日期，YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss' },
+          source: {
+            type: 'string',
+            enum: ['push', 'pull'],
+            description: 'pull=广告日报，push=实时回传'
+          },
+          metric: { type: 'string', description: '如 installs/clicks/total_cost/revenue/event_count/purchase_count' },
+          eventName: { type: 'string', description: '当 metric=event_count 时可指定事件名' }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: GURU_MCP_TOOL_NAMES.budgetGetSummary,
+      description:
+        '查询预算建议摘要。适用于预算建议、动作分布、状态分布、平台/媒体源表现、关键词预算问题。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['appKey', 'templateId'],
+        properties: {
+          appKey: { type: 'string', description: '应用 appKey' },
+          templateId: {
+            type: 'string',
+            enum: ['platform_media_source', 'action_status', 'keyword'],
+            description: '聚合维度'
+          },
+          platform: { type: 'string', description: 'ios / android / unknown，可为空' },
+          from: { type: 'string', description: '开始日期 YYYY-MM-DD' },
+          to: { type: 'string', description: '结束日期 YYYY-MM-DD' },
+          status: { type: 'string', description: '建议状态，可为空' },
+          executionStatus: { type: 'string', description: '执行状态，可为空' },
+          isAdopted: { type: 'boolean', description: '是否已采纳，可为空' },
+          hasManualReview: { type: 'boolean', description: '是否已有人工批复，可为空' }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: GURU_MCP_TOOL_NAMES.asaKeywordsGetSummary,
+      description:
+        '查询 ASA 关键词摘要。适用于关键词阶段分布、广告组问题、ASA 关键词表现和建议动作相关问题。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['appKey', 'templateId'],
+        properties: {
+          appKey: { type: 'string', description: '应用 appKey' },
+          templateId: {
+            type: 'string',
+            enum: ['stage', 'campaign_adset', 'keyword'],
+            description: '聚合维度'
+          },
+          platform: { type: 'string', description: '通常为 ios，可为空' },
+          from: { type: 'string', description: '开始日期 YYYY-MM-DD' },
+          to: { type: 'string', description: '结束日期 YYYY-MM-DD' },
+          stage: { type: 'string', description: 'ASA 阶段，可为空' },
+          keyword: { type: 'string', description: '关键词模糊过滤，可为空' },
+          campaign: { type: 'string', description: 'campaign 名称过滤，可为空' }
+        }
+      }
+    }
+  }
 ];
+
+const defaultAiChatRuntimeDeps: AiChatRuntimeDeps = {
+  buildAiContextPacksViaMcp,
+  callGuruMcpTool,
+  requestCompletion: requestAiChatCompletion
+};
 
 export function isAiChatModelId(value: string): value is AiChatModelId {
   return value === 'qwen' || value === 'openrouter_kimi_k25' || value === 'openai_gpt54';
@@ -299,13 +481,6 @@ function resolveAiChatMaxOutputTokens(modelConfig: AiChatProviderConfig): number
   return Math.max(900, modelConfig.maxTokens);
 }
 
-function isOpenRouterImageCapabilityError(status: number, errorText: string): boolean {
-  if (![400, 415, 422].includes(status)) {
-    return false;
-  }
-  return OPENROUTER_IMAGE_UNSUPPORTED_PATTERNS.some((pattern) => pattern.test(errorText));
-}
-
 function hasText(value: unknown): boolean {
   return String(value ?? '').trim().length > 0;
 }
@@ -356,7 +531,37 @@ function normalizeHistory(history: AiChatHistoryMessage[]): AiChatHistoryMessage
       .filter((item) => item && (item.role === 'user' || item.role === 'assistant') && hasText(item.content))
       .map((item) => ({
         role: item.role,
-        content: String(item.content).trim().slice(0, MAX_HISTORY_CHARS_PER_MESSAGE)
+        content: String(item.content).trim().slice(0, MAX_HISTORY_CHARS_PER_MESSAGE),
+        meta: item.meta
+          ? {
+              agent_action:
+                item.meta.agent_action === 'clarification'
+                  ? ('clarification' as const)
+                  : item.meta.agent_action === 'answer'
+                    ? ('answer' as const)
+                    : undefined,
+              clarification_round:
+                typeof item.meta.clarification_round === 'number' && Number.isFinite(item.meta.clarification_round)
+                  ? item.meta.clarification_round
+                  : undefined,
+              tool_trace: Array.isArray(item.meta.tool_trace)
+                ? item.meta.tool_trace
+                    .filter((trace) => trace && typeof trace === 'object')
+                    .map((trace) => ({
+                      tool:
+                        trace.tool === GURU_MCP_TOOL_NAMES.appsList ||
+                        trace.tool === GURU_MCP_TOOL_NAMES.metricsGetTrend ||
+                        trace.tool === GURU_MCP_TOOL_NAMES.budgetGetSummary ||
+                        trace.tool === GURU_MCP_TOOL_NAMES.asaKeywordsGetSummary
+                          ? trace.tool
+                          : GURU_MCP_TOOL_NAMES.appsList,
+                      title: String(trace.title || '').trim().slice(0, 120),
+                      brief: String(trace.brief || '').trim().slice(0, 160)
+                    }))
+                    .filter((trace) => hasText(trace.title))
+                : undefined
+            }
+          : undefined
       })),
     MAX_HISTORY_MESSAGES
   );
@@ -1156,14 +1361,445 @@ export function buildAiContextPrompt(packs: AiBuiltContextPack[]): {
   };
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function cloneJsonValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneJsonValue(item)) as T;
+  }
+  if (isPlainObject(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneJsonValue(item)])) as T;
+  }
+  return value;
+}
+
+function toStableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => toStableJson(item)).join(',')}]`;
+  }
+  if (isPlainObject(value)) {
+    const entries = Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${toStableJson(value[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function parseJsonObject(raw: string): Record<string, unknown> {
+  if (!raw.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return isPlainObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeGuruToolCalls(raw: unknown): AiChatToolCall[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .map((item, index) => {
+      const toolCall = isPlainObject(item) ? item : {};
+      const fn = isPlainObject(toolCall.function) ? toolCall.function : {};
+      const name = String(fn.name || '').trim();
+      if (
+        name !== GURU_MCP_TOOL_NAMES.appsList &&
+        name !== GURU_MCP_TOOL_NAMES.metricsGetTrend &&
+        name !== GURU_MCP_TOOL_NAMES.budgetGetSummary &&
+        name !== GURU_MCP_TOOL_NAMES.asaKeywordsGetSummary
+      ) {
+        return null;
+      }
+      const rawArguments =
+        typeof fn.arguments === 'string'
+          ? fn.arguments
+          : isPlainObject(fn.arguments)
+            ? JSON.stringify(fn.arguments)
+            : '{}';
+      return {
+        id: String(toolCall.id || `tool-call-${Date.now()}-${index}`),
+        name: name as GuruMcpToolName,
+        rawArguments,
+        arguments: parseJsonObject(rawArguments)
+      } satisfies AiChatToolCall;
+    })
+    .filter((item): item is AiChatToolCall => Boolean(item));
+}
+
+function countClarificationRounds(history: AiChatHistoryMessage[]): number {
+  return history.reduce((count, item) => {
+    if (item.role !== 'assistant') {
+      return count;
+    }
+    return item.meta?.agent_action === 'clarification' ? count + 1 : count;
+  }, 0);
+}
+
+function normalizePageContextSpecs(items: AiContextPackSpec[] | undefined, limit = 5): AiContextPackSpec[] {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items.filter((item) => item && hasText(item.appKey)).slice(0, limit).map((item) => ({
+    ...item
+  }));
+}
+
+function formatPageContextValue(value: unknown): string {
+  if (typeof value === 'boolean') {
+    return value ? '是' : '否';
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : '';
+  }
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  return '';
+}
+
+function sanitizePageContextFilterRecord(raw: Record<string, unknown> | undefined): Record<string, string | number | boolean | null> {
+  if (!raw) {
+    return {};
+  }
+  const entries = Object.entries(raw)
+    .map(([key, value]) => {
+      if (typeof value === 'string') {
+        return [key, value.trim().slice(0, 120)] as const;
+      }
+      if (typeof value === 'boolean') {
+        return [key, value] as const;
+      }
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return [key, value] as const;
+      }
+      return [key, null] as const;
+    })
+    .filter(([, value]) => value !== null && value !== '');
+  return Object.fromEntries(entries);
+}
+
+function buildAiPageContextPrompt(pageContext?: AiChatPageContext): string {
+  if (!pageContext) {
+    return '';
+  }
+  const lines: string[] = ['当前页面上下文（优先用于补齐工具参数）'];
+  if (hasText(pageContext.pageLabel) || hasText(pageContext.activeSection)) {
+    lines.push(`- 页面：${String(pageContext.pageLabel || pageContext.activeSection || '').trim()}`);
+  }
+  const defaultParts = [
+    hasText(pageContext.defaults?.appKey) ? `应用 ${pageContext.defaults?.appKey}` : '',
+    hasText(pageContext.defaults?.platform) ? `平台 ${pageContext.defaults?.platform}` : '',
+    hasText(pageContext.defaults?.from) || hasText(pageContext.defaults?.to)
+      ? `时间 ${String(pageContext.defaults?.from || '不限')} ~ ${String(pageContext.defaults?.to || '不限')}`
+      : ''
+  ].filter(Boolean);
+  if (defaultParts.length > 0) {
+    lines.push(`- 默认范围：${defaultParts.join(' / ')}`);
+  }
+  const currentFilters = sanitizePageContextFilterRecord(pageContext.currentFilters);
+  const filterEntries = Object.entries(currentFilters)
+    .flatMap(([key, value]) => {
+      const text = formatPageContextValue(value);
+      return text ? [`${key}=${text}`] : [];
+    })
+    .slice(0, 8);
+  if (filterEntries.length > 0) {
+    lines.push(`- 当前筛选：${filterEntries.join('；')}`);
+  }
+
+  const candidateSpecs = [
+    ...normalizePageContextSpecs(pageContext.recommendedSpecs, 2),
+    ...normalizePageContextSpecs(pageContext.coreSpecs, 3)
+  ];
+  const seen = new Set<string>();
+  const specsPrompt: string[] = [];
+  for (const spec of candidateSpecs) {
+    try {
+      const tool = resolveGuruMcpToolForContextPack(spec);
+      const signature = `${tool.name}:${toStableJson(tool.arguments)}`;
+      if (seen.has(signature)) {
+        continue;
+      }
+      seen.add(signature);
+      specsPrompt.push(`- ${tool.name} ${JSON.stringify(tool.arguments)}`);
+    } catch {
+      continue;
+    }
+  }
+  if (specsPrompt.length > 0) {
+    lines.push('- 当前页面可直接查询的工具参数示例：');
+    lines.push(...specsPrompt);
+  }
+  return truncateText(lines.join('\n'), MAX_PAGE_CONTEXT_PROMPT_CHARS).text;
+}
+
+function buildAiChatSystemPrompt(input: {
+  manualPacks: AiBuiltContextPack[];
+  pageContextPrompt: string;
+  clarificationCount: number;
+}): string {
+  const clarificationRule =
+    input.clarificationCount >= MAX_CLARIFICATION_ROUNDS
+      ? '你已经追问过足够多次，当前这轮不允许再次追问；如果信息仍不完整，请明确说明不确定性，并基于已有信息尽量回答。'
+      : `若确实缺少关键参数，可最多再追问 ${MAX_CLARIFICATION_ROUNDS - input.clarificationCount} 轮。追问时只输出一条简洁问题，并以 "CLARIFY:" 开头。`;
+  const manualContextRule =
+    input.manualPacks.length > 0
+      ? `用户已经手动附带了 ${input.manualPacks.length} 个业务上下文包。请优先使用这些已有上下文，不要重复查询同样的数据。`
+      : '如果用户没有手动附带上下文，也可以根据当前页面上下文和工具自行补齐参数。';
+  const pageContextRule = input.pageContextPrompt
+    ? `${input.pageContextPrompt}\n在没有明确指定 app/platform/from/to 时，优先沿用上面的页面默认范围。`
+    : '如果当前页面上下文为空，且问题明确依赖业务数据，请先确认应用、平台或时间范围。';
+  return [
+    '你是 Hotspot 控制台的 Guru Ads Agent。默认使用简体中文回答。',
+    '只有当用户的问题明显依赖投放数据、预算建议、ASA 关键词、趋势或工作台事实时，才调用工具。普通闲聊、常识问答、写作润色、接入测试不要调用任何工具。',
+    manualContextRule,
+    pageContextRule,
+    clarificationRule,
+    '调用工具前，先判断是否已经有足够的手动上下文或历史工具结果；避免重复查询同一份数据。',
+    '最终回答默认结构：先给结论，再给 2-4 条关键证据，最后给一个可继续追问的方向。',
+    '回答请使用简洁 Markdown：允许短段落、加粗、列表、行内代码；不要使用 HTML、复杂表格、冗长标题或花哨格式。',
+    '不要编造系统里不存在的事实；如果工具失败或数据不足，要明确说明。'
+  ].join('\n');
+}
+
+function findFallbackContextSpec(
+  toolName: GuruMcpToolName,
+  pageContext: AiChatPageContext | undefined,
+  manualSpecs: AiContextPackSpec[]
+): AiContextPackSpec | null {
+  const allSpecs = [...manualSpecs, ...normalizePageContextSpecs(pageContext?.recommendedSpecs), ...normalizePageContextSpecs(pageContext?.coreSpecs)];
+  const matched = allSpecs.find((spec) => {
+    if (toolName === GURU_MCP_TOOL_NAMES.metricsGetTrend) {
+      return spec.type === 'metrics_trend';
+    }
+    if (toolName === GURU_MCP_TOOL_NAMES.budgetGetSummary) {
+      return spec.type === 'budget_summary';
+    }
+    if (toolName === GURU_MCP_TOOL_NAMES.asaKeywordsGetSummary) {
+      return spec.type === 'asa_keyword_summary';
+    }
+    return false;
+  });
+  if (matched) {
+    return { ...matched };
+  }
+  const defaults = pageContext?.defaults;
+  if (!hasText(defaults?.appKey)) {
+    return null;
+  }
+  if (toolName === GURU_MCP_TOOL_NAMES.metricsGetTrend) {
+    return {
+      type: 'metrics_trend',
+      templateId: 'media_source',
+      appKey: String(defaults?.appKey || '').trim(),
+      platform: defaults?.platform,
+      from: defaults?.from,
+      to: defaults?.to,
+      source: 'pull'
+    };
+  }
+  if (toolName === GURU_MCP_TOOL_NAMES.budgetGetSummary) {
+    return {
+      type: 'budget_summary',
+      templateId: 'platform_media_source',
+      appKey: String(defaults?.appKey || '').trim(),
+      platform: defaults?.platform,
+      from: defaults?.from,
+      to: defaults?.to
+    };
+  }
+  if (toolName === GURU_MCP_TOOL_NAMES.asaKeywordsGetSummary) {
+    return {
+      type: 'asa_keyword_summary',
+      templateId: 'stage',
+      appKey: String(defaults?.appKey || '').trim(),
+      platform: defaults?.platform,
+      from: defaults?.from,
+      to: defaults?.to
+    };
+  }
+  return null;
+}
+
+function resolveGuruToolArguments(input: {
+  toolName: GuruMcpToolName;
+  args: Record<string, unknown>;
+  pageContext?: AiChatPageContext;
+  manualSpecs: AiContextPackSpec[];
+}): Record<string, unknown> {
+  const fallbackSpec = findFallbackContextSpec(input.toolName, input.pageContext, input.manualSpecs);
+  const fallbackArgs = fallbackSpec ? resolveGuruMcpToolForContextPack(fallbackSpec).arguments : {};
+  const merged = {
+    ...cloneJsonValue(fallbackArgs),
+    ...cloneJsonValue(input.args)
+  } as Record<string, unknown>;
+
+  const readText = (key: string): string | undefined => {
+    const value = merged[key];
+    const text = typeof value === 'string' ? value.trim() : '';
+    return text || undefined;
+  };
+  const readBoolean = (key: string): boolean | undefined => {
+    const value = merged[key];
+    return typeof value === 'boolean' ? value : undefined;
+  };
+
+  if (input.toolName === GURU_MCP_TOOL_NAMES.appsList) {
+    return {};
+  }
+  if (input.toolName === GURU_MCP_TOOL_NAMES.metricsGetTrend) {
+    return {
+      appKey: readText('appKey') || '',
+      templateId: readText('templateId') || 'media_source',
+      platform: readText('platform'),
+      from: readText('from'),
+      to: readText('to'),
+      source: readText('source'),
+      metric: readText('metric'),
+      eventName: readText('eventName')
+    };
+  }
+  if (input.toolName === GURU_MCP_TOOL_NAMES.budgetGetSummary) {
+    return {
+      appKey: readText('appKey') || '',
+      templateId: readText('templateId') || 'platform_media_source',
+      platform: readText('platform'),
+      from: readText('from'),
+      to: readText('to'),
+      status: readText('status'),
+      executionStatus: readText('executionStatus'),
+      isAdopted: readBoolean('isAdopted'),
+      hasManualReview: readBoolean('hasManualReview')
+    };
+  }
+  return {
+    appKey: readText('appKey') || '',
+    templateId: readText('templateId') || 'stage',
+    platform: readText('platform'),
+    from: readText('from'),
+    to: readText('to'),
+    stage: readText('stage'),
+    keyword: readText('keyword'),
+    campaign: readText('campaign')
+  };
+}
+
+function buildToolSignature(toolName: GuruMcpToolName, args: Record<string, unknown>): string {
+  return `${toolName}:${toStableJson(args)}`;
+}
+
+function toStructuredResultFromPack(pack: AiBuiltContextPack): GuruMcpStructuredResult {
+  return {
+    title: pack.title,
+    summary_markdown: pack.summaryMarkdown,
+    structured: pack.structured,
+    row_count: pack.rowCount,
+    truncated: pack.truncated,
+    applied_filters: pack.appliedFilters
+  };
+}
+
+function buildGuruToolTrace(toolName: GuruMcpToolName, result: GuruMcpStructuredResult | GuruMcpAppsListResult): AiChatToolTrace {
+  const labelMap: Record<string, string> = {
+    appKey: '应用',
+    platform: '平台',
+    from: '开始',
+    to: '结束',
+    source: '来源',
+    metric: '指标',
+    templateId: '维度',
+    status: '状态',
+    stage: '阶段',
+    keyword: '关键词',
+    campaign: 'Campaign'
+  };
+  const detail = Object.entries(result.applied_filters || {})
+    .flatMap(([key, value]) => {
+      const text = formatContextPackFilterValue(value);
+      return text ? [`${labelMap[key] || key} ${text}`] : [];
+    })
+    .slice(0, 3)
+    .join(' / ');
+  return {
+    tool: toolName,
+    title: result.title,
+    brief: detail || (toolName === GURU_MCP_TOOL_NAMES.appsList ? `返回 ${result.row_count} 个应用` : '已按当前页面范围查询')
+  };
+}
+
+function buildGuruToolResultContent(result: GuruMcpStructuredResult | GuruMcpAppsListResult): string {
+  const compact = {
+    title: result.title,
+    summary_markdown: truncateText(String(result.summary_markdown || ''), 6000).text,
+    row_count: result.row_count,
+    truncated: result.truncated,
+    applied_filters: result.applied_filters,
+    warnings: Array.isArray(result.warnings) ? result.warnings : []
+  };
+  return JSON.stringify(compact, null, 2);
+}
+
+function buildGuruToolErrorContent(toolName: GuruMcpToolName, message: string): string {
+  return JSON.stringify(
+    {
+      tool: toolName,
+      ok: false,
+      error: message
+    },
+    null,
+    2
+  );
+}
+
+function buildManualContextToolCache(
+  specs: AiContextPackSpec[],
+  packs: AiBuiltContextPack[]
+): Map<string, AiChatToolExecutionResult> {
+  const cache = new Map<string, AiChatToolExecutionResult>();
+  specs.forEach((spec, index) => {
+    const pack = packs[index];
+    if (!pack) {
+      return;
+    }
+    try {
+      const toolCall = resolveGuruMcpToolForContextPack(spec);
+      const result = toStructuredResultFromPack(pack);
+      cache.set(buildToolSignature(toolCall.name, toolCall.arguments), {
+        trace: buildGuruToolTrace(toolCall.name, result),
+        content: buildGuruToolResultContent(result),
+        warnings: [],
+        success: true
+      });
+    } catch {
+      // ignore unsupported manual specs
+    }
+  });
+  return cache;
+}
+
+function isClarificationReply(content: string): boolean {
+  return /^\s*CLARIFY\s*:/i.test(content);
+}
+
+function stripClarificationPrefix(content: string): string {
+  return content.replace(/^\s*CLARIFY\s*:\s*/i, '').trim();
+}
+
 async function requestAiChatCompletion(input: {
   modelConfig: AiChatProviderConfig;
   messages: Array<Record<string, unknown>>;
-  packs: AiBuiltContextPack[];
-  warnings: string[];
   images: AiChatImageInput[];
   thinkingEnabled: boolean;
-}): Promise<AiChatResult> {
+  tools?: AiChatToolDefinition[];
+  toolChoice?: 'auto';
+}): Promise<AiChatCompletionStepResult> {
   const maxOutputTokens = resolveAiChatMaxOutputTokens(input.modelConfig);
   const payload: Record<string, unknown> = {
     model: input.modelConfig.model,
@@ -1179,6 +1815,10 @@ async function requestAiChatCompletion(input: {
     payload.extra_body = {
       enable_thinking: input.thinkingEnabled
     };
+  }
+  if (Array.isArray(input.tools) && input.tools.length > 0) {
+    payload.tools = input.tools;
+    payload.tool_choice = input.toolChoice || 'auto';
   }
 
   const controller = new AbortController();
@@ -1207,49 +1847,26 @@ async function requestAiChatCompletion(input: {
       ) {
         throw new Error('openrouter_region_unavailable');
       }
-      if (
-        input.modelConfig.id === 'openrouter_kimi_k25' &&
-        input.images.length > 0 &&
-        isOpenRouterImageCapabilityError(res.status, String(errorText || ''))
-      ) {
-        throw new Error('openrouter_image_not_supported');
-      }
       throw new Error(errorText || `ai_chat_request_failed_${res.status}`);
     }
 
     const choices = Array.isArray(responseJson.choices) ? responseJson.choices : [];
     const firstChoice = (choices[0] ?? {}) as Record<string, unknown>;
     const message = (firstChoice.message ?? {}) as Record<string, unknown>;
+    const toolCalls = normalizeGuruToolCalls(message.tool_calls);
     const reply = extractTextFromMessageContent(message.content);
-    if (!reply) {
+    if (!reply && toolCalls.length === 0) {
       throw new Error('empty_ai_reply');
     }
 
     return {
-      model_id: input.modelConfig.id,
-      model: input.modelConfig.model,
-      model_label: input.modelConfig.label,
-      provider: input.modelConfig.provider,
-      reply,
+      content: reply,
+      toolCalls,
       usage:
         responseJson.usage && typeof responseJson.usage === 'object'
           ? (responseJson.usage as Record<string, unknown>)
           : null,
-      warnings: input.warnings,
-      attachments_used: {
-        images: input.images.map((image) => ({
-          name: image.name,
-          mimeType: image.mimeType,
-          size: image.size
-        })),
-        context_packs: input.packs.map((pack) => ({
-          type: pack.type,
-          templateId: pack.templateId,
-          title: pack.title,
-          rowCount: pack.rowCount,
-          truncated: pack.truncated
-        }))
-      },
+      rawMessage: message,
       raw: responseJson
     };
   } catch (error) {
@@ -1265,16 +1882,43 @@ async function requestAiChatCompletion(input: {
   }
 }
 
-export async function runAiChat(input: {
-  message: string;
-  history: AiChatHistoryMessage[];
-  contextPacks: AiContextPackSpec[];
-  images: AiChatImageInput[];
-  modelId?: AiChatModelId;
-}): Promise<AiChatResult> {
+export async function runAiChat(
+  input: {
+    message: string;
+    history: AiChatHistoryMessage[];
+    contextPacks: AiContextPackSpec[];
+    images: AiChatImageInput[];
+    modelId?: AiChatModelId;
+    requestId?: string;
+    pageContext?: AiChatPageContext;
+  },
+  deps: AiChatRuntimeDeps = defaultAiChatRuntimeDeps
+): Promise<AiChatResult> {
   const promptMessage = hasText(input.message) ? String(input.message).trim() : '请结合我附带的上下文和图片，给出中文分析。';
   const normalizedHistory = normalizeHistory(input.history);
-  const { packs, warnings } = await buildAiContextPacks(input.contextPacks);
+  const priorClarificationCount = countClarificationRounds(normalizedHistory);
+  let packs: AiBuiltContextPack[] = [];
+  let packSpecs: AiContextPackSpec[] = [];
+  let warnings: string[] = [];
+  let hasMcpTimeout = false;
+  if (input.contextPacks.length > 0) {
+    try {
+      const mcpResult = await deps.buildAiContextPacksViaMcp(input.contextPacks, input.requestId);
+      packs = mcpResult.packs;
+      packSpecs = mcpResult.packSpecs;
+      warnings = mcpResult.warnings;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'mcp_context_unavailable';
+      hasMcpTimeout = isMcpTimeoutErrorMessage(errorMessage);
+      warnings = [toGuruMcpUserMessage(errorMessage, { context: 'pack' })];
+    }
+    if (packs.length === 0 && !hasText(input.message) && input.images.length === 0) {
+      if (hasMcpTimeout) {
+        throw new Error(AI_CHAT_TIMEOUT_ERROR);
+      }
+      throw new Error('mcp_context_unavailable');
+    }
+  }
   const contextPromptResult = buildAiContextPrompt(packs);
   const mergedWarnings = [...warnings, ...contextPromptResult.warnings];
   const resolvedModelId = input.modelId ?? getDefaultAiChatModelId();
@@ -1290,6 +1934,15 @@ export async function runAiChat(input: {
   }
   const shouldEnableThinking =
     modelConfig.supportsThinking && (input.images.length > 0 || contextPromptResult.packsUsed.length > 0);
+  const pageContextPrompt = buildAiPageContextPrompt(input.pageContext);
+  const toolTrace: AiChatToolTrace[] = [];
+  const toolTraceSignatures = new Set<string>();
+  const manualContextCache = buildManualContextToolCache(packSpecs, packs);
+  const executedToolCache = new Map<string, AiChatToolExecutionResult>();
+  const seenToolCallSignatures = new Set<string>();
+  const distinctToolNames = new Set<GuruMcpToolName>();
+  let attemptedToolCalls = 0;
+  let successfulToolCalls = 0;
 
   const userContent: Array<Record<string, unknown>> = [
     {
@@ -1309,8 +1962,11 @@ export async function runAiChat(input: {
   const messages: Array<Record<string, unknown>> = [
     {
       role: 'system',
-      content:
-        '你是 Hotspot 控制台的 Guru Ads Agent。默认使用简体中文回答。若用户附带了投放数据、数据库上下文包或图片，请优先基于这些上下文给出克制、可执行的分析结论，不要虚构系统里不存在的事实。若用户没有附带业务上下文，也可以像通用助手一样正常聊天、回答常规问题，不要机械拒答。只有当用户明确要求你基于当前业务数据、截图或工作台上下文做判断，但提供的信息确实不足时，才说明“当前上下文不足”。'
+      content: buildAiChatSystemPrompt({
+        manualPacks: packs,
+        pageContextPrompt,
+        clarificationCount: priorClarificationCount
+      })
     },
     ...normalizedHistory.map((item) => ({
       role: item.role,
@@ -1330,12 +1986,175 @@ export async function runAiChat(input: {
     content: userContent
   });
 
-  return requestAiChatCompletion({
-    modelConfig,
-    messages,
-    packs: contextPromptResult.packsUsed,
-    warnings: mergedWarnings,
-    images: input.images,
-    thinkingEnabled: shouldEnableThinking
-  });
+  let finalStep: AiChatCompletionStepResult | null = null;
+
+  for (let round = 0; round < MAX_TOOL_CALL_ROUNDS; round += 1) {
+    const step = await deps.requestCompletion({
+      modelConfig,
+      messages,
+      images: input.images,
+      thinkingEnabled: shouldEnableThinking,
+      tools: AI_CHAT_TOOL_DEFINITIONS,
+      toolChoice: 'auto'
+    });
+
+    finalStep = step;
+    if (step.toolCalls.length === 0) {
+      break;
+    }
+
+    messages.push({
+      role: 'assistant',
+      content: step.content || '',
+      tool_calls: Array.isArray(step.rawMessage.tool_calls) ? step.rawMessage.tool_calls : []
+    });
+
+    for (const toolCall of step.toolCalls) {
+      attemptedToolCalls += 1;
+      const resolvedArgs = resolveGuruToolArguments({
+        toolName: toolCall.name,
+        args: toolCall.arguments,
+        pageContext: input.pageContext,
+        manualSpecs: input.contextPacks
+      });
+      const signature = buildToolSignature(toolCall.name, resolvedArgs);
+      let execution: AiChatToolExecutionResult;
+
+      if (distinctToolNames.size >= MAX_TOOL_CALL_TYPES && !distinctToolNames.has(toolCall.name)) {
+        execution = {
+          trace: {
+            tool: toolCall.name,
+            title: toolCall.name,
+            brief: '已跳过多余工具'
+          },
+          content: buildGuruToolErrorContent(toolCall.name, '为保证时延，本次最多自动查询 2 类数据。'),
+          warnings: ['自动查询工具已达上限，已跳过多余查询。'],
+          success: false
+        };
+      } else if (seenToolCallSignatures.has(signature) && executedToolCache.has(signature)) {
+        execution = executedToolCache.get(signature) as AiChatToolExecutionResult;
+      } else if (manualContextCache.has(signature)) {
+        execution = manualContextCache.get(signature) as AiChatToolExecutionResult;
+        seenToolCallSignatures.add(signature);
+        distinctToolNames.add(toolCall.name);
+        executedToolCache.set(signature, execution);
+        successfulToolCalls += 1;
+      } else if (seenToolCallSignatures.has(signature)) {
+        execution = {
+          trace: {
+            tool: toolCall.name,
+            title: toolCall.name,
+            brief: '重复查询已跳过'
+          },
+          content: buildGuruToolErrorContent(toolCall.name, '重复的同参工具调用已跳过，请直接基于已有结果回答。'),
+          warnings: ['模型重复请求了同一份数据，已自动跳过重复查询。'],
+          success: false
+        };
+      } else {
+        seenToolCallSignatures.add(signature);
+        distinctToolNames.add(toolCall.name);
+        try {
+          const toolResult = await deps.callGuruMcpTool(toolCall.name, resolvedArgs, input.requestId);
+          const structuredResult = toolResult as GuruMcpStructuredResult | GuruMcpAppsListResult;
+          execution = {
+            trace: buildGuruToolTrace(toolCall.name, structuredResult),
+            content: buildGuruToolResultContent(structuredResult),
+            warnings: Array.isArray(structuredResult.warnings) ? structuredResult.warnings.map((item) => String(item)) : [],
+            success: true
+          };
+          executedToolCache.set(signature, execution);
+          successfulToolCalls += 1;
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'mcp_context_unavailable';
+          hasMcpTimeout = hasMcpTimeout || isMcpTimeoutErrorMessage(errorMessage);
+          const userWarning = toGuruMcpUserMessage(errorMessage, {
+            context: 'tool',
+            title: toolCall.name
+          });
+          execution = {
+            trace: {
+              tool: toolCall.name,
+              title: toolCall.name,
+              brief: '查询失败'
+            },
+            content: buildGuruToolErrorContent(toolCall.name, userWarning),
+            warnings: [userWarning],
+            success: false
+          };
+        }
+      }
+
+      mergedWarnings.push(...execution.warnings);
+      if (execution.success && !toolTraceSignatures.has(signature)) {
+        toolTrace.push(execution.trace);
+        toolTraceSignatures.add(signature);
+      }
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: execution.content
+      });
+    }
+  }
+
+  if (finalStep && finalStep.toolCalls.length > 0) {
+    finalStep = await deps.requestCompletion({
+      modelConfig,
+      messages: [
+        ...messages,
+        {
+          role: 'system',
+          content: '请基于已有上下文和工具结果直接回答用户，不要再调用工具。'
+        }
+      ],
+      images: input.images,
+      thinkingEnabled: shouldEnableThinking
+    });
+  }
+
+  if (!finalStep) {
+    throw new Error('empty_ai_reply');
+  }
+
+  const agentAction = isClarificationReply(finalStep.content) ? 'clarification' : 'answer';
+  const reply = agentAction === 'clarification' ? stripClarificationPrefix(finalStep.content) : finalStep.content.trim();
+  if (!reply) {
+    if (attemptedToolCalls > 0 && successfulToolCalls === 0 && contextPromptResult.packsUsed.length === 0) {
+      if (hasMcpTimeout) {
+        throw new Error(AI_CHAT_TIMEOUT_ERROR);
+      }
+      throw new Error('mcp_context_unavailable');
+    }
+    throw new Error('empty_ai_reply');
+  }
+
+  const nextClarificationCount = agentAction === 'clarification' ? priorClarificationCount + 1 : priorClarificationCount;
+
+  return {
+    model_id: modelConfig.id,
+    model: modelConfig.model,
+    model_label: modelConfig.label,
+    provider: modelConfig.provider,
+    reply,
+    agent_action: agentAction,
+    tool_trace: toolTrace,
+    clarification_count: nextClarificationCount,
+    usage: finalStep.usage,
+    warnings: Array.from(new Set(mergedWarnings.filter((item) => hasText(item)))),
+    attachments_used: {
+      images: input.images.map((image) => ({
+        name: image.name,
+        mimeType: image.mimeType,
+        size: image.size
+      })),
+      context_packs: contextPromptResult.packsUsed.map((pack) => ({
+        type: pack.type,
+        templateId: pack.templateId,
+        title: pack.title,
+        rowCount: pack.rowCount,
+        truncated: pack.truncated
+      }))
+    },
+    raw: finalStep.raw
+  };
 }

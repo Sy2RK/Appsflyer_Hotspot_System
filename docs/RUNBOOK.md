@@ -59,6 +59,8 @@ cp .env.example .env
 # OPENROUTER_MODEL=moonshotai/kimi-k2.5
 # OPENAI_API_KEY=
 # OPENAI_MODEL=gpt-5.4
+# Guru Ads Agent 内部 MCP
+# MCP_TIMEOUT_MS=15000
 # cohort API（D7 ROAS 主来源）
 # APPSFLYER_COHORT_TIMEOUT_MS=20000
 # APPSFLYER_COHORT_REQUEST_INTERVAL_MS=1000
@@ -71,6 +73,7 @@ docker compose up -d --build
 - Web UI: `http://localhost:3000/ui`
 - ClickHouse HTTP: `http://localhost:8123`
 - Postgres: `localhost:5432`
+- `mcp-server`: Compose 内部服务，默认不直接对宿主机暴露
 
 登录行为：
 - 未登录浏览器访问 `/ui` / `/ui/` 会跳转到 `/login`
@@ -94,6 +97,8 @@ Web UI 新增能力:
   - 默认模型按当前已配置 provider 凭据自动选择
   - 当前可选：`Qwen 3.6-Plus`、`Kimi-K2.5 (OpenRouter)`、`GPT-5.4 (OpenAI)`
   - 支持多轮对话、图片上传、数据库聚合上下文包
+  - 支持自然语言自动查库：模型会通过内部 `mcp-server` 调只读业务工具
+  - 回复内会回显 `已自动查询什么`，必要时进入澄清轮次
   - 面板内保留 Gemini 官网外部工具快捷入口
 - 规则 DSL 表单编辑（并可与 JSON 双向同步）
 - 告警详情抽屉（查看 `top_contributors` 与原始 JSON）
@@ -149,6 +154,18 @@ curl http://localhost:3000/api/ai/models
 预期：
 - 至少返回 1 个可用模型
 - 若未配置对应 provider 凭据，相关模型不会出现在列表中
+
+如需排查 Guru Ads Agent 自动查库：
+
+```bash
+docker compose ps api mcp-server
+docker compose logs --tail=50 api mcp-server
+```
+
+预期：
+- `api_started`
+- `guru_mcp_started`
+- 若出现超时，优先检查 `MCP_TIMEOUT_MS`、`MCP_BASE_URL` 与 `MCP_INTERNAL_TOKEN`
 
 ---
 

@@ -1,10 +1,10 @@
 import { Router } from 'express';
+import { buildAiContextPacks, type AiContextPackSpec } from '@shared/utils/aiContextPacks.js';
 import {
-  buildAiContextPacks,
   runAiChat,
   AiChatHistoryMessage,
-  AiContextPackSpec,
   AiChatImageInput,
+  type AiChatPageContext,
   getDefaultAiChatModelId,
   isAiChatModelId,
   listAvailableAiChatModels,
@@ -79,12 +79,73 @@ function sanitizeHistory(raw: unknown): AiChatHistoryMessage[] {
       const obj = item as Record<string, unknown>;
       const role = obj.role === 'assistant' ? 'assistant' : 'user';
       const content = String(obj.content ?? '').trim();
+      const metaRaw = obj.meta && typeof obj.meta === 'object' ? (obj.meta as Record<string, unknown>) : null;
       return {
         role,
-        content
+        content,
+        meta: metaRaw
+          ? {
+              agent_action:
+                metaRaw.agent_action === 'clarification'
+                  ? 'clarification'
+                  : metaRaw.agent_action === 'answer'
+                    ? 'answer'
+                    : undefined,
+              clarification_round:
+                typeof metaRaw.clarification_round === 'number' ? metaRaw.clarification_round : undefined,
+              tool_trace: Array.isArray(metaRaw.tool_trace)
+                ? metaRaw.tool_trace
+                    .filter((trace): trace is Record<string, unknown> => Boolean(trace) && typeof trace === 'object')
+                    .map((trace) => ({
+                      tool: String(trace.tool || '').trim() as never,
+                      title: String(trace.title || '').trim(),
+                      brief: String(trace.brief || '').trim()
+                    }))
+                    .filter((trace) => trace.title)
+                : undefined
+            }
+          : undefined
       } satisfies AiChatHistoryMessage;
     })
     .filter((item) => item.content.length > 0);
+}
+
+function sanitizePageContext(raw: unknown): AiChatPageContext | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const defaultsRaw = obj.defaults && typeof obj.defaults === 'object' ? (obj.defaults as Record<string, unknown>) : {};
+  const currentFiltersRaw =
+    obj.currentFilters && typeof obj.currentFilters === 'object' ? (obj.currentFilters as Record<string, unknown>) : {};
+  return {
+    activeSection: String(obj.activeSection || '').trim() || undefined,
+    pageLabel: String(obj.pageLabel || '').trim() || undefined,
+    defaults: {
+      appKey: String(defaultsRaw.appKey || '').trim() || undefined,
+      platform: String(defaultsRaw.platform || '').trim() || undefined,
+      from: String(defaultsRaw.from || '').trim() || undefined,
+      to: String(defaultsRaw.to || '').trim() || undefined
+    },
+    currentFilters: Object.fromEntries(
+      Object.entries(currentFiltersRaw)
+        .map(([key, value]) => {
+          if (typeof value === 'string') {
+            return [key, value.trim().slice(0, 120)];
+          }
+          if (typeof value === 'boolean') {
+            return [key, value];
+          }
+          if (typeof value === 'number' && Number.isFinite(value)) {
+            return [key, value];
+          }
+          return [key, null];
+        })
+        .filter(([, value]) => value !== null && value !== '')
+    ),
+    recommendedSpecs: sanitizeContextPacks(obj.recommendedSpecs),
+    coreSpecs: sanitizeContextPacks(obj.coreSpecs)
+  };
 }
 
 function sanitizeContextPacks(raw: unknown): AiContextPackSpec[] {
@@ -154,6 +215,7 @@ export function createAiRouter(deps: AiRouteDeps = defaultDeps): Router {
       const message = String(formData.get('message') || '').trim();
       const history = sanitizeHistory(parseJsonField(formData.get('history_json'), []));
       const contextPacks = sanitizeContextPacks(parseJsonField(formData.get('context_packs_json'), []));
+      const pageContext = sanitizePageContext(parseJsonField(formData.get('page_context_json'), null));
       const images = formData.getAll('images').filter((item) => isUploadedFormFile(item));
       const rawModelId = String(formData.get('model_id') || '').trim();
 
@@ -222,8 +284,10 @@ export function createAiRouter(deps: AiRouteDeps = defaultDeps): Router {
         message,
         history,
         contextPacks,
+        pageContext,
         images: imagePayloads,
-        modelId
+        modelId,
+        requestId: req.requestId
       });
 
       return res.json({
@@ -245,6 +309,13 @@ export function createAiRouter(deps: AiRouteDeps = defaultDeps): Router {
           message: '当前模型仅支持文本对话，请切回支持图片的模型，或移除图片后再试。'
         });
       }
+      if (error instanceof Error && error.message === 'mcp_request_timeout') {
+        return res.status(504).json({
+          ok: false,
+          error: 'ai_chat_timeout',
+          message: 'Guru Ads Agent 响应超时，请重试，或减少上下文后再发送。'
+        });
+      }
       if (error instanceof Error && error.message === 'ai_chat_timeout') {
         return res.status(504).json({
           ok: false,
@@ -252,11 +323,11 @@ export function createAiRouter(deps: AiRouteDeps = defaultDeps): Router {
           message: 'Guru Ads Agent 响应超时，请重试，或减少上下文后再发送。'
         });
       }
-      if (error instanceof Error && error.message === 'openrouter_image_not_supported') {
-        return res.status(400).json({
+      if (error instanceof Error && error.message === 'mcp_context_unavailable') {
+        return res.status(503).json({
           ok: false,
-          error: 'openrouter_image_not_supported',
-          message: '当前 Kimi-K2.5（OpenRouter）通道暂不支持这次图片请求，请切回 Qwen 或移除图片后重试。'
+          error: 'mcp_context_unavailable',
+          message: '当前业务上下文暂时不可用，请稍后重试，或先直接进行文本对话。'
         });
       }
       if (error instanceof Error && error.message === 'openrouter_region_unavailable') {

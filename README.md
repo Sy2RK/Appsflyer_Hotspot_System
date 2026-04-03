@@ -17,6 +17,8 @@
   - 当前已接入抽屉式对话窗，支持多模型切换
   - 已接入 `Qwen 3.6-Plus`、`Kimi-K2.5 (OpenRouter)`、`GPT-5.4 (OpenAI)`
   - 支持页面内多轮对话、图片上传、数据库聚合上下文包附带
+  - 支持自然语言自动查库：模型可通过内部只读 MCP 工具自动调用 `apps.list / metrics.get_trend / budget.get_summary / asa_keywords.get_summary`
+  - 会在回复里回显 `已自动查询什么`，并在需要时进入澄清轮次
   - 模型可按当前已配置凭据动态显示，默认优先使用可用的主模型
   - 面板内保留 Gemini 官网外部工具快捷入口
   - 后续可继续扩展诊断助手、投放 Copilot、日报快读等功能
@@ -52,6 +54,9 @@
 - `apps/api`
   - HTTP API
   - 内置 WebUI
+- `apps/mcp-server`
+  - Guru Ads Agent 内部只读 MCP 服务
+  - 当前承接业务型只读工具，不直接对公网暴露
 - `packages/shared`
   - 数据访问、AppsFlyer / Feishu 集成、业务逻辑
 - `workers/puller`
@@ -109,6 +114,10 @@ docker compose up -d --build
   - `QWEN_*`
   - `OPENROUTER_*`
   - `OPENAI_*`
+- 若启用 `Guru Ads Agent` 自动查库链路，补充：
+  - `MCP_BASE_URL`
+  - `MCP_TIMEOUT_MS`
+  - `MCP_INTERNAL_TOKEN`
 - 若启用 cohort API 作为 `D7 ROAS` 主来源，建议显式配置：
   - `APPSFLYER_COHORT_ENDPOINT_TEMPLATE`
   - `APPSFLYER_COHORT_TIMEOUT_MS`
@@ -125,6 +134,8 @@ docker compose up -d --build
 - 顶部全局调度配置（Pull / Push 时间统一管理）
 - WebUI 全局 `Guru Ads Agent` 悬浮入口
 - `Guru Ads Agent` 新增模型列表接口与多模型切换（Qwen / OpenRouter / OpenAI）
+- `Guru Ads Agent` 新增内部 `mcp-server` 与原生 function calling 自动查库链路
+- AI chat 请求现在会默认附带当前页面上下文，并在回复中返回 `tool_trace / agent_action / clarification_count`
 - `keyword-engine` 的 `D7 ROAS` 链路已切换为 AppsFlyer cohort API 源数据，并为缺口数据打 `revenue_source_missing`
 - 预算建议、ASA 建议、ASA 简报、多维表中的 `D7 ROAS` 已统一为“Cohort API 源数据 + 成熟窗口”口径
 - ROAS 缺口会显示 `待补齐 / 暂无成熟数据`，不再把源数据缺失展示成 `0.00`

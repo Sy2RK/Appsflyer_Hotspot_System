@@ -55,6 +55,11 @@ Response:
 - `models[].supports_images`
 - `models[].supports_thinking`
 
+说明：
+- 模型列表仅返回当前已配置凭据且可用的模型
+- `Guru Ads Agent` 的自动查库链路会复用当前选中的模型来发起 tool calling
+- `Kimi-K2.5 (OpenRouter)` 在模型列表里视为支持图片；若 provider 侧账号或地区有限制，会在实际请求时报对应 provider 错误
+
 示例响应：
 ```json
 {
@@ -100,9 +105,12 @@ Response:
   - 不传时自动回退到当前默认模型
 - `history_json`
   - 最近多轮对话，JSON 数组
-  - 每项格式：`{ "role": "user|assistant", "content": "..." }`
+  - 每项格式：`{ "role": "user|assistant", "content": "...", "meta": { ... } }`
 - `context_packs_json`
   - 已附加的数据库聚合上下文包，JSON 数组
+- `page_context_json`
+  - 当前页面上下文，JSON 对象
+  - 当前由 WebUI 自动附带，供模型自动补齐 `app/platform/from/to` 等参数
 - `images`
   - 图片文件，可重复传多个
 
@@ -119,6 +127,11 @@ Response:
 - `model_label`
 - `provider`
 - `reply`
+- `agent_action`
+  - `answer | clarification`
+- `tool_trace`
+  - 本轮自动查询痕迹
+- `clarification_count`
 - `attachments_used`
 - `warnings`
 - `usage`
@@ -133,12 +146,21 @@ Response:
 - `invalid_model_id`
 - `ai_model_unavailable`
 - `ai_model_images_unsupported`
-- `openrouter_image_not_supported`
+- `ai_chat_timeout`
+- `mcp_context_unavailable`
 - `openrouter_region_unavailable`
 
 说明：
 - 模型列表以 `GET /api/ai/models` 返回结果为准
 - 是否支持图片 / thinking 由模型配置动态决定
+- 这条接口现在默认支持自然语言自动查库：后端会把当前页面上下文和内部 MCP 工具定义一起发送给当前模型
+- 当前自动工具面固定为只读业务工具：
+  - `apps.list`
+  - `metrics.get_trend`
+  - `budget.get_summary`
+  - `asa_keywords.get_summary`
+- 手动附加的数据包优先于自动查询；命中同一查询时会优先复用手动数据包结果
+- 若 MCP 工具或上下文包查询超时，最终会收敛为 `ai_chat_timeout` 或业务可读 warning，而不是原始协议错误串
 - `Kimi-K2.5 (OpenRouter)` 即使在模型列表中可见，特定账号或地区下仍可能返回 provider 侧限制错误
 
 ### `POST /api/ai/context-packs/preview`

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
+import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import express from 'express';
 import { createAiRouter } from '../apps/api/src/modules/ai/ai.routes.js';
+import { createGuruMcpApp } from '../apps/mcp-server/src/server.js';
 import { createRecommendationPoliciesRouter } from '../apps/api/src/modules/recommendationPolicies/recommendationPolicies.routes.js';
 import {
   createPolicyTemplate,
@@ -27,7 +29,9 @@ import {
   buildAsaRoasWindow,
   buildAsaRelativeCompareDecision
 } from '../packages/shared/utils/asaKeywords.js';
-import { buildAiContextPrompt } from '../packages/shared/utils/aiChat.js';
+import { buildAiContextPrompt, runAiChat } from '../packages/shared/utils/aiChat.js';
+import { env } from '../packages/shared/config/env.js';
+import { GURU_MCP_TOOL_NAMES, resolveGuruMcpToolForContextPack } from '../packages/shared/utils/guruMcp.js';
 import { buildMatureRoasWindow, resolveRoasDataStatus } from '../packages/shared/utils/roasWindow.js';
 import {
   didKeywordEngineCycleComplete,
@@ -141,6 +145,79 @@ async function withHttpApi<T>(
       });
     });
   }
+}
+
+async function withHttpApp<T>(
+  app: express.Express,
+  run: (baseUrl: string) => Promise<T>
+): Promise<T> {
+  const server = await new Promise<import('node:http').Server>((resolve) => {
+    const instance = app.listen(0, () => resolve(instance));
+  });
+  try {
+    const address = server.address() as AddressInfo;
+    return await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+}
+
+async function initializeMcpSession(baseUrl: string): Promise<{ sessionId: string; protocolVersion: string }> {
+  const response = await fetch(`${baseUrl}/mcp`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      authorization: `Bearer ${env.mcp.internalToken}`
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'init',
+      method: 'initialize',
+      params: {
+        protocolVersion: LATEST_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: {
+          name: 'review-regression-smoke',
+          version: '1.0.0'
+        }
+      }
+    })
+  });
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as { result?: { protocolVersion?: string } };
+  const sessionId = response.headers.get('mcp-session-id');
+  assert.equal(typeof sessionId, 'string');
+  assert.ok(sessionId);
+  const protocolVersion = payload.result?.protocolVersion ?? LATEST_PROTOCOL_VERSION;
+  const initialized = await fetch(`${baseUrl}/mcp`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      authorization: `Bearer ${env.mcp.internalToken}`,
+      'mcp-session-id': sessionId as string,
+      'mcp-protocol-version': protocolVersion
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+      params: {}
+    })
+  });
+  assert.equal(initialized.status, 202);
+  return {
+    sessionId: sessionId as string,
+    protocolVersion
+  };
 }
 
 async function main(): Promise<void> {
@@ -487,7 +564,26 @@ async function main(): Promise<void> {
     resolveRoasDataStatus({
       hasWindowRows: true,
       hasSpend: true,
-      coverageMissing: true
+      coveredCost: 80,
+      missingCost: 20
+    }),
+    'partial'
+  );
+  assert.equal(
+    resolveRoasDataStatus({
+      hasWindowRows: true,
+      hasSpend: true,
+      coveredCost: 79,
+      missingCost: 21
+    }),
+    'pending'
+  );
+  assert.equal(
+    resolveRoasDataStatus({
+      hasWindowRows: true,
+      hasSpend: true,
+      coveredCost: 20,
+      missingCost: 80
     }),
     'pending'
   );
@@ -495,7 +591,8 @@ async function main(): Promise<void> {
     resolveRoasDataStatus({
       hasWindowRows: false,
       hasSpend: false,
-      coverageMissing: false
+      coveredCost: 0,
+      missingCost: 0
     }),
     'unavailable'
   );
@@ -503,7 +600,8 @@ async function main(): Promise<void> {
     resolveRoasDataStatus({
       hasWindowRows: true,
       hasSpend: true,
-      coverageMissing: false
+      coveredCost: 100,
+      missingCost: 0
     }),
     'complete'
   );
@@ -584,9 +682,50 @@ async function main(): Promise<void> {
     }
   ]);
   assert.equal(partialValueCoverage.coverageMissing, true);
-  assert.equal(partialValueCoverage.currentRoas, null);
-  assert.equal(partialValueCoverage.currentCpp, null);
+  assert.equal(partialValueCoverage.currentRoas, 1.5);
+  assert.equal(partialValueCoverage.currentCpp, 20);
   assert.equal(partialValueCoverage.coveredRows.length, 1);
+  assert.equal(partialValueCoverage.coveredCost, 40);
+  assert.equal(partialValueCoverage.missingCost, 20);
+  assert.equal(partialValueCoverage.coverageRatio, 40 / 60);
+  assert.equal(
+    resolveRoasDataStatus({
+      hasWindowRows: true,
+      hasSpend: true,
+      coveredCost: partialValueCoverage.coveredCost,
+      missingCost: partialValueCoverage.missingCost
+    }),
+    'pending'
+  );
+
+  const thresholdValueCoverage = summarizeBudgetValueCoverage([
+    {
+      total_cost: 80,
+      purchase_count: 4,
+      d7_roas: 1.25,
+      revenue_source_missing: 0
+    },
+    {
+      total_cost: 20,
+      purchase_count: 0,
+      d7_roas: 0,
+      revenue_source_missing: 1
+    }
+  ]);
+  assert.equal(thresholdValueCoverage.currentRoas, 1.25);
+  assert.equal(thresholdValueCoverage.currentCpp, 20);
+  assert.equal(thresholdValueCoverage.coveredCost, 80);
+  assert.equal(thresholdValueCoverage.missingCost, 20);
+  assert.equal(thresholdValueCoverage.coverageRatio, 0.8);
+  assert.equal(
+    resolveRoasDataStatus({
+      hasWindowRows: true,
+      hasSpend: true,
+      coveredCost: thresholdValueCoverage.coveredCost,
+      missingCost: thresholdValueCoverage.missingCost
+    }),
+    'partial'
+  );
 
   const completeValueCoverage = summarizeBudgetValueCoverage([
     {
@@ -599,6 +738,7 @@ async function main(): Promise<void> {
   assert.equal(completeValueCoverage.coverageMissing, false);
   assert.equal(completeValueCoverage.currentRoas, 1.5);
   assert.equal(completeValueCoverage.currentCpp, 20);
+  assert.equal(completeValueCoverage.coverageRatio, 1);
 
   assert.equal(resolveKeywordEngineBackfillDays(false, 30, 3), 30);
   assert.equal(resolveKeywordEngineBackfillDays(true, 30, 3), 3);
@@ -798,10 +938,10 @@ async function main(): Promise<void> {
     new Map()
   );
   assert.equal(keywordValueRowsUnknownCountry.length, 1);
-  assert.equal(keywordValueRowsUnknownCountry[0].revenue_source_missing, 1);
-  assert.equal(keywordValueRowsUnknownCountry[0].purchase_count, 0);
-  assert.equal(keywordValueRowsUnknownCountry[0].revenue_d7, 0);
-  assert.equal(keywordValueRowsUnknownCountry[0].d7_roas, 0);
+  assert.equal(keywordValueRowsUnknownCountry[0].revenue_source_missing, 0);
+  assert.equal(keywordValueRowsUnknownCountry[0].purchase_count, 3);
+  assert.equal(keywordValueRowsUnknownCountry[0].revenue_d7, 90);
+  assert.equal(keywordValueRowsUnknownCountry[0].d7_roas, 1.8);
 
   const keywordValueRowsMixedCountry = buildKeywordValueRows(
     'demo',
@@ -907,6 +1047,427 @@ async function main(): Promise<void> {
   assert.ok(contextPrompt.prompt.includes('上下文包一'));
   assert.ok(!contextPrompt.prompt.includes('结构化摘要'));
   assert.ok(contextPrompt.warnings.some((item) => /截短|跳过/.test(item)));
+
+  const toolCallsCaptured: Array<{ toolName: string; args: Record<string, unknown> }> = [];
+  let toolStepIndex = 0;
+  const toolCallResult = await runAiChat(
+    {
+      message: '最近预算面板里哪个媒体源最值得先处理？',
+      history: [],
+      contextPacks: [],
+      images: [],
+      modelId: 'openai_gpt54',
+      pageContext: {
+        activeSection: 'section-budget',
+        pageLabel: '预算建议',
+        defaults: {
+          appKey: 'demo_app',
+          platform: 'ios',
+          from: '2026-03-01',
+          to: '2026-03-14'
+        },
+        currentFilters: {
+          status: 'pending'
+        },
+        recommendedSpecs: [
+          {
+            type: 'budget_summary',
+            templateId: 'platform_media_source',
+            appKey: 'demo_app',
+            platform: 'ios',
+            from: '2026-03-01',
+            to: '2026-03-14',
+            status: 'pending'
+          }
+        ],
+        coreSpecs: []
+      }
+    },
+    {
+      buildAiContextPacksViaMcp: async () => ({ packs: [], packSpecs: [], warnings: [] }),
+      callGuruMcpTool: async (toolName, args) => {
+        toolCallsCaptured.push({
+          toolName,
+          args
+        });
+        return {
+          title: '预算建议 · 平台 / 媒体源',
+          summary_markdown: '### 预算建议包\n- Top 聚合：Meta / ios（4 条）',
+          structured: {},
+          row_count: 1,
+          truncated: false,
+          applied_filters: args
+        };
+      },
+      requestCompletion: async () => {
+        toolStepIndex += 1;
+        if (toolStepIndex === 1) {
+          return {
+            content: '',
+            toolCalls: [
+              {
+                id: 'tool-1',
+                name: GURU_MCP_TOOL_NAMES.budgetGetSummary,
+                rawArguments: JSON.stringify({
+                  templateId: 'platform_media_source',
+                  status: 'pending'
+                }),
+                arguments: {
+                  templateId: 'platform_media_source',
+                  status: 'pending'
+                }
+              }
+            ],
+            usage: null,
+            raw: {},
+            rawMessage: {
+              tool_calls: [
+                {
+                  id: 'tool-1',
+                  type: 'function',
+                  function: {
+                    name: GURU_MCP_TOOL_NAMES.budgetGetSummary,
+                    arguments: JSON.stringify({
+                      templateId: 'platform_media_source',
+                      status: 'pending'
+                    })
+                  }
+                }
+              ]
+            }
+          };
+        }
+        return {
+          content: '结论：Meta 需要优先处理。\n关键证据：当前 pending 建议主要集中在 Meta。',
+          toolCalls: [],
+          usage: null,
+          raw: {},
+          rawMessage: {}
+        };
+      }
+    } as never
+  );
+  assert.equal(toolCallResult.agent_action, 'answer');
+  assert.equal(toolCallsCaptured.length, 1);
+  assert.equal(toolCallsCaptured[0]?.toolName, GURU_MCP_TOOL_NAMES.budgetGetSummary);
+  assert.equal(toolCallsCaptured[0]?.args.appKey, 'demo_app');
+  assert.equal(toolCallResult.tool_trace[0]?.title, '预算建议 · 平台 / 媒体源');
+
+  const clarificationResult = await runAiChat(
+    {
+      message: '帮我看看最近表现',
+      history: [],
+      contextPacks: [],
+      images: [],
+      modelId: 'openai_gpt54'
+    },
+    {
+      buildAiContextPacksViaMcp: async () => ({ packs: [], packSpecs: [], warnings: [] }),
+      callGuruMcpTool: async () => {
+        throw new Error('should_not_call_tool');
+      },
+      requestCompletion: async () => ({
+        content: 'CLARIFY: 请告诉我你想看哪个应用，或者当前页面应用是哪一个？',
+        toolCalls: [],
+        usage: null,
+        raw: {},
+        rawMessage: {}
+      })
+    } as never
+  );
+  assert.equal(clarificationResult.agent_action, 'clarification');
+  assert.equal(clarificationResult.reply, '请告诉我你想看哪个应用，或者当前页面应用是哪一个？');
+  assert.equal(clarificationResult.clarification_count, 1);
+
+  let failedToolStepIndex = 0;
+  const degradedResult = await runAiChat(
+    {
+      message: '帮我分析一下当前预算建议的情况',
+      history: [],
+      contextPacks: [],
+      images: [],
+      modelId: 'openai_gpt54',
+      pageContext: {
+        activeSection: 'section-budget',
+        pageLabel: '预算建议',
+        defaults: {
+          appKey: 'demo_app',
+          platform: 'ios',
+          from: '2026-03-01',
+          to: '2026-03-14'
+        },
+        currentFilters: {},
+        recommendedSpecs: [
+          {
+            type: 'budget_summary',
+            templateId: 'platform_media_source',
+            appKey: 'demo_app',
+            platform: 'ios',
+            from: '2026-03-01',
+            to: '2026-03-14'
+          }
+        ],
+        coreSpecs: []
+      }
+    },
+    {
+      buildAiContextPacksViaMcp: async () => ({ packs: [], packSpecs: [], warnings: [] }),
+      callGuruMcpTool: async () => {
+        throw new Error('mcp_down');
+      },
+      requestCompletion: async () => {
+        failedToolStepIndex += 1;
+        if (failedToolStepIndex === 1) {
+          return {
+            content: '',
+            toolCalls: [
+              {
+                id: 'tool-fail',
+                name: GURU_MCP_TOOL_NAMES.budgetGetSummary,
+                rawArguments: '{}',
+                arguments: {}
+              }
+            ],
+            usage: null,
+            raw: {},
+            rawMessage: {
+              tool_calls: [
+                {
+                  id: 'tool-fail',
+                  type: 'function',
+                  function: {
+                    name: GURU_MCP_TOOL_NAMES.budgetGetSummary,
+                    arguments: '{}'
+                  }
+                }
+              ]
+            }
+          };
+        }
+        return {
+          content: '结论：当前预算数据暂时不可用，我先给你保守判断。\n关键证据：自动查询失败，请稍后重试。',
+          toolCalls: [],
+          usage: null,
+          raw: {},
+          rawMessage: {}
+        };
+      }
+    } as never
+  );
+  assert.equal(degradedResult.agent_action, 'answer');
+  assert.ok(degradedResult.warnings.some((item) => item.includes('查询失败，请稍后重试')));
+
+  let manualCacheToolCalls = 0;
+  let manualPackStepIndex = 0;
+  const manualPackAlignedResult = await runAiChat(
+    {
+      message: '结合我手动附带的数据包，看看预算建议',
+      history: [],
+      contextPacks: [
+        {
+          type: 'metrics_trend',
+          templateId: 'country',
+          appKey: 'demo_app',
+          platform: 'ios',
+          from: '2026-03-01',
+          to: '2026-03-14',
+          source: 'pull',
+          metric: 'installs'
+        },
+        {
+          type: 'budget_summary',
+          templateId: 'platform_media_source',
+          appKey: 'demo_app',
+          platform: 'ios',
+          from: '2026-03-01',
+          to: '2026-03-14'
+        }
+      ],
+      images: [],
+      modelId: 'openai_gpt54'
+    },
+    {
+      buildAiContextPacksViaMcp: async (_specs) => ({
+        packs: [
+          {
+            type: 'budget_summary',
+            templateId: 'platform_media_source',
+            title: '预算建议 · 平台 / 媒体源',
+            summaryMarkdown: '### 预算建议包\n- Meta / ios 共有 4 条',
+            structured: {
+              groups: []
+            },
+            rowCount: 1,
+            truncated: false,
+            appliedFilters: {
+              appKey: 'demo_app',
+              platform: 'ios',
+              from: '2026-03-01',
+              to: '2026-03-14',
+              templateId: 'platform_media_source'
+            }
+          }
+        ],
+        packSpecs: [
+          {
+            type: 'budget_summary',
+            templateId: 'platform_media_source',
+            appKey: 'demo_app',
+            platform: 'ios',
+            from: '2026-03-01',
+            to: '2026-03-14'
+          }
+        ],
+        warnings: ['「metrics_trend · country」 获取失败，已跳过这次附加。']
+      }),
+      callGuruMcpTool: async () => {
+        manualCacheToolCalls += 1;
+        throw new Error('should_not_requery_manual_pack');
+      },
+      requestCompletion: async () => {
+        manualPackStepIndex += 1;
+        if (manualPackStepIndex === 1) {
+          return {
+            content: '',
+            toolCalls: [
+              {
+                id: 'tool-manual-cache',
+                name: GURU_MCP_TOOL_NAMES.budgetGetSummary,
+                rawArguments: JSON.stringify({
+                  appKey: 'demo_app',
+                  platform: 'ios',
+                  from: '2026-03-01',
+                  to: '2026-03-14',
+                  templateId: 'platform_media_source'
+                }),
+                arguments: {
+                  appKey: 'demo_app',
+                  platform: 'ios',
+                  from: '2026-03-01',
+                  to: '2026-03-14',
+                  templateId: 'platform_media_source'
+                }
+              }
+            ],
+            usage: null,
+            raw: {},
+            rawMessage: {
+              tool_calls: [
+                {
+                  id: 'tool-manual-cache',
+                  type: 'function',
+                  function: {
+                    name: GURU_MCP_TOOL_NAMES.budgetGetSummary,
+                    arguments: JSON.stringify({
+                      appKey: 'demo_app',
+                      platform: 'ios',
+                      from: '2026-03-01',
+                      to: '2026-03-14',
+                      templateId: 'platform_media_source'
+                    })
+                  }
+                }
+              ]
+            }
+          };
+        }
+        return {
+          content: '结论：Meta 需要优先处理。\n关键证据：已复用你手动附带的预算建议数据包。',
+          toolCalls: [],
+          usage: null,
+          raw: {},
+          rawMessage: {}
+        };
+      }
+    } as never
+  );
+  assert.equal(manualCacheToolCalls, 0);
+  assert.equal(manualPackAlignedResult.tool_trace[0]?.title, '预算建议 · 平台 / 媒体源');
+  assert.ok(manualPackAlignedResult.warnings.some((item) => item.includes('已跳过这次附加')));
+
+  assert.deepEqual(
+    resolveGuruMcpToolForContextPack({
+      type: 'budget_summary',
+      templateId: 'platform_media_source',
+      appKey: 'demo',
+      platform: 'ios',
+      from: '2026-03-01',
+      to: '2026-03-07'
+    }),
+    {
+      name: GURU_MCP_TOOL_NAMES.budgetGetSummary,
+      arguments: {
+        appKey: 'demo',
+        platform: 'ios',
+        from: '2026-03-01',
+        to: '2026-03-07',
+        templateId: 'platform_media_source',
+        status: undefined,
+        executionStatus: undefined,
+        isAdopted: undefined,
+        hasManualReview: undefined
+      }
+    }
+  );
+
+  await withHttpApp(createGuruMcpApp(), async (baseUrl) => {
+    const unauthorized = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'init',
+        method: 'initialize',
+        params: {
+          protocolVersion: LATEST_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: {
+            name: 'unauthorized',
+            version: '1.0.0'
+          }
+        }
+      })
+    });
+    assert.equal(unauthorized.status, 401);
+
+    const session = await initializeMcpSession(baseUrl);
+    const toolsResponse = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${env.mcp.internalToken}`,
+        'mcp-session-id': session.sessionId,
+        'mcp-protocol-version': session.protocolVersion
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'list-tools',
+        method: 'tools/list',
+        params: {}
+      })
+    });
+    assert.equal(toolsResponse.status, 200);
+    const toolsPayload = (await toolsResponse.json()) as {
+      result?: {
+        tools?: Array<{ name?: string }>;
+      };
+    };
+    const toolNames = (toolsPayload.result?.tools ?? []).map((tool) => String(tool.name || ''));
+    assert.deepEqual(toolNames.sort(), Object.values(GURU_MCP_TOOL_NAMES).sort());
+
+    const terminated = await fetch(`${baseUrl}/mcp`, {
+      method: 'DELETE',
+      headers: {
+        authorization: `Bearer ${env.mcp.internalToken}`,
+        'mcp-session-id': session.sessionId,
+        'mcp-protocol-version': session.protocolVersion
+      }
+    });
+    assert.equal(terminated.status, 204);
+  });
 
   const mergedRule = mergeRecommendationPolicyRule(
     {
@@ -1026,6 +1587,7 @@ async function main(): Promise<void> {
   assert.equal(getRecommendationPolicyErrorMessage('asa_requires_ios'), 'ASA 规则只支持 iOS，请改为 iOS 后再保存。');
 
   const capturedAiModelIds: string[] = [];
+  const capturedPageContexts: Array<Record<string, unknown> | undefined> = [];
   const aiRouter = createAiRouter({
     buildAiContextPacks: async () => ({
       packs: [],
@@ -1033,6 +1595,7 @@ async function main(): Promise<void> {
     }),
     runAiChat: async (input) => {
       capturedAiModelIds.push(String(input.modelId || ''));
+      capturedPageContexts.push(input.pageContext as Record<string, unknown> | undefined);
       return {
         model_id: (input.modelId || 'qwen') as 'qwen' | 'openrouter_kimi_k25' | 'openai_gpt54',
         model:
@@ -1054,6 +1617,9 @@ async function main(): Promise<void> {
               ? 'openai'
               : 'dashscope',
         reply: 'ok',
+        agent_action: 'answer',
+        tool_trace: [],
+        clarification_count: 0,
         usage: null,
         warnings: [],
         attachments_used: {
@@ -1164,6 +1730,9 @@ async function main(): Promise<void> {
         model_label: 'Kimi-K2.5 (OpenRouter)',
         provider: 'openrouter',
         reply: 'ok',
+        agent_action: 'answer',
+        tool_trace: [],
+        clarification_count: 0,
         usage: null,
         warnings: [],
         attachments_used: {
@@ -1190,6 +1759,9 @@ async function main(): Promise<void> {
         model_label: 'GPT-5.4 (OpenAI)',
         provider: 'openai',
         reply: 'ok',
+        agent_action: 'answer',
+        tool_trace: [],
+        clarification_count: 0,
         usage: null,
         warnings: [],
         attachments_used: {
@@ -1203,6 +1775,17 @@ async function main(): Promise<void> {
     const openrouterImageForm = new FormData();
     openrouterImageForm.set('message', 'hello');
     openrouterImageForm.set('model_id', 'openrouter_kimi_k25');
+    openrouterImageForm.set(
+      'page_context_json',
+      JSON.stringify({
+        activeSection: 'section-budget',
+        pageLabel: '预算建议',
+        defaults: {
+          appKey: 'demo_app',
+          platform: 'ios'
+        }
+      })
+    );
     openrouterImageForm.append(
       'images',
       new File([new Uint8Array([1, 2, 3])], 'demo.png', { type: 'image/png' })
@@ -1220,6 +1803,9 @@ async function main(): Promise<void> {
         model_label: 'Kimi-K2.5 (OpenRouter)',
         provider: 'openrouter',
         reply: 'ok',
+        agent_action: 'answer',
+        tool_trace: [],
+        clarification_count: 0,
         usage: null,
         warnings: [],
         attachments_used: {
@@ -1230,6 +1816,7 @@ async function main(): Promise<void> {
       }
     });
     assert.deepEqual(capturedAiModelIds, ['openrouter_kimi_k25', 'openai_gpt54', 'openrouter_kimi_k25']);
+    assert.equal(capturedPageContexts[2]?.activeSection, 'section-budget');
   });
 
   const qwenOnlyAiRouter = createAiRouter({
@@ -1287,6 +1874,43 @@ async function main(): Promise<void> {
       ok: false,
       error: 'ai_model_unavailable',
       message: '当前选择的模型暂不可用，请切回其他模型后重试。'
+    });
+  });
+
+  const timeoutAiRouter = createAiRouter({
+    buildAiContextPacks: async () => ({
+      packs: [],
+      warnings: []
+    }),
+    runAiChat: (async () => {
+      throw new Error('mcp_request_timeout');
+    }) as never,
+    listAvailableAiChatModels: () => [
+      {
+        id: 'qwen',
+        label: 'Qwen 3.6-Plus',
+        provider: 'dashscope',
+        provider_label: 'DashScope',
+        model: 'qwen3.6-plus',
+        supports_images: true,
+        supports_thinking: true
+      }
+    ],
+    getDefaultAiChatModelId: () => 'qwen'
+  } as never);
+
+  await withHttpApi(timeoutAiRouter, async (baseUrl) => {
+    const timeoutForm = new FormData();
+    timeoutForm.set('message', 'hello');
+    const timeoutResponse = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      body: timeoutForm
+    });
+    assert.equal(timeoutResponse.status, 504);
+    assert.deepEqual(await timeoutResponse.json(), {
+      ok: false,
+      error: 'ai_chat_timeout',
+      message: 'Guru Ads Agent 响应超时，请重试，或减少上下文后再发送。'
     });
   });
 
