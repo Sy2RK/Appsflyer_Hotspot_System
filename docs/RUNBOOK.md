@@ -113,7 +113,8 @@ Web UI 新增能力:
   - 默认至少排除最近 7 天，再按策略 `decision_window_days` 聚合
   - 同时显式输出 `roas_window_from / roas_window_to / roas_data_status`
   - `roas_data_status=complete`：成熟窗口 Cohort 源数据完整
-  - `roas_data_status=pending`：成熟窗口内存在 Cohort 缺口，显示“待补齐”
+  - `roas_data_status=partial`：成熟窗口仍有 Cohort 缺口，但覆盖率已达到可采纳阈值（当前 80%）；`ROAS / CPP` 按已覆盖成本计算
+  - `roas_data_status=pending`：成熟窗口内存在 Cohort 缺口且覆盖率低于 80%，显示“待补齐”
   - `roas_data_status=unavailable`：当前还没有可用于判断的成熟窗口，显示“暂无成熟数据”
 - 每日报告页面（结构化预览、飞书 `interactive` 卡片发送、阈值说明）
 - 投放执行表推送页面（通用投放建议 + ASA 关键词建议 -> 同一 Base 内按日期归档执行表 + 群通知）
@@ -124,6 +125,9 @@ Web UI 新增能力:
 - `pull_time` 到达后，先由 `puller` / `keyword-engine` / `budget-advisor` / `asa-keywords` 为前一报告日准备数据
 - `push_time` 到达后，`daily-brief` 与 `asa-daily-brief` 不会立刻发送，而是先检查同一 `reportDate` 的 `budget-advisor` 与 `asa-keywords` 是否已经完成
 - `bitable-export` 固定在 `push_time + 5 分钟` 检查，但同样会等待上述两个长任务完成后再导出
+- 当前门控的真实效果是：只要 `budget-advisor` 仍处于 `running` 或没有落下 completion log，日报 / ASA 简报 / 执行表都会持续等待
+- `asa-keywords` 对单个 `app + platform + date` 切片的瞬时 cohort `404 / 5xx / timeout` 已支持“降级完成”策略
+  - 若本轮没有可调度重试失败，则允许将 worker completion 记为成功，并在 summary 中保留 failed slice 信息，避免单点终态失败阻塞日报下游
 - 每日 worker 的“是否已跑过 / 是否还能重试”由 Postgres `scheduled_worker_runs` 持久化控制，避免多实例部署时串行重复跑
   - 当前已接入：`puller`、`keyword-engine`、`budget-advisor`、`asa-keywords`、`daily-brief`、`asa-daily-brief`、`bitable-export`
 - `puller` 对 AppsFlyer 请求启用请求级超时与错误分类：
@@ -326,14 +330,36 @@ curl -s "http://localhost:8123/?query=SELECT%20install_date,app_key,platform,med
 - 预算 / ASA 的 `D7 ROAS` 不再把 `revenue_source_missing=1` 显示成 `0.00`
 - 需要结合 `roas_data_status` 判断：
   - `complete`：可作为真实 D7 ROAS 使用
-  - `pending`：Cohort 源数据仍在补齐
+  - `partial`：成熟窗口仍有缺口，但覆盖率已达到可采纳阈值；`ROAS / CPP / 收入 / 购买数` 按已覆盖成本计算
+  - `pending`：成熟窗口内仍有 Cohort 源数据缺口，且覆盖率低于 80%
   - `unavailable`：当前没有成熟窗口数据
 - `d7_roas` 只在 `revenue_d7` 与 `total_cost` 都具备时有意义
+- ASA 页面摘要卡会直接复用这套口径
+  - 若成熟窗口覆盖率未达到 80%，即使部分 keyword 已有 Cohort 收入，`CPP / D7 ROAS` 仍会整体显示为“待补齐（源数据缺失）”
 
 如果大量行都为 `revenue_source_missing=1`：
 - 先检查 `APPSFLYER_COHORT_*` 配置
 - 再检查 AppsFlyer `Master API token` 是否可用
 - 最后检查对应安装日 / 媒体 / campaign 的 cohort 切片是否被 AppsFlyer 返回 404、416 或超时
+
+排查 ASA 关键词摘要为什么显示“待补齐”时，建议同时查：
+
+```bash
+docker exec hotspot-clickhouse clickhouse-client --query "
+SELECT
+  sum(total_cost) AS total_cost_sum,
+  sumIf(total_cost, total_cost > 0 AND roas_source_missing != 1) AS covered_cost_sum,
+  sumIf(total_cost, total_cost > 0 AND roas_source_missing = 1) AS missing_cost_sum,
+  sumIf(purchase_count, total_cost > 0 AND roas_source_missing != 1) AS covered_purchase_count_sum,
+  sumIf(revenue_d7, total_cost > 0 AND roas_source_missing != 1) AS covered_revenue_d7_sum
+FROM hotspot.asa_keyword_daily_metrics_v2
+WHERE date >= toDate('2026-03-17') AND date <= toDate('2026-03-30')
+"
+```
+
+说明：
+- `covered_cost_sum / (covered_cost_sum + missing_cost_sum)` < `0.8` 时，页面会显示“待补齐（源数据缺失）”
+- 覆盖率达到 `0.8` 以上后，会进入 `partial`，UI 会显示“按已覆盖成本计算”的 `CPP / D7 ROAS`
 
 预算建议页面联动验证：
 - 当价值回收尚未补齐时，建议主指标会显示“收入数据待补齐”
@@ -706,6 +732,8 @@ WebUI 路径：
 排障说明：
 - 如果 Raw Data 的 `cost_value` 仍为 0，但 Master API 关键词成本可返回，系统属于正常状态
 - 当前 ASA 专项以 Master API 作为唯一成本主来源，不再依赖 Raw Data `cost_value`
+- 当前 ASA 摘要与简报中的 `CPP / D7 ROAS` 取自 `asa_keyword_daily_metrics_v2` 的成熟窗口汇总，而不是最新单日值
+- 若页面显示“待补齐（源数据缺失）”，优先看 `roas_source_missing` 覆盖率，而不是只看单个 keyword 是否已有收入
 
 ---
 
@@ -786,6 +814,10 @@ docker compose logs -f daily-brief
 - `metrics_hourly 为空`: 检查 `raw_events` 是否有数据，以及 aggregator 日志
 - `日报预览为空`: 检查报告日期是否晚于最新 Pull 日期
 - `每日卡片发送失败`: 检查 `.env` 或 app 级 Feishu 配置，并查看 `operation_logs`
+- `日报一直不发，但 Pull 已 ready`:
+  - 先查 `scheduled_worker_runs` 中 `budget-advisor` 与 `asa-keywords` 对应 `report_date` 是否已 `completed`
+  - 再查 `docker compose logs --tail=200 daily-brief asa-daily-brief`
+  - 若日志里持续出现 `*_blocked_by_downstream_gate`，通常不是日报 worker 本身故障，而是下游 completion log 尚未落下
 - `Pull 连续失败`:
   - `failure_kind=timeout|network|server`：优先看网络抖动、出口质量、AppsFlyer 短时可用性
   - `failure_kind=rate_limit`：说明命中 AppsFlyer 限流，优先拉开重试窗口
@@ -794,6 +826,15 @@ docker compose logs -f daily-brief
   - 先看 `asa_keyword_slice_retry_scheduled / asa_keyword_slice_retry_recovered / asa_keyword_slice_failed` 日志
   - 如果大量切片停留在 `timeout|network|server`，优先排查出口网络和 AppsFlyer 波动
   - 如果集中在 `auth|invalid_request`，优先检查 `RAW_DATA_TOKEN / MASTER_API_TOKEN / app_id`
+  - 如果只是少量终态 `404`，而整体 completion 已成功落库，当前策略不会再默认阻塞日报下游
+- `Docker 空间异常增长 / 宿主机磁盘吃满`:
+  - 先查 `docker system df -v`
+  - 大多数情况下占用来自 `Docker.raw` 内的旧 volume、build cache 与历史镜像，而不是退出容器数量
+  - 优先清理顺序：
+    - `docker builder prune -af`
+    - `docker image prune -af`
+    - 核对后删除未挂载卷
+  - 删除前必须确认业务卷 `infra_clickhouse-data`、`infra_postgres-data` 仍在被当前服务使用
 
 生成高强度 push token（推荐 48 bytes）:
 ```bash

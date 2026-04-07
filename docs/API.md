@@ -58,7 +58,7 @@ Response:
 说明：
 - 模型列表仅返回当前已配置凭据且可用的模型
 - `Guru Ads Agent` 的自动查库链路会复用当前选中的模型来发起 tool calling
-- `Kimi-K2.5 (OpenRouter)` 在模型列表里视为支持图片；若 provider 侧账号或地区有限制，会在实际请求时报对应 provider 错误
+- `Kimi-K2.5 (OpenRouter)` 在模型列表里按“当前配置可选”展示；若 provider 侧账号、地区或图片能力存在限制，仍可能在实际请求时报对应 provider 错误
 
 示例响应：
 ```json
@@ -436,7 +436,8 @@ Request:
 - `D7 ROAS / CPP`：统一使用 Cohort API 源数据 + 成熟窗口口径
 - 返回中的 `roas_data_status` 用于区分：
   - `complete`：成熟窗口 Cohort 数据完整
-  - `pending`：成熟窗口内存在 Cohort 源数据缺口
+  - `partial`：成熟窗口内仍有 Cohort 缺口，但覆盖率已达到可采纳阈值（当前 80%）；此时 `ROAS / CPP` 按已覆盖成本计算
+  - `pending`：成熟窗口内存在 Cohort 源数据缺口，且覆盖率低于 80%
   - `unavailable`：当前还没有可用于判断的成熟窗口数据
 
 返回：

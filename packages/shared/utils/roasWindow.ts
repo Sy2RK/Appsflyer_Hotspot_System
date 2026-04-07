@@ -3,10 +3,25 @@ import { shiftDateString } from './businessDate.js';
 
 const DEFAULT_EXCLUDE_RECENT_DAYS = 7;
 const DEFAULT_DECISION_WINDOW_DAYS = 14;
+export const ROAS_COST_COVERAGE_ACCEPTANCE_THRESHOLD = 0.8;
 
 export interface MatureRoasWindow {
   from: string;
   to: string;
+}
+
+export function resolveRoasCoverageRatio(input: { coveredCost?: number | null; missingCost?: number | null }): number {
+  const coveredCost = Math.max(0, Number(input.coveredCost || 0));
+  const missingCost = Math.max(0, Number(input.missingCost || 0));
+  const totalCost = coveredCost + missingCost;
+  if (totalCost <= 0) {
+    return 0;
+  }
+  return coveredCost / totalCost;
+}
+
+export function isRoasDataUsableStatus(status: RoasDataStatus | null | undefined): boolean {
+  return status === 'complete' || status === 'partial';
 }
 
 export function buildMatureRoasWindow(
@@ -43,13 +58,22 @@ export function buildMatureRoasWindow(
 export function resolveRoasDataStatus(input: {
   hasWindowRows: boolean;
   hasSpend: boolean;
-  coverageMissing: boolean;
+  coveredCost?: number | null;
+  missingCost?: number | null;
 }): RoasDataStatus {
-  if (input.coverageMissing) {
-    return 'pending';
-  }
   if (!input.hasWindowRows || !input.hasSpend) {
     return 'unavailable';
+  }
+  const missingCost = Math.max(0, Number(input.missingCost || 0));
+  if (missingCost > 0) {
+    const coverageRatio = resolveRoasCoverageRatio({
+      coveredCost: input.coveredCost,
+      missingCost
+    });
+    if (coverageRatio < ROAS_COST_COVERAGE_ACCEPTANCE_THRESHOLD) {
+      return 'pending';
+    }
+    return 'partial';
   }
   return 'complete';
 }

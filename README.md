@@ -49,6 +49,27 @@
   - 支持执行反馈回读、本地沉淀与 `七天后数据` 自动补列
   - 导入完成后自动向指定群聊发通知
 
+## 当前运行口径与注意事项
+
+- 每日自动链路的真实顺序是：
+  - `puller / keyword-engine / budget-advisor / asa-keywords` 在 `Pull 时间` 对前一报告日准备数据
+  - `daily-brief / asa-daily-brief` 在 `推送时间` 到达后，会先等待 `budget-advisor` 与 `asa-keywords` 对应 `report_date` 完成，再决定是否发送
+  - `bitable-export` 固定在 `推送时间 + 5 分钟` 检查，同样会等待这两个下游完成
+- 当前最常见的“日报迟迟不发”原因不是日报 worker 本身报错，而是 `budget-advisor` 或 `asa-keywords` 还没有落下 completion log
+- ASA cohort API 的瞬时 `404 / 5xx / timeout` 现在不会再默认把整轮 `asa-keywords` 自动任务卡死
+  - 若本轮没有可调度重试失败，则允许以“降级完成”写入 worker completion，避免单个终态 slice 长期阻塞日报 / ASA 简报下游
+- 全系统 `D7 ROAS / CPP` 已统一到“成熟窗口 + 覆盖率状态”口径
+  - `complete`：成熟窗口成本全部被 Cohort 数据覆盖
+  - `partial`：成熟窗口仍有缺口，但已覆盖成本占比达到可采纳阈值（当前 80%）；此时 `ROAS / CPP / 收入 / 购买数` 按已覆盖成本计算
+  - `pending`：成熟窗口仍有缺口，且覆盖率低于 80%；UI 会显示“待补齐（源数据缺失）”
+  - `unavailable`：当前还没有可用于判断的成熟窗口
+- ASA 关键词管理页面中 `CPP / D7 ROAS` 即使不是全量为 0，也可能因为成熟窗口覆盖率尚未达到 80% 而统一显示“待补齐（源数据缺失）”
+- `Guru Ads Agent` 当前已接入多模型与内部 MCP 自动查库，但模型列表展示的是“当前已配置且可选”，不是 provider 的绝对能力承诺
+  - `Kimi-K2.5 (OpenRouter)` 仍可能因 provider 账号、地区或图片能力限制，在发送时返回 provider 侧失败
+  - 自动查库依赖 `mcp-server`；若内部 MCP 超时或不可达，最终会体现在 AI chat warning / timeout，而不是静默回退为纯模型回答
+- Docker 磁盘占用的主要风险通常来自 `Docker.raw` 内的历史卷、build cache 与旧镜像，而不是退出容器数量本身
+  - 长期运行环境建议定期核对未挂载卷、build cache 和历史镜像，避免宿主机可用空间过低影响 Docker Desktop 与 worker 稳定性
+
 ## 主要模块
 
 - `apps/api`
@@ -138,7 +159,7 @@ docker compose up -d --build
 - AI chat 请求现在会默认附带当前页面上下文，并在回复中返回 `tool_trace / agent_action / clarification_count`
 - `keyword-engine` 的 `D7 ROAS` 链路已切换为 AppsFlyer cohort API 源数据，并为缺口数据打 `revenue_source_missing`
 - 预算建议、ASA 建议、ASA 简报、多维表中的 `D7 ROAS` 已统一为“Cohort API 源数据 + 成熟窗口”口径
-- ROAS 缺口会显示 `待补齐 / 暂无成熟数据`，不再把源数据缺失展示成 `0.00`
+- ROAS 缺口会显示 `待补齐 / 部分可采纳 / 暂无成熟数据`，不再把源数据缺失展示成 `0.00`
 - ASA keyword 成本切换到 AppsFlyer Master API
 - Feishu 多维表格按日期留档、反馈回读与 `七天后数据` 自动补列
 - 每日 worker 改为数据库持久化运行状态，避免多实例串行重复跑

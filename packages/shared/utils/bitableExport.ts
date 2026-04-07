@@ -854,6 +854,9 @@ function formatBudgetCurrentValue(row: Record<string, unknown>): string {
     if (roasStatus === 'pending' || String(row.metric_mode || '') === 'roas_pending_revenue') {
       return `ROAS 回流中 / 当前 eCPI $${currentEcpi.toFixed(2)}`;
     }
+    if (roasStatus === 'partial') {
+      return `ROAS ${currentRoas.toFixed(2)}（按已覆盖成本计算） / eCPI $${currentEcpi.toFixed(2)}`;
+    }
     if (roasStatus === 'unavailable') {
       return `ROAS 暂无成熟数据 / 当前 eCPI $${currentEcpi.toFixed(2)}`;
     }
@@ -895,6 +898,9 @@ function formatAsaCurrentValue(row: Record<string, unknown>): string {
     const roasStatus = String(row.roas_data_status || '');
     if (roasStatus === 'pending') {
       return 'ROAS 待补齐 / CPP 待补齐';
+    }
+    if (roasStatus === 'partial') {
+      return `ROAS ${Number(row.current_d7_roas || 0).toFixed(2)}（按已覆盖成本计算） / CPP $${Number(row.current_cpp || 0).toFixed(2)}（按已覆盖成本计算）`;
     }
     if (roasStatus === 'unavailable') {
       return 'ROAS 暂无成熟数据 / CPP 暂无成熟数据';

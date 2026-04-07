@@ -201,7 +201,7 @@ export type BudgetExecutionActionCode =
   | 'raise_roas_target'
   | 'scale_gradually';
 export type BudgetExecutionActionSource = 'scenario' | 'policy';
-export type RoasDataStatus = 'complete' | 'pending' | 'unavailable';
+export type RoasDataStatus = 'complete' | 'partial' | 'pending' | 'unavailable';
 
 export interface RecommendationThresholdTargets {
   ecpi_max?: number;

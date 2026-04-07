@@ -38,6 +38,7 @@ export interface BudgetLlmInput {
   computedContext?: Record<string, unknown>;
   manualPromptMarkdown?: string | null;
   feedbackScope?: 'budget' | 'asa';
+  enableThinking?: boolean;
 }
 
 export interface LlmCallResult {
@@ -172,6 +173,7 @@ function normalizeExplain(raw: unknown, input: BudgetLlmInput): LlmExplainResult
 export async function explainBudgetRecommendationWithLlm(input: BudgetLlmInput): Promise<LlmCallResult> {
   const fallback = fallbackExplain(input);
   const feedbackSkillPrompt = await loadLatestFeedbackSkillPrompt(input.feedbackScope ?? 'budget');
+  const enableThinking = input.enableThinking ?? env.qwen.thinkingEnabled;
   const budgetAction = input.budgetAction ?? input.action;
   const executionActions = Array.isArray(input.executionActions) ? input.executionActions : [];
   const scenarioTags = Array.isArray(input.scenarioTags) ? input.scenarioTags : [];
@@ -236,7 +238,7 @@ export async function explainBudgetRecommendationWithLlm(input: BudgetLlmInput):
     ]
   };
 
-  if (env.qwen.thinkingEnabled) {
+  if (enableThinking) {
     body.extra_body = { enable_thinking: true };
   }
 

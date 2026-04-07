@@ -93,6 +93,15 @@ function sanitizeHistory(raw: unknown): AiChatHistoryMessage[] {
                     : undefined,
               clarification_round:
                 typeof metaRaw.clarification_round === 'number' ? metaRaw.clarification_round : undefined,
+              page_trace: Array.isArray(metaRaw.page_trace)
+                ? metaRaw.page_trace
+                    .filter((trace): trace is Record<string, unknown> => Boolean(trace) && typeof trace === 'object')
+                    .map((trace) => ({
+                      title: String(trace.title || '').trim(),
+                      brief: String(trace.brief || '').trim()
+                    }))
+                    .filter((trace) => trace.title)
+                : undefined,
               tool_trace: Array.isArray(metaRaw.tool_trace)
                 ? metaRaw.tool_trace
                     .filter((trace): trace is Record<string, unknown> => Boolean(trace) && typeof trace === 'object')
@@ -118,6 +127,7 @@ function sanitizePageContext(raw: unknown): AiChatPageContext | undefined {
   const defaultsRaw = obj.defaults && typeof obj.defaults === 'object' ? (obj.defaults as Record<string, unknown>) : {};
   const currentFiltersRaw =
     obj.currentFilters && typeof obj.currentFilters === 'object' ? (obj.currentFilters as Record<string, unknown>) : {};
+  const loadedContextsRaw = Array.isArray(obj.loaded_contexts) ? obj.loaded_contexts : [];
   return {
     activeSection: String(obj.activeSection || '').trim() || undefined,
     pageLabel: String(obj.pageLabel || '').trim() || undefined,
@@ -143,6 +153,36 @@ function sanitizePageContext(raw: unknown): AiChatPageContext | undefined {
         })
         .filter(([, value]) => value !== null && value !== '')
     ),
+    loaded_contexts: loadedContextsRaw
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({
+        kind: String(item.kind || '').trim() || undefined,
+        title: String(item.title || '').trim(),
+        summary_markdown: String(item.summary_markdown || '').trim(),
+        applied_filters:
+          item.applied_filters && typeof item.applied_filters === 'object'
+            ? Object.fromEntries(
+                Object.entries(item.applied_filters as Record<string, unknown>)
+                  .map(([key, value]) => {
+                    if (typeof value === 'string') {
+                      return [key, value.trim().slice(0, 120)];
+                    }
+                    if (typeof value === 'boolean') {
+                      return [key, value];
+                    }
+                    if (typeof value === 'number' && Number.isFinite(value)) {
+                      return [key, value];
+                    }
+                    return [key, null];
+                  })
+                  .filter(([, value]) => value !== null && value !== '')
+              )
+            : {},
+        source_section: String(item.source_section || '').trim() || undefined,
+        freshness: String(item.freshness || '').trim() || undefined,
+        tool_hint: sanitizeContextPacks(item.tool_hint ? [item.tool_hint] : [])[0]
+      }))
+      .filter((item) => item.title && item.summary_markdown),
     recommendedSpecs: sanitizeContextPacks(obj.recommendedSpecs),
     coreSpecs: sanitizeContextPacks(obj.coreSpecs)
   };

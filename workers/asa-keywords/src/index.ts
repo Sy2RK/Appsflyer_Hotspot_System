@@ -2,6 +2,10 @@ import crypto from 'crypto';
 import { env } from '@shared/config/env.js';
 import { logger } from '@api/common/logger/logger.js';
 import { runAsaKeywordCycle } from '@shared/utils/asaKeywords.js';
+import {
+  didAsaKeywordCycleComplete,
+  summarizeAsaKeywordCycleStatus
+} from '@shared/utils/asaKeywordWorkerPolicy.js';
 import { startJobLockHeartbeat } from '@shared/utils/jobLockHeartbeat.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
 import { getDefaultPullReadinessReportDate, isPullReportReadyForDownstream } from '@shared/utils/pullReadiness.js';
@@ -30,19 +34,26 @@ const RETRY_POLICY = {
   retry_cooldown_ms: RETRY_COOLDOWN_MS
 } as const;
 
-function didAsaKeywordCycleComplete(result: {
-  failed_slice_count: number;
-  retryable_failed_slice_count?: number;
-}): boolean {
-  const retryableFailedCount =
-    typeof result.retryable_failed_slice_count === 'number'
-      ? result.retryable_failed_slice_count
-      : result.failed_slice_count;
-  return retryableFailedCount === 0;
-}
-
-function summarizeAsaKeywordCycleStatus(result: { failed_slice_count: number }): 'success' | 'failed' {
-  return result.failed_slice_count === 0 ? 'success' : 'failed';
+function summarizeAsaKeywordCycleMessage(
+  reportDate: string,
+  result: {
+    failed_slice_count: number;
+    retryable_failed_slice_count?: number;
+    terminal_failed_slice_count?: number;
+  }
+): string {
+  const completed = didAsaKeywordCycleComplete(result);
+  if (result.failed_slice_count === 0) {
+    return `定时重算 ASA 关键词链路完成 ${reportDate}，回算 ${env.asaKeywordBackfillDays} 天`;
+  }
+  if (completed) {
+    const terminalFailedCount =
+      typeof result.terminal_failed_slice_count === 'number'
+        ? result.terminal_failed_slice_count
+        : result.failed_slice_count;
+    return `定时重算 ASA 关键词链路完成（${terminalFailedCount} 个切片获取失败，已按降级结果继续） ${reportDate}，回算 ${env.asaKeywordBackfillDays} 天`;
+  }
+  return `定时重算 ASA 关键词链路未完全完成 ${reportDate}，回算 ${env.asaKeywordBackfillDays} 天`;
 }
 
 async function tick(reportDate: string, runMarker: string): Promise<boolean> {
@@ -104,10 +115,7 @@ async function tick(reportDate: string, runMarker: string): Promise<boolean> {
         target_type: 'asa_keyword_cycle',
         target_key: reportDate,
         status: summarizeAsaKeywordCycleStatus(result),
-        summary:
-          result.failed_slice_count === 0
-            ? `定时重算 ASA 关键词链路完成 ${reportDate}，回算 ${env.asaKeywordBackfillDays} 天`
-            : `定时重算 ASA 关键词链路未完全完成 ${reportDate}，回算 ${env.asaKeywordBackfillDays} 天`,
+        summary: summarizeAsaKeywordCycleMessage(reportDate, result),
         detail_json: {
           report_date: reportDate,
           completed,

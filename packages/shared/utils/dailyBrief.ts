@@ -51,6 +51,11 @@ interface DailyBriefBudgetHighlight {
   target_ecpi: number;
   primary_metric: 'ecpi' | 'roas';
   metric_mode: 'active' | 'roas_pending_revenue';
+  current_roas: number | null;
+  target_roas: number | null;
+  roas_window_from: string | null;
+  roas_window_to: string | null;
+  roas_data_status: 'complete' | 'partial' | 'pending' | 'unavailable';
   confidence: number;
   reason_code: string;
   execution_actions?: Array<{ label?: string; code?: string }> | null;
@@ -346,6 +351,38 @@ function formatBudgetActionSummary(row: DailyBriefBudgetHighlight): string {
   return `${actionLabel(row.action)} ${Math.abs(row.change_ratio * 100).toFixed(0)}%`;
 }
 
+function formatRoasWindowSummary(row: Pick<DailyBriefBudgetHighlight, 'roas_window_from' | 'roas_window_to'>): string {
+  const from = cleanText(row.roas_window_from);
+  const to = cleanText(row.roas_window_to);
+  if (from && to) {
+    return `${from} 至 ${to}`;
+  }
+  return '成熟窗口';
+}
+
+function formatBudgetMetricStatus(row: DailyBriefBudgetHighlight): string {
+  if (row.primary_metric !== 'roas') {
+    return `当前 eCPI ${formatUsd(row.current_ecpi)} ｜ 目标 ${formatUsd(row.target_ecpi)}`;
+  }
+  const windowLabel = formatRoasWindowSummary(row);
+  if (row.roas_data_status === 'pending' || row.metric_mode === 'roas_pending_revenue') {
+    return `成熟窗口 ROAS 待补齐（${windowLabel}）`;
+  }
+  if (row.roas_data_status === 'partial') {
+    return `成熟窗口 ROAS ${row.current_roas != null ? `${row.current_roas.toFixed(2)}x` : '可采纳'}（覆盖率达阈值，按已覆盖成本计算）`;
+  }
+  if (row.roas_data_status === 'unavailable') {
+    return `成熟窗口 ROAS 暂无数据（${windowLabel}）`;
+  }
+  if (row.current_roas != null && row.target_roas != null) {
+    return `成熟窗口 ROAS ${row.current_roas.toFixed(2)}x ｜ 目标 ${row.target_roas.toFixed(2)}x`;
+  }
+  if (row.current_roas != null) {
+    return `成熟窗口 ROAS ${row.current_roas.toFixed(2)}x`;
+  }
+  return `成熟窗口 ROAS 暂无数据（${windowLabel}）`;
+}
+
 function trimSentence(value: string, limit = 72): string {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
@@ -365,6 +402,31 @@ function buildBudgetAdjustmentReason(row: DailyBriefBudgetHighlight): string {
   const llmSummary = normalizeBudgetReasonText(String(row.llm_summary?.summary_cn || ''));
   if (llmSummary) {
     return llmSummary;
+  }
+
+  if (row.primary_metric === 'roas') {
+    const windowLabel = formatRoasWindowSummary(row);
+    if (row.roas_data_status === 'pending' || row.metric_mode === 'roas_pending_revenue') {
+      return `成熟窗口（${windowLabel}）内的 Cohort 回收数据仍在补齐，先保持预算并继续观察 eCPI 与执行动作结果。`;
+    }
+    if (row.roas_data_status === 'partial') {
+      return `成熟窗口（${windowLabel}）内的 Cohort 覆盖率已达可采纳阈值，当前 ROAS 按已覆盖成本计算，建议结合执行动作继续观察缺口是否补齐。`;
+    }
+    if (row.roas_data_status === 'unavailable') {
+      return `当前成熟窗口（${windowLabel}）暂无可用于判断的 Cohort 回收数据，先观察成本、安装与 eCPI，再等待成熟窗口补齐。`;
+    }
+    if (row.current_roas != null && row.target_roas != null) {
+      if (row.action === 'increase') {
+        return `成熟窗口（${windowLabel}）内 ROAS 高于目标，可在维持回收约束下继续小步放量。`;
+      }
+      if (row.action === 'decrease') {
+        return `成熟窗口（${windowLabel}）内 ROAS 低于目标，继续维持当前预算会拖累整体回收效率。`;
+      }
+      if (row.action === 'pause') {
+        return `成熟窗口（${windowLabel}）内 ROAS 明显不达标，继续投放的边际回收偏弱，建议先暂停观察。`;
+      }
+      return `成熟窗口（${windowLabel}）内 ROAS 暂未形成明确方向，建议继续观察并等待下一轮成熟回收。`;
+    }
   }
 
   const executionSummary = formatExecutionActionSummary(row);
@@ -514,7 +576,8 @@ async function queryPendingBudgetHighlights(reportDate: string, filters: DailyBr
 
   const result = await pgQuery<DailyBriefBudgetHighlight>(
     `SELECT app_key, platform, media_source, keyword, action, change_ratio, current_ecpi, target_ecpi,
-            primary_metric, metric_mode, confidence, reason_code, llm_summary, execution_actions, scenario_tags
+            primary_metric, metric_mode, current_roas, target_roas, roas_window_from, roas_window_to, roas_data_status,
+            confidence, reason_code, llm_summary, execution_actions, scenario_tags
        FROM budget_recommendations
       WHERE ${clauses.join(' AND ')}
       ORDER BY ABS(current_ecpi - target_ecpi) DESC, confidence DESC, updated_at DESC
@@ -655,13 +718,14 @@ function buildActionItems(params: {
     const action = actionLabel(row.action);
     const actionSummary = formatBudgetActionSummary(row);
     const executionSummary = formatExecutionActionSummary(row);
+    const metricSummary = formatBudgetMetricStatus(row);
     items.push({
       priority: row.action === 'pause' ? 'P0' : 'P2',
       category: 'budget',
       title: executionSummary
         ? `${appName} / ${row.media_source} 建议${action}预算并执行「${executionSummary}」`
         : `${appName} / ${row.media_source} 建议${actionSummary}`,
-      detail: `广告系列 ${row.keyword} 当前 eCPI ${formatUsd(row.current_ecpi)}，目标 ${formatUsd(row.target_ecpi)}，置信度 ${(row.confidence * 100).toFixed(0)}%。${row.reason_summary || buildBudgetAdjustmentReason(row)}`
+      detail: `广告系列 ${row.keyword} ${metricSummary}，置信度 ${(row.confidence * 100).toFixed(0)}%。${row.reason_summary || buildBudgetAdjustmentReason(row)}`
     });
   }
 
@@ -732,10 +796,7 @@ function buildDailyBriefInteractiveCard(params: {
       ? params.budgetHighlights
           .map((row) => {
             const appName = resolveProductViewName(params.appByKey.get(row.app_key), row.platform);
-            const metricText =
-              row.metric_mode === 'roas_pending_revenue'
-                ? `当前仍按 eCPI 建议，ROAS 待收入数据接入`
-                : `当前 eCPI ${formatUsd(row.current_ecpi)} ｜ 目标 ${formatUsd(row.target_ecpi)}`;
+            const metricText = formatBudgetMetricStatus(row);
             const executionSummary = formatExecutionActionSummary(row);
             return `${actionEmoji(row.action)} **${appName}**\n媒体源：${row.media_source}\n广告系列：${row.keyword}\n${formatBudgetActionSummary(row)} ｜ ${metricText} ｜ 置信度 ${(row.confidence * 100).toFixed(0)}${
               executionSummary ? `\n执行动作：${executionSummary}` : ''
@@ -953,10 +1014,7 @@ export async function buildDailyBriefPreview(
     lines.push(`【预算动作（超过阈值，共 ${normalizedBudgetHighlights.length} 条）】`);
     for (const row of normalizedBudgetHighlights) {
       const appName = resolveProductViewName(appByKey.get(row.app_key), row.platform);
-      const metricModeText =
-        row.metric_mode === 'roas_pending_revenue'
-          ? '当前仍按 eCPI 建议，ROAS 待收入数据接入'
-          : `当前 eCPI ${formatUsd(row.current_ecpi)}，目标 ${formatUsd(row.target_ecpi)}`;
+      const metricModeText = formatBudgetMetricStatus(row);
       lines.push(
         `- ${appName}：媒体源 ${row.media_source}；广告系列 ${row.keyword}；${formatBudgetActionSummary(row)}，${metricModeText}，置信度 ${(row.confidence * 100).toFixed(0)}%。${
           formatExecutionActionSummary(row) ? `执行动作 ${formatExecutionActionSummary(row)}。` : ''

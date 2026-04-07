@@ -29,7 +29,7 @@ import { getDailyBriefDefaultReportDate } from './dailyBrief.js';
 import { getPushScheduleTarget } from './runtimeSchedule.js';
 import { getTzParts } from './schedule.js';
 import { buildPreviousDateList, shiftDateString } from './businessDate.js';
-import { buildMatureRoasWindow, resolveRoasDataStatus } from './roasWindow.js';
+import { buildMatureRoasWindow, isRoasDataUsableStatus, resolveRoasDataStatus } from './roasWindow.js';
 import {
   buildRecommendationPolicyKey,
   buildRecommendationPolicyMap,
@@ -50,7 +50,8 @@ import type {
   AsaKeywordRouteRecord,
   AsaKeywordStateRow,
   ProductStage,
-  RecommendationPolicyRuleJson
+  RecommendationPolicyRuleJson,
+  RoasDataStatus
 } from '../types/models.js';
 
 interface LoggerLike {
@@ -196,7 +197,7 @@ interface AsaKeywordSummary {
   ecpi: number;
   cpp: number;
   d7_roas: number;
-  roas_data_status: 'complete' | 'pending' | 'unavailable';
+  roas_data_status: RoasDataStatus;
   roas_window_from: string | null;
   roas_window_to: string | null;
 }
@@ -323,21 +324,24 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
         keyword_count,
         installs_sum AS installs,
         total_cost_sum AS total_cost,
-        purchase_count_sum AS purchase_count,
-        revenue_d7_sum AS revenue_d7,
+        covered_purchase_count_sum AS purchase_count,
+        covered_revenue_d7_sum AS revenue_d7,
         if(installs_sum > 0, total_cost_sum / installs_sum, 0) AS ecpi,
-        if(purchase_count_sum > 0, total_cost_sum / purchase_count_sum, 0) AS cpp,
-        if(total_cost_sum > 0, weighted_roas_cost_sum / total_cost_sum, 0) AS d7_roas,
+        if(covered_purchase_count_sum > 0, covered_roas_cost_sum / covered_purchase_count_sum, 0) AS cpp,
+        if(covered_roas_cost_sum > 0, covered_weighted_roas_cost_sum / covered_roas_cost_sum, 0) AS d7_roas,
         spend_row_count,
-        missing_roas_row_count
+        covered_roas_cost_sum,
+        missing_roas_cost_sum
       FROM (
         SELECT
           countDistinct(keyword, campaign, adset, platform, app_key) AS keyword_count,
           sum(installs) AS installs_sum,
           sum(total_cost) AS total_cost_sum,
-          sum(purchase_count) AS purchase_count_sum,
-          sum(revenue_d7) AS revenue_d7_sum,
-          sum(d7_roas * total_cost) AS weighted_roas_cost_sum,
+          sumIf(total_cost, total_cost > 0 AND roas_source_missing != 1) AS covered_roas_cost_sum,
+          sumIf(total_cost, total_cost > 0 AND roas_source_missing = 1) AS missing_roas_cost_sum,
+          sumIf(purchase_count, total_cost > 0 AND roas_source_missing != 1) AS covered_purchase_count_sum,
+          sumIf(revenue_d7, total_cost > 0 AND roas_source_missing != 1) AS covered_revenue_d7_sum,
+          sumIf(d7_roas * total_cost, total_cost > 0 AND roas_source_missing != 1) AS covered_weighted_roas_cost_sum,
           countIf(total_cost > 0) AS spend_row_count,
           countIf(total_cost > 0 AND roas_source_missing = 1) AS missing_roas_row_count
         FROM (
@@ -355,7 +359,8 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
   );
   const rawSummary = summaryRows[0] as (AsaKeywordSummary & {
     spend_row_count?: number;
-    missing_roas_row_count?: number;
+    covered_roas_cost_sum?: number;
+    missing_roas_cost_sum?: number;
   }) | undefined;
   const fallback: AsaKeywordSummary = {
       keyword_count: 0,
@@ -376,17 +381,18 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
   const roasDataStatus = resolveRoasDataStatus({
     hasWindowRows: Number(rawSummary.keyword_count || 0) > 0,
     hasSpend: Number(rawSummary.total_cost || 0) > 0 || Number(rawSummary.spend_row_count || 0) > 0,
-    coverageMissing: Number(rawSummary.missing_roas_row_count || 0) > 0
+    coveredCost: Number(rawSummary.covered_roas_cost_sum || 0),
+    missingCost: Number(rawSummary.missing_roas_cost_sum || 0)
   });
   return {
     keyword_count: Number(rawSummary.keyword_count || 0),
     installs: Number(rawSummary.installs || 0),
     total_cost: Number(rawSummary.total_cost || 0),
-    purchase_count: roasDataStatus === 'complete' ? Number(rawSummary.purchase_count || 0) : 0,
-    revenue_d7: roasDataStatus === 'complete' ? Number(rawSummary.revenue_d7 || 0) : 0,
+    purchase_count: isRoasDataUsableStatus(roasDataStatus) ? Number(rawSummary.purchase_count || 0) : 0,
+    revenue_d7: isRoasDataUsableStatus(roasDataStatus) ? Number(rawSummary.revenue_d7 || 0) : 0,
     ecpi: Number(rawSummary.ecpi || 0),
-    cpp: roasDataStatus === 'complete' ? Number(rawSummary.cpp || 0) : 0,
-    d7_roas: roasDataStatus === 'complete' ? Number(rawSummary.d7_roas || 0) : 0,
+    cpp: isRoasDataUsableStatus(roasDataStatus) ? Number(rawSummary.cpp || 0) : 0,
+    d7_roas: isRoasDataUsableStatus(roasDataStatus) ? Number(rawSummary.d7_roas || 0) : 0,
     roas_data_status: roasDataStatus,
     roas_window_from: filter.from ?? null,
     roas_window_to: filter.to ?? null
@@ -1433,7 +1439,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     currentCpp: number;
     currentD7Roas: number;
     roasWindow: { from: string; to: string };
-    roasDataStatus: 'complete' | 'pending' | 'unavailable';
+    roasDataStatus: RoasDataStatus;
     targetEcpi: number;
     targetCpp: number;
     targetD7Roas: number;
@@ -1470,32 +1476,37 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     const contextRows = rows.filter((row) => row.date >= contextWindow.from && row.date <= contextWindow.to);
     const effectiveDecisionRows = decisionRows.length > 0 ? decisionRows : rows.slice(-7);
     const effectiveRoasRows = roasRows.length > 0 ? roasRows : [];
+    const coveredRoasRows = effectiveRoasRows.filter(
+      (row) => !(Number(row.total_cost || 0) > 0 && Number(row.roas_source_missing || 0) === 1)
+    );
     const installs7d = effectiveDecisionRows.reduce((sum, row) => sum + Number(row.installs || 0), 0);
     const totalCost7d = effectiveDecisionRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
     const roasHasSpend = effectiveRoasRows.some((row) => Number(row.total_cost || 0) > 0);
-    const roasCoverageMissing = effectiveRoasRows.some(
-      (row) => Number(row.total_cost || 0) > 0 && Number(row.roas_source_missing || 0) === 1
-    );
+    const coveredRoasCost = coveredRoasRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
+    const missingRoasCost = effectiveRoasRows
+      .filter((row) => Number(row.total_cost || 0) > 0 && Number(row.roas_source_missing || 0) === 1)
+      .reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
     const roasDataStatus = resolveRoasDataStatus({
       hasWindowRows: effectiveRoasRows.length > 0,
       hasSpend: roasHasSpend,
-      coverageMissing: roasCoverageMissing
+      coveredCost: coveredRoasCost,
+      missingCost: missingRoasCost
     });
     const purchaseCount7d =
-      roasDataStatus === 'complete'
-        ? effectiveRoasRows.reduce((sum, row) => sum + Number(row.purchase_count || 0), 0)
+      isRoasDataUsableStatus(roasDataStatus)
+        ? coveredRoasRows.reduce((sum, row) => sum + Number(row.purchase_count || 0), 0)
         : 0;
     const revenueD7Window =
-      roasDataStatus === 'complete'
-        ? effectiveRoasRows.reduce((sum, row) => sum + Number(row.revenue_d7 || 0), 0)
+      isRoasDataUsableStatus(roasDataStatus)
+        ? coveredRoasRows.reduce((sum, row) => sum + Number(row.revenue_d7 || 0), 0)
         : 0;
     const currentEcpi = installs7d > 0 ? totalCost7d / installs7d : Number(current.ecpi || 0);
     const matureRoasCost =
-      roasDataStatus === 'complete'
-        ? effectiveRoasRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0)
+      isRoasDataUsableStatus(roasDataStatus)
+        ? coveredRoasCost
         : 0;
     const currentCpp = purchaseCount7d > 0 ? matureRoasCost / purchaseCount7d : 0;
-    const currentD7Roas = roasDataStatus === 'complete' ? weightedAsaRoas(effectiveRoasRows) : 0;
+    const currentD7Roas = isRoasDataUsableStatus(roasDataStatus) ? weightedAsaRoas(coveredRoasRows) : 0;
 
     const peerStats = peerStatsByDate.get(`${current.app_key}|${current.platform}|${current.date}`) ?? {
       ecpi: [],
@@ -1519,14 +1530,18 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
           return null;
         }
         const peerWindowRows = peerRows.filter((row) => row.date >= roasWindow.from && row.date <= roasWindow.to);
+        const peerCoveredRows = peerWindowRows.filter(
+          (row) => !(Number(row.total_cost || 0) > 0 && Number(row.roas_source_missing || 0) === 1)
+        );
         const peerStatus = resolveRoasDataStatus({
           hasWindowRows: peerWindowRows.length > 0,
           hasSpend: peerWindowRows.some((row) => Number(row.total_cost || 0) > 0),
-          coverageMissing: peerWindowRows.some(
-            (row) => Number(row.total_cost || 0) > 0 && Number(row.roas_source_missing || 0) === 1
-          )
+          coveredCost: peerCoveredRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0),
+          missingCost: peerWindowRows
+            .filter((row) => Number(row.total_cost || 0) > 0 && Number(row.roas_source_missing || 0) === 1)
+            .reduce((sum, row) => sum + Number(row.total_cost || 0), 0)
         });
-        return peerStatus === 'complete' ? weightedAsaRoas(peerWindowRows) : null;
+        return isRoasDataUsableStatus(peerStatus) ? weightedAsaRoas(peerCoveredRows) : null;
       })
       .filter((value) => value != null && Number.isFinite(value) && value > 0) as number[];
     const thresholdTargets = resolveRecommendationTarget(policy, { mediaSource: 'Apple Search Ads' });
@@ -1605,7 +1620,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     });
     stateRows += 1;
     const action =
-      usesRoasPrimaryMetric && roasDataStatus !== 'complete'
+      usesRoasPrimaryMetric && !isRoasDataUsableStatus(roasDataStatus)
         ? 'hold'
         : relativeDecision
         ? relativeDecision.action
@@ -1623,8 +1638,10 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
             : 'hold';
 
     const reasonCode =
-      usesRoasPrimaryMetric && roasDataStatus !== 'complete'
-        ? 'roas_pending_revenue'
+      usesRoasPrimaryMetric && !isRoasDataUsableStatus(roasDataStatus)
+        ? roasDataStatus === 'unavailable'
+          ? 'roas_window_unavailable'
+          : 'roas_pending_revenue'
         : relativeDecision?.reasonCode ??
       stage === 'stable'
         ? 'stable_dual_metric'
@@ -1690,7 +1707,13 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     });
   }
 
-  await mapWithConcurrency(pendingLlmUpdates, 4, async (item) => {
+  logInfo(logger, 'asa_keyword_llm_enrichment_start', {
+    recommendation_count: pendingLlmUpdates.length,
+    concurrency: env.asaRecommendationLlmConcurrency,
+    thinking_enabled: false
+  });
+
+  await mapWithConcurrency(pendingLlmUpdates, env.asaRecommendationLlmConcurrency, async (item) => {
     const primaryMetric =
       item.policy?.metric_family === 'd7_roas_cpp'
         ? 'roas'
@@ -1702,7 +1725,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       platform: item.current.platform,
       mediaSource: 'Apple Search Ads',
       primaryMetric,
-      metricMode: item.roasDataStatus === 'complete' ? 'active' : 'roas_pending_revenue',
+      metricMode: item.roasDataStatus === 'pending' ? 'roas_pending_revenue' : 'active',
       keyword: item.current.keyword,
       matchType: 'asa',
       action: item.action,
@@ -1745,7 +1768,8 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
         strong_metrics: item.strongMetrics
       },
       manualPromptMarkdown: item.manualPromptMarkdown,
-      feedbackScope: 'asa'
+      feedbackScope: 'asa',
+      enableThinking: false
     });
     await insertLlmAuditLog({
       biz_type: 'asa_keyword_recommendation',
@@ -2317,6 +2341,13 @@ function formatAsaSummaryCpp(input: {
   if (status === 'pending') {
     return '待补齐（源数据缺失）';
   }
+  if (status === 'partial') {
+    return Number(input.purchase_count || 0) > 0
+      ? `$${Number(input.cpp || 0).toFixed(2)}（覆盖率达阈值，按已覆盖成本计算）`
+      : Number(input.total_cost || 0) > 0
+        ? '—（覆盖率达阈值，但成熟窗口无购买）'
+        : '-';
+  }
   if (status === 'unavailable') {
     return Number(input.total_cost || 0) > 0 ? '暂无成熟数据' : '-';
   }
@@ -2335,6 +2366,13 @@ function formatAsaSummaryRoas(input: {
   const status = String(input.roas_data_status || 'unavailable');
   if (status === 'pending') {
     return '待补齐（源数据缺失）';
+  }
+  if (status === 'partial') {
+    if (Number(input.total_cost || 0) <= 0) return '-';
+    const value = `${Number(input.d7_roas || 0).toFixed(2)}`;
+    return hasCostWithoutD7Revenue(input)
+      ? `${value}（覆盖率达阈值，按已覆盖成本计算；成熟窗口未观察到 D7 收入）`
+      : `${value}（覆盖率达阈值，按已覆盖成本计算）`;
   }
   if (status === 'unavailable') {
     return Number(input.total_cost || 0) > 0 ? '暂无成熟数据' : '-';
@@ -2383,6 +2421,11 @@ function buildAsaTodayJudgment(
     return actionCount > 0
       ? `当前成熟窗口的 Cohort 回收数据仍在补齐，先优先处理 ${actionCount} 条建议操作，并避免把未成熟 D7 误判成真实差表现。`
       : '当前成熟窗口的 Cohort 回收数据仍在补齐，先观察 eCPI 与安装变化，待 D7 数据补齐后再做 ROAS 判断。';
+  }
+  if (summary.roas_data_status === 'partial') {
+    return actionCount > 0
+      ? `当前成熟窗口的 Cohort 覆盖率已达可采纳阈值，ROAS/CPP 按已覆盖成本计算，先处理 ${actionCount} 条建议操作并继续观察缺口补齐。`
+      : '当前成熟窗口的 Cohort 覆盖率已达可采纳阈值，ROAS/CPP 按已覆盖成本计算，后续继续观察缺口是否补齐。';
   }
   if (summary.roas_data_status === 'unavailable') {
     return actionCount > 0

@@ -389,12 +389,30 @@ h4 {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  font: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.term-with-help__label {
+  font: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
 }
 
 .help-group {
   position: relative;
   display: inline-flex;
   align-items: center;
+  vertical-align: middle;
+}
+
+.term-with-help > .help-group {
+  margin-left: 4px;
 }
 
 .help-popover {
@@ -439,6 +457,20 @@ h4 {
 .help-popover h4 {
   margin-bottom: 8px;
   font-size: 15px;
+}
+
+.help-popover-title {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.help-popover-body {
+  display: block;
+  color: var(--text-secondary);
+  line-height: 1.55;
 }
 
 @media (max-width: 768px) {
@@ -1064,6 +1096,21 @@ h4 {
 .asa-zone-head p,
 .asa-subpanel .card-head p {
   margin: 4px 0 0;
+}
+
+.asa-metric-copy {
+  display: block;
+  line-height: 1.75;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.asa-metric-copy::-webkit-scrollbar {
+  display: none;
 }
 
 .asa-keyword-form {
@@ -3330,6 +3377,31 @@ body.ai-dock-scroll-locked #appShell {
   white-space: normal;
 }
 
+.ai-chat-message-bubble.is-pending {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+  min-width: 112px;
+  white-space: nowrap;
+}
+
+.ai-chat-pending-copy {
+  color: #1e4567;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.ai-chat-dot-loader {
+  display: inline-block;
+  width: 1ch;
+  overflow: hidden;
+  color: rgba(25, 94, 131, 0.78);
+  font-family: 'SFMono-Regular', 'Menlo', 'Monaco', monospace;
+  letter-spacing: 0;
+  white-space: nowrap;
+  animation: ai-chat-dot-loader 2.1s steps(1, end) infinite;
+}
+
 .ai-chat-message-bubble.is-markdown > :first-child {
   margin-top: 0;
 }
@@ -3418,6 +3490,21 @@ body.ai-dock-scroll-locked #appShell {
 .ai-chat-message.is-system .ai-chat-message-bubble {
   border-style: dashed;
   color: var(--text-secondary);
+}
+
+@keyframes ai-chat-dot-loader {
+  0%,
+  24% {
+    width: 1ch;
+  }
+  25%,
+  57% {
+    width: 2ch;
+  }
+  58%,
+  100% {
+    width: 3ch;
+  }
 }
 
 .ai-chat-message-meta {

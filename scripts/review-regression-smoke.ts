@@ -37,6 +37,7 @@ import {
   didKeywordEngineCycleComplete,
   resolveKeywordEngineBackfillDays
 } from '../packages/shared/utils/keywordEngineWorkerPolicy.js';
+import { summarizeAsaKeywordCycleStatus } from '../packages/shared/utils/asaKeywordWorkerPolicy.js';
 import {
   buildKeywordValueCohortWindows,
   buildKeywordValueRows,
@@ -744,6 +745,22 @@ async function main(): Promise<void> {
   assert.equal(resolveKeywordEngineBackfillDays(true, 30, 3), 3);
   assert.equal(didKeywordEngineCycleComplete({ failed_count: 0 }), true);
   assert.equal(didKeywordEngineCycleComplete({ failed_count: 1 }), false);
+  assert.equal(
+    summarizeAsaKeywordCycleStatus({
+      failed_slice_count: 1,
+      retryable_failed_slice_count: 0,
+      terminal_failed_slice_count: 1
+    }),
+    'success'
+  );
+  assert.equal(
+    summarizeAsaKeywordCycleStatus({
+      failed_slice_count: 1,
+      retryable_failed_slice_count: 1,
+      terminal_failed_slice_count: 0
+    }),
+    'failed'
+  );
 
   const supportSummary = summarizeRecommendationPolicySupport('budget', validatedPolicy);
   assert.equal(supportSummary.automation_level, 'partial');
@@ -1151,6 +1168,7 @@ async function main(): Promise<void> {
   assert.equal(toolCallsCaptured.length, 1);
   assert.equal(toolCallsCaptured[0]?.toolName, GURU_MCP_TOOL_NAMES.budgetGetSummary);
   assert.equal(toolCallsCaptured[0]?.args.appKey, 'demo_app');
+  assert.equal(toolCallResult.page_trace.length, 0);
   assert.equal(toolCallResult.tool_trace[0]?.title, '预算建议 · 平台 / 媒体源');
 
   const clarificationResult = await runAiChat(
@@ -1385,6 +1403,114 @@ async function main(): Promise<void> {
   assert.equal(manualPackAlignedResult.tool_trace[0]?.title, '预算建议 · 平台 / 媒体源');
   assert.ok(manualPackAlignedResult.warnings.some((item) => item.includes('已跳过这次附加')));
 
+  let loadedContextToolCalls = 0;
+  let loadedContextStepIndex = 0;
+  const loadedContextResult = await runAiChat(
+    {
+      message: '帮我看下当前页面这组预算建议',
+      history: [],
+      contextPacks: [],
+      images: [],
+      modelId: 'openai_gpt54',
+      pageContext: {
+        activeSection: 'section-budget',
+        pageLabel: '预算建议',
+        defaults: {
+          appKey: 'demo_app',
+          platform: 'ios',
+          from: '2026-03-01',
+          to: '2026-03-14'
+        },
+        currentFilters: {},
+        loaded_contexts: [
+          {
+            kind: 'budget_summary',
+            title: '当前预算建议结果',
+            summary_markdown: '- 当前列表：12 条\n- 待处理：4 条',
+            applied_filters: {
+              appKey: 'demo_app',
+              platform: 'ios',
+              from: '2026-03-01',
+              to: '2026-03-14'
+            },
+            tool_hint: {
+              type: 'budget_summary',
+              templateId: 'platform_media_source',
+              appKey: 'demo_app',
+              platform: 'ios',
+              from: '2026-03-01',
+              to: '2026-03-14'
+            }
+          }
+        ],
+        recommendedSpecs: [
+          {
+            type: 'budget_summary',
+            templateId: 'platform_media_source',
+            appKey: 'demo_app',
+            platform: 'ios',
+            from: '2026-03-01',
+            to: '2026-03-14'
+          }
+        ],
+        coreSpecs: []
+      }
+    },
+    {
+      buildAiContextPacksViaMcp: async () => ({ packs: [], packSpecs: [], warnings: [] }),
+      callGuruMcpTool: async () => {
+        loadedContextToolCalls += 1;
+        throw new Error('should_not_requery_loaded_context');
+      },
+      requestCompletion: async () => {
+        loadedContextStepIndex += 1;
+        if (loadedContextStepIndex === 1) {
+          return {
+            content: '',
+            toolCalls: [
+              {
+                id: 'tool-loaded-context',
+                name: GURU_MCP_TOOL_NAMES.budgetGetSummary,
+                rawArguments: JSON.stringify({
+                  templateId: 'platform_media_source'
+                }),
+                arguments: {
+                  templateId: 'platform_media_source'
+                }
+              }
+            ],
+            usage: null,
+            raw: {},
+            rawMessage: {
+              tool_calls: [
+                {
+                  id: 'tool-loaded-context',
+                  type: 'function',
+                  function: {
+                    name: GURU_MCP_TOOL_NAMES.budgetGetSummary,
+                    arguments: JSON.stringify({
+                      templateId: 'platform_media_source'
+                    })
+                  }
+                }
+              ]
+            }
+          };
+        }
+        return {
+          content: '结论：先看当前页面已经加载的预算建议结果即可。',
+          toolCalls: [],
+          usage: null,
+          raw: {},
+          rawMessage: {}
+        };
+      }
+    } as never
+  );
+  assert.equal(loadedContextToolCalls, 0);
+  assert.equal(loadedContextResult.page_trace[0]?.title, '当前预算建议结果');
+  assert.equal(loadedContextResult.tool_trace.length, 0);
+
   assert.deepEqual(
     resolveGuruMcpToolForContextPack({
       type: 'budget_summary',
@@ -1618,6 +1744,7 @@ async function main(): Promise<void> {
               : 'dashscope',
         reply: 'ok',
         agent_action: 'answer',
+        page_trace: [],
         tool_trace: [],
         clarification_count: 0,
         usage: null,
@@ -1731,6 +1858,7 @@ async function main(): Promise<void> {
         provider: 'openrouter',
         reply: 'ok',
         agent_action: 'answer',
+        page_trace: [],
         tool_trace: [],
         clarification_count: 0,
         usage: null,
@@ -1760,6 +1888,7 @@ async function main(): Promise<void> {
         provider: 'openai',
         reply: 'ok',
         agent_action: 'answer',
+        page_trace: [],
         tool_trace: [],
         clarification_count: 0,
         usage: null,
@@ -1783,7 +1912,24 @@ async function main(): Promise<void> {
         defaults: {
           appKey: 'demo_app',
           platform: 'ios'
-        }
+        },
+        loaded_contexts: [
+          {
+            kind: 'budget_summary',
+            title: '当前预算建议结果',
+            summary_markdown: '- 当前列表：12 条\n- 待处理：4 条',
+            applied_filters: {
+              appKey: 'demo_app',
+              platform: 'ios'
+            },
+            tool_hint: {
+              type: 'budget_summary',
+              templateId: 'platform_media_source',
+              appKey: 'demo_app',
+              platform: 'ios'
+            }
+          }
+        ]
       })
     );
     openrouterImageForm.append(
@@ -1804,6 +1950,7 @@ async function main(): Promise<void> {
         provider: 'openrouter',
         reply: 'ok',
         agent_action: 'answer',
+        page_trace: [],
         tool_trace: [],
         clarification_count: 0,
         usage: null,
@@ -1817,6 +1964,8 @@ async function main(): Promise<void> {
     });
     assert.deepEqual(capturedAiModelIds, ['openrouter_kimi_k25', 'openai_gpt54', 'openrouter_kimi_k25']);
     assert.equal(capturedPageContexts[2]?.activeSection, 'section-budget');
+    assert.equal(Array.isArray(capturedPageContexts[2]?.loaded_contexts), true);
+    assert.equal(capturedPageContexts[2]?.loaded_contexts?.[0]?.title, '当前预算建议结果');
   });
 
   const qwenOnlyAiRouter = createAiRouter({

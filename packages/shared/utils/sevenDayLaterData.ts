@@ -1,8 +1,9 @@
-import type { RecommendationType } from '../types/models.js';
+import type { RecommendationType, RoasDataStatus } from '../types/models.js';
 import { env } from '../config/env.js';
 import { chQuery } from './clickhouse.js';
 import { getDateStringInTimezone } from './businessDate.js';
 import { pgQuery } from './postgres.js';
+import { resolveRoasDataStatus } from './roasWindow.js';
 
 export const SEVEN_DAY_LATER_FIELD_LABEL = '七天后数据';
 
@@ -42,7 +43,9 @@ interface AsaSevenDayMetricRow {
   purchase_count: number;
   revenue_d7: number;
   d7_roas: number;
-  roas_source_missing: number;
+  covered_cost: number;
+  missing_cost: number;
+  roas_data_status: RoasDataStatus;
 }
 
 function escapeSqlLiteral(value: string): string {
@@ -84,20 +87,40 @@ function formatAsaSevenDayText(
   purchaseCount: number,
   revenueD7: number,
   d7Roas: number,
-  roasSourceMissing: number
+  roasDataStatus: RoasDataStatus
 ): string {
   const cpp = purchaseCount > 0 ? totalCost / purchaseCount : 0;
   const cppText =
-    roasSourceMissing === 1
+    roasDataStatus === 'pending'
       ? '待补齐（源数据缺失）'
+      : roasDataStatus === 'partial'
+        ? purchaseCount > 0
+          ? `${formatUsd(cpp)}（覆盖率达阈值，按已覆盖成本计算）`
+          : totalCost > 0
+            ? '—（覆盖率达阈值，但成熟窗口无购买）'
+            : '-'
+        : roasDataStatus === 'unavailable'
+          ? totalCost > 0
+            ? '暂无成熟数据'
+            : '-'
       : purchaseCount > 0
         ? formatUsd(cpp)
         : totalCost > 0
           ? '—（成熟窗口无购买）'
           : '-';
   const roasText =
-    roasSourceMissing === 1
+    roasDataStatus === 'pending'
       ? '待补齐（源数据缺失）'
+      : roasDataStatus === 'partial'
+        ? totalCost > 0
+          ? revenueD7 > 0
+            ? `${d7Roas.toFixed(2)}（覆盖率达阈值，按已覆盖成本计算）`
+            : `${d7Roas.toFixed(2)}（覆盖率达阈值，按已覆盖成本计算；成熟窗口未观察到D7收入）`
+          : '-'
+        : roasDataStatus === 'unavailable'
+          ? totalCost > 0
+            ? '暂无成熟数据'
+            : '-'
       : totalCost > 0
         ? revenueD7 > 0
           ? d7Roas.toFixed(2)
@@ -225,11 +248,12 @@ async function loadAsaSevenDayMetrics(lookups: SevenDayLaterLookupRow[]): Promis
         campaign,
         adset,
         installs_sum AS installs,
-        total_cost_sum AS total_cost,
-        purchase_count_sum AS purchase_count,
-        revenue_d7_sum AS revenue_d7,
-        if(total_cost_sum > 0, weighted_roas_cost_sum / total_cost_sum, 0) AS d7_roas,
-        max(roas_source_missing_flag) AS roas_source_missing
+        covered_total_cost_sum AS total_cost,
+        covered_purchase_count_sum AS purchase_count,
+        covered_revenue_d7_sum AS revenue_d7,
+        if(covered_total_cost_sum > 0, covered_weighted_roas_cost_sum / covered_total_cost_sum, 0) AS d7_roas,
+        covered_total_cost_sum AS covered_cost,
+        missing_total_cost_sum AS missing_cost
        FROM (
          SELECT
            toString(date) AS target_date,
@@ -239,11 +263,12 @@ async function loadAsaSevenDayMetrics(lookups: SevenDayLaterLookupRow[]): Promis
            campaign,
            adset,
            sum(toFloat64(installs)) AS installs_sum,
-           sum(toFloat64(total_cost)) AS total_cost_sum,
-           sum(toFloat64(purchase_count)) AS purchase_count_sum,
-           sum(toFloat64(revenue_d7)) AS revenue_d7_sum,
-           sum(toFloat64(d7_roas) * toFloat64(total_cost)) AS weighted_roas_cost_sum,
-           max(toUInt8(roas_source_missing)) AS roas_source_missing_flag
+           sumIf(toFloat64(total_cost), toFloat64(total_cost) > 0 AND toUInt8(roas_source_missing) != 1) AS covered_total_cost_sum,
+           sumIf(toFloat64(total_cost), toFloat64(total_cost) > 0 AND toUInt8(roas_source_missing) = 1) AS missing_total_cost_sum,
+           sumIf(toFloat64(purchase_count), toFloat64(total_cost) > 0 AND toUInt8(roas_source_missing) != 1) AS covered_purchase_count_sum,
+           sumIf(toFloat64(revenue_d7), toFloat64(total_cost) > 0 AND toUInt8(roas_source_missing) != 1) AS covered_revenue_d7_sum,
+           sumIf(toFloat64(d7_roas) * toFloat64(total_cost), toFloat64(total_cost) > 0 AND toUInt8(roas_source_missing) != 1) AS covered_weighted_roas_cost_sum,
+           countIf(toFloat64(total_cost) > 0) AS spend_row_count
           FROM asa_keyword_daily_metrics_v2 FINAL
          WHERE date IN (${targetDates.map(escapeSqlLiteral).join(', ')})
            AND app_key IN (${appKeys.map(escapeSqlLiteral).join(', ')})
@@ -274,6 +299,12 @@ async function loadAsaSevenDayMetrics(lookups: SevenDayLaterLookupRow[]): Promis
       })
     );
     if (metric) {
+      const roasDataStatus = resolveRoasDataStatus({
+        hasWindowRows: true,
+        hasSpend: Number(metric.covered_cost || 0) > 0 || Number(metric.missing_cost || 0) > 0,
+        coveredCost: Number(metric.covered_cost || 0),
+        missingCost: Number(metric.missing_cost || 0)
+      });
       result.set(
         recordKey,
         formatAsaSevenDayText(
@@ -283,7 +314,7 @@ async function loadAsaSevenDayMetrics(lookups: SevenDayLaterLookupRow[]): Promis
           Number(metric.purchase_count || 0),
           Number(metric.revenue_d7 || 0),
           Number(metric.d7_roas || 0),
-          Number(metric.roas_source_missing || 0)
+          roasDataStatus
         )
       );
       continue;

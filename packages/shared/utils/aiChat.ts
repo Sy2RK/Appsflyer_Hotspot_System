@@ -38,10 +38,26 @@ export interface AiChatToolTrace {
   brief: string;
 }
 
+export interface AiChatPageTrace {
+  title: string;
+  brief: string;
+}
+
 export interface AiChatHistoryMeta {
   agent_action?: 'answer' | 'clarification';
   clarification_round?: number;
+  page_trace?: AiChatPageTrace[];
   tool_trace?: AiChatToolTrace[];
+}
+
+export interface AiChatLoadedContext {
+  kind?: string;
+  title: string;
+  summary_markdown: string;
+  applied_filters?: Record<string, string | number | boolean | null>;
+  source_section?: string;
+  freshness?: string;
+  tool_hint?: AiContextPackSpec;
 }
 
 export interface AiChatPageContext {
@@ -54,6 +70,7 @@ export interface AiChatPageContext {
     to?: string;
   };
   currentFilters?: Record<string, string | number | boolean | null>;
+  loaded_contexts?: AiChatLoadedContext[];
   recommendedSpecs?: AiContextPackSpec[];
   coreSpecs?: AiContextPackSpec[];
 }
@@ -103,6 +120,7 @@ export interface AiChatResult {
   provider: string;
   reply: string;
   agent_action: 'answer' | 'clarification';
+  page_trace: AiChatPageTrace[];
   tool_trace: AiChatToolTrace[];
   clarification_count: number;
   usage: Record<string, unknown> | null;
@@ -177,6 +195,7 @@ interface AiChatToolExecutionResult {
   content: string;
   warnings: string[];
   success: boolean;
+  source?: 'manual' | 'page' | 'tool' | 'skipped';
 }
 
 interface AiChatRuntimeDeps {
@@ -544,6 +563,15 @@ function normalizeHistory(history: AiChatHistoryMessage[]): AiChatHistoryMessage
                 typeof item.meta.clarification_round === 'number' && Number.isFinite(item.meta.clarification_round)
                   ? item.meta.clarification_round
                   : undefined,
+              page_trace: Array.isArray(item.meta.page_trace)
+                ? item.meta.page_trace
+                    .filter((trace) => trace && typeof trace === 'object')
+                    .map((trace) => ({
+                      title: String(trace.title || '').trim().slice(0, 120),
+                      brief: String(trace.brief || '').trim().slice(0, 160)
+                    }))
+                    .filter((trace) => hasText(trace.title))
+                : undefined,
               tool_trace: Array.isArray(item.meta.tool_trace)
                 ? item.meta.tool_trace
                     .filter((trace) => trace && typeof trace === 'object')
@@ -1485,6 +1513,47 @@ function sanitizePageContextFilterRecord(raw: Record<string, unknown> | undefine
   return Object.fromEntries(entries);
 }
 
+function normalizeLoadedContexts(
+  raw: AiChatLoadedContext[] | undefined,
+  limit = 3
+): AiChatLoadedContext[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .filter((item) => item && typeof item === 'object' && hasText(item.title) && hasText(item.summary_markdown))
+    .slice(0, Math.max(0, limit))
+    .map((item) => ({
+      kind: hasText(item.kind) ? String(item.kind).trim().slice(0, 80) : undefined,
+      title: String(item.title || '').trim().slice(0, 120),
+      summary_markdown: truncateText(String(item.summary_markdown || '').trim(), 900).text,
+      applied_filters: sanitizePageContextFilterRecord(item.applied_filters as Record<string, unknown> | undefined),
+      source_section: hasText(item.source_section) ? String(item.source_section).trim().slice(0, 80) : undefined,
+      freshness: hasText(item.freshness) ? String(item.freshness).trim().slice(0, 80) : undefined,
+      tool_hint: item.tool_hint ? { ...item.tool_hint } : undefined
+    }));
+}
+
+function buildLoadedContextTrace(items: AiChatLoadedContext[] | undefined): AiChatPageTrace[] {
+  return normalizeLoadedContexts(items, 2).map((item) => {
+    const filters = sanitizePageContextFilterRecord(item.applied_filters as Record<string, unknown> | undefined);
+    const detail = [
+      typeof filters.appKey === 'string' ? filters.appKey : '',
+      typeof filters.from === 'string' || typeof filters.to === 'string'
+        ? `${String(filters.from || '不限')}~${String(filters.to || '不限')}`
+        : '',
+      typeof filters.source === 'string' ? (filters.source === 'push' ? '实时回传' : filters.source === 'pull' ? '广告日报' : filters.source) : ''
+    ]
+      .filter(Boolean)
+      .slice(0, 3)
+      .join('｜');
+    return {
+      title: item.title,
+      brief: detail || item.kind || '当前页面结果'
+    };
+  });
+}
+
 function buildAiPageContextPrompt(pageContext?: AiChatPageContext): string {
   if (!pageContext) {
     return '';
@@ -1512,6 +1581,19 @@ function buildAiPageContextPrompt(pageContext?: AiChatPageContext): string {
     .slice(0, 8);
   if (filterEntries.length > 0) {
     lines.push(`- 当前筛选：${filterEntries.join('；')}`);
+  }
+  const loadedContexts = normalizeLoadedContexts(pageContext.loaded_contexts, 3);
+  if (loadedContexts.length > 0) {
+    lines.push('- 当前页面已加载结果（优先直接引用，不要重复查询同一范围）：');
+    loadedContexts.forEach((item) => {
+      const summary = truncateText(item.summary_markdown.replace(/\n{2,}/g, '\n').trim(), 420).text;
+      lines.push(`- ${item.title}`);
+      summary
+        .split('\n')
+        .filter((line) => hasText(line))
+        .slice(0, 6)
+        .forEach((line) => lines.push(`  ${line}`));
+    });
   }
 
   const candidateSpecs = [
@@ -1554,7 +1636,7 @@ function buildAiChatSystemPrompt(input: {
       ? `用户已经手动附带了 ${input.manualPacks.length} 个业务上下文包。请优先使用这些已有上下文，不要重复查询同样的数据。`
       : '如果用户没有手动附带上下文，也可以根据当前页面上下文和工具自行补齐参数。';
   const pageContextRule = input.pageContextPrompt
-    ? `${input.pageContextPrompt}\n在没有明确指定 app/platform/from/to 时，优先沿用上面的页面默认范围。`
+    ? `${input.pageContextPrompt}\n若当前页面已加载结果足以回答，优先直接基于这些结果作答；不要重复调用与这些结果同一范围、同一维度的工具。在没有明确指定 app/platform/from/to 时，优先沿用上面的页面默认范围。`
     : '如果当前页面上下文为空，且问题明确依赖业务数据，请先确认应用、平台或时间范围。';
   return [
     '你是 Hotspot 控制台的 Guru Ads Agent。默认使用简体中文回答。',
@@ -1574,7 +1656,15 @@ function findFallbackContextSpec(
   pageContext: AiChatPageContext | undefined,
   manualSpecs: AiContextPackSpec[]
 ): AiContextPackSpec | null {
-  const allSpecs = [...manualSpecs, ...normalizePageContextSpecs(pageContext?.recommendedSpecs), ...normalizePageContextSpecs(pageContext?.coreSpecs)];
+  const loadedHints = normalizeLoadedContexts(pageContext?.loaded_contexts, 6)
+    .map((item) => item.tool_hint)
+    .filter((item): item is AiContextPackSpec => Boolean(item));
+  const allSpecs = [
+    ...manualSpecs,
+    ...loadedHints,
+    ...normalizePageContextSpecs(pageContext?.recommendedSpecs),
+    ...normalizePageContextSpecs(pageContext?.coreSpecs)
+  ];
   const matched = allSpecs.find((spec) => {
     if (toolName === GURU_MCP_TOOL_NAMES.metricsGetTrend) {
       return spec.type === 'metrics_trend';
@@ -1775,10 +1865,46 @@ function buildManualContextToolCache(
         trace: buildGuruToolTrace(toolCall.name, result),
         content: buildGuruToolResultContent(result),
         warnings: [],
-        success: true
+        success: true,
+        source: 'manual'
       });
     } catch {
       // ignore unsupported manual specs
+    }
+  });
+  return cache;
+}
+
+function buildLoadedContextToolCache(
+  loadedContexts: AiChatLoadedContext[] | undefined
+): Map<string, AiChatToolExecutionResult> {
+  const cache = new Map<string, AiChatToolExecutionResult>();
+  normalizeLoadedContexts(loadedContexts, 6).forEach((item) => {
+    if (!item.tool_hint) {
+      return;
+    }
+    try {
+      const toolCall = resolveGuruMcpToolForContextPack(item.tool_hint);
+      const result: GuruMcpStructuredResult = {
+        title: item.title,
+        summary_markdown: item.summary_markdown,
+        structured: {
+          source: 'loaded_context'
+        },
+        row_count: 0,
+        truncated: false,
+        applied_filters: item.applied_filters || {},
+        warnings: []
+      };
+      cache.set(buildToolSignature(toolCall.name, toolCall.arguments), {
+        trace: buildGuruToolTrace(toolCall.name, result),
+        content: buildGuruToolResultContent(result),
+        warnings: [],
+        success: true,
+        source: 'page'
+      });
+    } catch {
+      // ignore invalid tool hints
     }
   });
   return cache;
@@ -1935,9 +2061,11 @@ export async function runAiChat(
   const shouldEnableThinking =
     modelConfig.supportsThinking && (input.images.length > 0 || contextPromptResult.packsUsed.length > 0);
   const pageContextPrompt = buildAiPageContextPrompt(input.pageContext);
+  const pageTrace = buildLoadedContextTrace(input.pageContext?.loaded_contexts);
   const toolTrace: AiChatToolTrace[] = [];
   const toolTraceSignatures = new Set<string>();
   const manualContextCache = buildManualContextToolCache(packSpecs, packs);
+  const loadedContextCache = buildLoadedContextToolCache(input.pageContext?.loaded_contexts);
   const executedToolCache = new Map<string, AiChatToolExecutionResult>();
   const seenToolCallSignatures = new Set<string>();
   const distinctToolNames = new Set<GuruMcpToolName>();
@@ -2029,12 +2157,19 @@ export async function runAiChat(
           },
           content: buildGuruToolErrorContent(toolCall.name, '为保证时延，本次最多自动查询 2 类数据。'),
           warnings: ['自动查询工具已达上限，已跳过多余查询。'],
-          success: false
+          success: false,
+          source: 'skipped'
         };
       } else if (seenToolCallSignatures.has(signature) && executedToolCache.has(signature)) {
         execution = executedToolCache.get(signature) as AiChatToolExecutionResult;
       } else if (manualContextCache.has(signature)) {
         execution = manualContextCache.get(signature) as AiChatToolExecutionResult;
+        seenToolCallSignatures.add(signature);
+        distinctToolNames.add(toolCall.name);
+        executedToolCache.set(signature, execution);
+        successfulToolCalls += 1;
+      } else if (loadedContextCache.has(signature)) {
+        execution = loadedContextCache.get(signature) as AiChatToolExecutionResult;
         seenToolCallSignatures.add(signature);
         distinctToolNames.add(toolCall.name);
         executedToolCache.set(signature, execution);
@@ -2048,7 +2183,8 @@ export async function runAiChat(
           },
           content: buildGuruToolErrorContent(toolCall.name, '重复的同参工具调用已跳过，请直接基于已有结果回答。'),
           warnings: ['模型重复请求了同一份数据，已自动跳过重复查询。'],
-          success: false
+          success: false,
+          source: 'skipped'
         };
       } else {
         seenToolCallSignatures.add(signature);
@@ -2060,7 +2196,8 @@ export async function runAiChat(
             trace: buildGuruToolTrace(toolCall.name, structuredResult),
             content: buildGuruToolResultContent(structuredResult),
             warnings: Array.isArray(structuredResult.warnings) ? structuredResult.warnings.map((item) => String(item)) : [],
-            success: true
+            success: true,
+            source: 'tool'
           };
           executedToolCache.set(signature, execution);
           successfulToolCalls += 1;
@@ -2079,13 +2216,14 @@ export async function runAiChat(
             },
             content: buildGuruToolErrorContent(toolCall.name, userWarning),
             warnings: [userWarning],
-            success: false
+            success: false,
+            source: 'tool'
           };
         }
       }
 
       mergedWarnings.push(...execution.warnings);
-      if (execution.success && !toolTraceSignatures.has(signature)) {
+      if (execution.success && execution.source !== 'page' && !toolTraceSignatures.has(signature)) {
         toolTrace.push(execution.trace);
         toolTraceSignatures.add(signature);
       }
@@ -2137,6 +2275,7 @@ export async function runAiChat(
     provider: modelConfig.provider,
     reply,
     agent_action: agentAction,
+    page_trace: pageTrace,
     tool_trace: toolTrace,
     clarification_count: nextClarificationCount,
     usage: finalStep.usage,

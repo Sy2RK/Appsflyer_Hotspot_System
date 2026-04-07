@@ -34,8 +34,20 @@ const state = {
   rules: [],
   pullRecords: [],
   keywordRows: [],
+  keywordLoadedAt: '',
   budgetRows: [],
   asaKeywordRows: [],
+  metricsRows: [],
+  metricsQuery: null,
+  metricsLoadedAt: '',
+  pullRecordsLoadedAt: '',
+  budgetLoadedAt: '',
+  asaSummary: null,
+  asaKeywordsLoadedAt: '',
+  dailyBriefPreviewPayload: null,
+  dailyBriefPreviewLoadedAt: '',
+  asaBriefPreviewPayload: null,
+  asaBriefPreviewLoadedAt: '',
   asaStageConfigs: [],
   recommendationPolicies: [],
   bitableExportSources: [],
@@ -902,6 +914,7 @@ function aiChatSourceSectionLabel(sectionId) {
   const mapping = {
     'section-overview': '总览看板',
     'section-metrics': '指标看板',
+    'section-keywords': '关键词生命周期',
     'section-budget': '预算建议',
     'section-asa-keywords': 'ASA 关键词',
     'section-pull-records': '拉取记录'
@@ -1007,6 +1020,392 @@ function buildAIChatPackDisplay(spec) {
     payloadSummary: payloadParts.join('；') || '沿用当前页面的默认应用、平台和时间范围。',
     promptHint: aiChatPackQuestionHint(spec)
   };
+}
+
+function compactAIChatSummary(text, maxLength = 220) {
+  return String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function createAIChatLoadedContext(input) {
+  if (!input || !input.title || !input.summaryMarkdown) {
+    return null;
+  }
+  return {
+    kind: String(input.kind || 'loaded_result').trim(),
+    title: String(input.title || '').trim(),
+    summary_markdown: String(input.summaryMarkdown || '').trim(),
+    applied_filters: input.appliedFilters && typeof input.appliedFilters === 'object' ? { ...input.appliedFilters } : {},
+    source_section: String(input.sourceSection || state.activeSection || '').trim() || undefined,
+    freshness: String(input.freshness || '').trim() || undefined,
+    tool_hint: input.toolHint && typeof input.toolHint === 'object' ? { ...input.toolHint } : undefined
+  };
+}
+
+function topEntriesFromMap(map, limit = 2) {
+  return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
+}
+
+function buildMetricsLoadedContext() {
+  const rows = Array.isArray(state.metricsRows) ? state.metricsRows : [];
+  const query = state.metricsQuery && typeof state.metricsQuery === 'object' ? state.metricsQuery : null;
+  if (!query || rows.length === 0 || !query.appKey) {
+    return [];
+  }
+  const last = rows.at(-1) || {};
+  const previous = rows.length > 1 ? rows.at(-2) || {} : null;
+  const latestValue = Number(last.value || 0);
+  const previousValue = previous ? Number(previous.value || 0) : null;
+  const delta =
+    previousValue != null && Number.isFinite(previousValue) && Math.abs(previousValue) > 1e-9
+      ? ((latestValue - previousValue) / previousValue) * 100
+      : null;
+  const summaryLines = [
+    `- 应用：${productViewName(query.appKey, query.platform || 'unknown')}`,
+    `- 时间范围：${query.from || '不限'} ~ ${query.to || '不限'}`,
+    `- 数据来源：${query.source === 'push' ? '实时回传（小时）' : '广告日报（天）'}`,
+    `- 指标：${metricLabel(query.metric || 'installs')}`,
+    `- 数据点：${rows.length} 个`,
+    `- 最新点：${last.hour || last.date || '-'} = ${toFixed2(latestValue)}${delta == null ? '' : `（较上一点 ${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%）`}`
+  ];
+  if (query.eventName) {
+    summaryLines.splice(4, 0, `- 事件：${query.eventName}`);
+  }
+  return [
+    createAIChatLoadedContext({
+      kind: 'metrics_trend',
+      title: '当前指标趋势结果',
+      summaryMarkdown: summaryLines.join('\n'),
+      appliedFilters: {
+        appKey: query.appKey,
+        platform: query.platform || '',
+        from: query.from || '',
+        to: query.to || '',
+        source: query.source,
+        metric: query.metric,
+        eventName: query.eventName || ''
+      },
+      sourceSection: 'section-metrics',
+      freshness: state.metricsLoadedAt || undefined,
+      toolHint: resolveDefaultMetricsPack({
+        appKey: query.appKey,
+        platform: query.platform || '',
+        from: query.from || '',
+        to: query.to || '',
+        source: query.source,
+        metric: query.metric,
+        eventName: query.eventName || '',
+        templateId: 'media_source'
+      })
+    })
+  ].filter(Boolean);
+}
+
+function buildKeywordLifecycleLoadedContext() {
+  const rows = Array.isArray(state.keywordRows) ? state.keywordRows : [];
+  const appKey = String(el.keywordAppSelect?.value || '').trim();
+  if (!appKey || rows.length === 0) {
+    return [];
+  }
+  const platform = String(el.keywordPlatformSelect?.value || '').trim().toLowerCase();
+  const from = String(el.keywordFromInput?.value || '').trim();
+  const to = String(el.keywordToInput?.value || '').trim();
+  const stage = String(el.keywordStageSelect?.value || '').trim();
+  const stageCounts = new Map();
+  rows.forEach((row) => {
+    const key = String(row.current_stage || 'unknown').trim() || 'unknown';
+    stageCounts.set(key, (stageCounts.get(key) || 0) + 1);
+  });
+  const topStages = topEntriesFromMap(stageCounts, 3)
+    .map(([key, count]) => `${lifecycleStageLabel(key)} ${count} 个`)
+    .join('，');
+  const summaryLines = [
+    `- 应用：${productViewName(appKey, platform || 'unknown')}`,
+    `- 时间范围：${from || '不限'} ~ ${to || '不限'}`,
+    `- 当前关键词生命周期：${rows.length} 条，全部命中 ${state.keywordTotal || rows.length} 条`,
+    topStages ? `- 阶段分布：${topStages}` : ''
+  ].filter(Boolean);
+  if (stage) {
+    summaryLines.push(`- 阶段筛选：${lifecycleStageLabel(stage)}`);
+  }
+  return [
+    createAIChatLoadedContext({
+      kind: 'keyword_lifecycle',
+      title: '当前关键词生命周期结果',
+      summaryMarkdown: summaryLines.join('\n'),
+      appliedFilters: {
+        appKey,
+        platform: platform || '',
+        from,
+        to,
+        stage: stage || ''
+      },
+      sourceSection: 'section-keywords',
+      freshness: state.keywordLoadedAt || undefined
+    })
+  ].filter(Boolean);
+}
+
+function buildBudgetLoadedContext() {
+  const rows = Array.isArray(state.budgetRows) ? state.budgetRows : [];
+  const appKey = String(el.budgetAppSelect?.value || '').trim();
+  if (!appKey || rows.length === 0) {
+    return [];
+  }
+  const platform = String(el.budgetPlatformSelect?.value || '').trim().toLowerCase();
+  const from = String(el.budgetFromInput?.value || '').trim();
+  const to = String(el.budgetToInput?.value || '').trim();
+  const status = String(el.budgetStatusSelect?.value || '').trim();
+  const executionStatus = String(el.budgetExecutionStatusInput?.value || '').trim();
+  const pendingCount = rows.filter((row) => row.status === 'pending').length;
+  const adoptedCount = rows.filter((row) => row.is_adopted).length;
+  const sourceCounts = new Map();
+  rows.forEach((row) => {
+    const key = String(row.media_source || 'unknown').trim() || 'unknown';
+    sourceCounts.set(key, (sourceCounts.get(key) || 0) + 1);
+  });
+  const topSources = topEntriesFromMap(sourceCounts, 2)
+    .map(([key, count]) => `${key} ${count} 条`)
+    .join('，');
+  const summaryLines = [
+    `- 应用：${productViewName(appKey, platform || 'unknown')}`,
+    `- 时间范围：${from || '不限'} ~ ${to || '不限'}`,
+    `- 当前列表：${rows.length} 条，全部命中 ${state.budgetTotal || rows.length} 条`,
+    `- 待处理：${pendingCount} 条；已采纳：${adoptedCount} 条`,
+    topSources ? `- 主要媒体源：${topSources}` : ''
+  ].filter(Boolean);
+  if (status) {
+    summaryLines.push(`- 建议状态筛选：${budgetStatusLabel(status)}`);
+  }
+  if (executionStatus) {
+    summaryLines.push(`- 执行状态筛选：${executionStatus}`);
+  }
+  return [
+    createAIChatLoadedContext({
+      kind: 'budget_summary',
+      title: '当前预算建议结果',
+      summaryMarkdown: summaryLines.join('\n'),
+      appliedFilters: {
+        appKey,
+        platform: platform || '',
+        from,
+        to,
+        status: status || '',
+        executionStatus: executionStatus || ''
+      },
+      sourceSection: 'section-budget',
+      freshness: state.budgetLoadedAt || undefined,
+      toolHint: resolveBudgetPack({
+        appKey,
+        platform: platform || '',
+        from,
+        to,
+        status: status || '',
+        executionStatus: executionStatus || '',
+        templateId: 'platform_media_source'
+      })
+    })
+  ].filter(Boolean);
+}
+
+function buildAsaLoadedContext() {
+  const rows = Array.isArray(state.asaKeywordRows) ? state.asaKeywordRows : [];
+  const summary = state.asaSummary && typeof state.asaSummary === 'object' ? state.asaSummary : {};
+  const appKey = String(el.asaKeywordAppSelect?.value || '').trim();
+  if (!appKey || rows.length === 0) {
+    return [];
+  }
+  const platform = String(el.asaKeywordPlatformSelect?.value || '').trim().toLowerCase();
+  const stage = String(el.asaKeywordStageSelect?.value || '').trim();
+  const from = String(el.asaKeywordFromInput?.value || '').trim();
+  const to = String(el.asaKeywordToInput?.value || '').trim();
+  const stageCounts = new Map();
+  rows.forEach((row) => {
+    const key = String(row.current_stage || 'unknown').trim() || 'unknown';
+    stageCounts.set(key, (stageCounts.get(key) || 0) + 1);
+  });
+  const topStages = topEntriesFromMap(stageCounts, 3)
+    .map(([key, count]) => `${asaStageLabel(key)} ${count} 个`)
+    .join('，');
+  const summaryLines = [
+    `- 应用：${productViewName(appKey, platform || 'unknown')}`,
+    `- 时间范围：${from || '不限'} ~ ${to || '不限'}`,
+    `- 当前关键词：${rows.length} 条，汇总关键词数 ${summary.keyword_count || rows.length}`,
+    `- 安装：${toFixed2(summary.installs || 0)}；成本：$${toFixed2(summary.total_cost || 0)}`,
+    topStages ? `- 阶段分布：${topStages}` : ''
+  ].filter(Boolean);
+  if (stage) {
+    summaryLines.push(`- 阶段筛选：${asaStageLabel(stage)}`);
+  }
+  return [
+    createAIChatLoadedContext({
+      kind: 'asa_keyword_summary',
+      title: '当前 ASA 关键词结果',
+      summaryMarkdown: summaryLines.join('\n'),
+      appliedFilters: {
+        appKey,
+        platform: platform || '',
+        from,
+        to,
+        stage: stage || ''
+      },
+      sourceSection: 'section-asa-keywords',
+      freshness: state.asaKeywordsLoadedAt || undefined,
+      toolHint: resolveAsaPack({
+        appKey,
+        platform: platform || '',
+        from,
+        to,
+        stage: stage || '',
+        templateId: 'stage'
+      })
+    })
+  ].filter(Boolean);
+}
+
+function buildPullRecordsLoadedContext() {
+  const rows = Array.isArray(state.pullRecords) ? state.pullRecords : [];
+  const appKey = String(el.pullRecordsAppSelect?.value || '').trim();
+  if (!appKey || rows.length === 0) {
+    return [];
+  }
+  const platform = String(el.pullRecordsPlatformSelect?.value || '').trim().toLowerCase();
+  const from = String(el.pullRecordsFromInput?.value || '').trim();
+  const to = String(el.pullRecordsToInput?.value || '').trim();
+  const mediaSource = String(el.pullRecordsMediaSourceInput?.value || '').trim();
+  const campaign = String(el.pullRecordsCampaignInput?.value || '').trim();
+  const totalInstalls = rows.reduce((sum, row) => sum + Number(row.installs || 0), 0);
+  const totalCost = rows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
+  const sourceCounts = new Map();
+  rows.forEach((row) => {
+    const key = String(row.media_source || 'unknown').trim() || 'unknown';
+    sourceCounts.set(key, (sourceCounts.get(key) || 0) + Number(row.installs || 0));
+  });
+  const topSources = topEntriesFromMap(sourceCounts, 2)
+    .map(([key, installs]) => `${key} ${toFixed2(installs)} 安装`)
+    .join('，');
+  const summaryLines = [
+    `- 应用：${productViewName(appKey, platform || 'unknown')}`,
+    `- 时间范围：${from || '不限'} ~ ${to || '不限'}`,
+    `- 当前拉取记录：${rows.length} 条，安装 ${toFixed2(totalInstalls)}，成本 $${toFixed2(totalCost)}`,
+    topSources ? `- 主要来源：${topSources}` : ''
+  ].filter(Boolean);
+  if (mediaSource) {
+    summaryLines.push(`- 媒体源筛选：${mediaSource}`);
+  }
+  if (campaign) {
+    summaryLines.push(`- Campaign 筛选：${campaign}`);
+  }
+  return [
+    createAIChatLoadedContext({
+      kind: 'pull_records',
+      title: '当前拉取记录结果',
+      summaryMarkdown: summaryLines.join('\n'),
+      appliedFilters: {
+        appKey,
+        platform: platform || '',
+        from,
+        to,
+        source: 'pull',
+        mediaSource: mediaSource || '',
+        campaign: campaign || ''
+      },
+      sourceSection: 'section-pull-records',
+      freshness: state.pullRecordsLoadedAt || undefined,
+      toolHint: resolveDefaultMetricsPack({
+        appKey,
+        platform: platform || '',
+        from,
+        to,
+        source: 'pull',
+        metric: 'installs',
+        templateId: 'campaign'
+      })
+    })
+  ].filter(Boolean);
+}
+
+function buildDailyBriefLoadedContext() {
+  const payload = state.dailyBriefPreviewPayload;
+  if (!payload || !(el.dailyBriefModal instanceof HTMLElement) || el.dailyBriefModal.classList.contains('hidden')) {
+    return [];
+  }
+  const report = payload.report || payload || {};
+  const summary = report.summary || {};
+  const actionCount = Array.isArray(report.action_items) ? report.action_items.length : 0;
+  return [
+    createAIChatLoadedContext({
+      kind: 'daily_brief_preview',
+      title: '当前每日简报预览',
+      summaryMarkdown: [
+        `- 报告日期：${report.report_date || '-'}`,
+        `- 产品覆盖：${summary.apps_with_data || 0}/${summary.app_count || 0}`,
+        `- 安装：${toFixed2(summary.total_installs || 0)}；成本：$${toFixed2(summary.total_cost || 0)}`,
+        `- 待处理预算：${summary.pending_budget_actions || 0}；建议动作：${actionCount}`,
+        `- 今日判断：${compactAIChatSummary(report.today_judgment || '暂无判断', 140)}`
+      ].join('\n'),
+      appliedFilters: {
+        reportDate: String(report.report_date || '').trim(),
+        renderMode: String(report.render_mode || '').trim()
+      },
+      sourceSection: 'section-overview',
+      freshness: state.dailyBriefPreviewLoadedAt || undefined
+    })
+  ].filter(Boolean);
+}
+
+function buildAsaBriefLoadedContext() {
+  const payload = state.asaBriefPreviewPayload;
+  if (!payload || !(el.asaBriefModal instanceof HTMLElement) || el.asaBriefModal.classList.contains('hidden')) {
+    return [];
+  }
+  const report = payload.report || payload || {};
+  const summary = report.summary || {};
+  const actionCount = Array.isArray(report.action_rows) ? report.action_rows.length : 0;
+  return [
+    createAIChatLoadedContext({
+      kind: 'asa_brief_preview',
+      title: '当前 ASA 简报预览',
+      summaryMarkdown: [
+        `- 报告日期：${report.report_date || '-'}`,
+        `- 当前阶段：${asaStageLabel(report.current_stage)}`,
+        `- 关键词数：${summary.keyword_count || 0}；安装：${toFixed2(summary.installs || 0)}；成本：$${toFixed2(summary.total_cost || 0)}`,
+        `- 建议动作：${actionCount}`,
+        `- 今日判断：${compactAIChatSummary(report.today_judgment || '暂无判断', 140)}`
+      ].join('\n'),
+      appliedFilters: {
+        reportDate: String(report.report_date || '').trim(),
+        currentStage: String(report.current_stage || '').trim()
+      },
+      sourceSection: 'section-overview',
+      freshness: state.asaBriefPreviewLoadedAt || undefined
+    })
+  ].filter(Boolean);
+}
+
+function buildAIChatLoadedContexts() {
+  const modalContexts = [...buildDailyBriefLoadedContext(), ...buildAsaBriefLoadedContext()];
+  if (modalContexts.length > 0) {
+    return modalContexts;
+  }
+  if (state.activeSection === 'section-metrics') {
+    return buildMetricsLoadedContext();
+  }
+  if (state.activeSection === 'section-keywords') {
+    return buildKeywordLifecycleLoadedContext();
+  }
+  if (state.activeSection === 'section-budget') {
+    return buildBudgetLoadedContext();
+  }
+  if (state.activeSection === 'section-asa-keywords') {
+    return buildAsaLoadedContext();
+  }
+  if (state.activeSection === 'section-pull-records') {
+    return buildPullRecordsLoadedContext();
+  }
+  return [];
 }
 
 function isAIChatNearBottom() {
@@ -1188,6 +1587,27 @@ function renderAIChatMessageToolTrace(items) {
   `;
 }
 
+function renderAIChatMessagePageTrace(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return '';
+  }
+  return `
+    <div class="ai-chat-message-trace">
+      <span class="ai-chat-message-trace-label">已附加当前页面结果</span>
+      <div class="ai-chat-message-attachments">
+        ${items
+          .map((item) => {
+            const title = String(item.title || '').trim();
+            const brief = String(item.brief || '').trim();
+            const text = brief ? `${title}｜${brief}` : title || '当前页面结果';
+            return `<span class="ai-chat-message-chip">${escapeHtml(text)}</span>`;
+          })
+          .join('')}
+      </div>
+    </div>
+  `;
+}
+
 function renderAIChatMessages() {
   if (!(el.aiChatMessages instanceof HTMLElement)) {
     return;
@@ -1195,9 +1615,35 @@ function renderAIChatMessages() {
   const shouldStick = isAIChatNearBottom();
   const rows = Array.isArray(state.aiChat.messages) ? state.aiChat.messages : [];
   if (rows.length === 0) {
+    const loadedContexts = buildAIChatLoadedContexts();
+    const loadedContextSummary =
+      loadedContexts.length > 0
+        ? loadedContexts
+            .slice(0, 2)
+            .map((item) => {
+              const filters = item.applied_filters || {};
+              const detail = [
+                String(filters.appKey || '').trim(),
+                filters.from || filters.to ? `${filters.from || '不限'}~${filters.to || '不限'}` : '',
+                String(item.title || '').trim()
+              ]
+                .filter(Boolean)
+                .join(' / ');
+              return `<span class="ai-chat-message-chip">${escapeHtml(detail || item.title || '当前页面结果')}</span>`;
+            })
+            .join('')
+        : '';
     el.aiChatMessages.innerHTML = `
       <div class="ai-chat-empty">
         <p>开始对话...(*´∀&#96;)~♥</p>
+        ${
+          loadedContextSummary
+            ? `<div class="ai-chat-message-trace">
+                <span class="ai-chat-message-trace-label">当前已识别页面结果</span>
+                <div class="ai-chat-message-attachments">${loadedContextSummary}</div>
+              </div>`
+            : ''
+        }
       </div>
     `;
     scrollAIChatToBottom(true);
@@ -1216,6 +1662,7 @@ function renderAIChatMessages() {
         <div class="ai-chat-message ${roleClass}">
           <div class="ai-chat-message-meta">${escapeHtml(metaText)}</div>
           <div class="ai-chat-message-bubble ${bubble.bubbleClass}">${bubble.bubbleHtml}</div>
+          ${renderAIChatMessagePageTrace(item.pageTrace)}
           ${renderAIChatMessageToolTrace(item.toolTrace)}
           ${renderAIChatMessageAttachments(item.attachments)}
         </div>
@@ -1425,7 +1872,9 @@ function buildCoreAIChatPackCards() {
 function buildAIChatPageContext() {
   const recommendedCards = buildRecommendedAIChatPackCards().filter((card) => card && card.spec && card.spec.appKey);
   const coreCards = buildCoreAIChatPackCards().filter((card) => card && card.spec && card.spec.appKey);
+  const loadedContexts = buildAIChatLoadedContexts().filter(Boolean);
   const primarySpec =
+    loadedContexts[0]?.tool_hint ||
     recommendedCards[0]?.spec ||
     coreCards[0]?.spec ||
     resolveDefaultMetricsPack({ templateId: 'media_source' });
@@ -1454,6 +1903,7 @@ function buildAIChatPageContext() {
     pageLabel: aiChatSourceSectionLabel(state.activeSection),
     defaults,
     currentFilters,
+    loaded_contexts: loadedContexts,
     recommendedSpecs: recommendedCards.map((card) => ({ ...card.spec })),
     coreSpecs: coreCards.map((card) => ({ ...card.spec }))
   };
@@ -1738,6 +2188,12 @@ async function sendAIChat(event) {
         ? {
             agent_action: item.meta.agentAction || undefined,
             clarification_round: item.meta.clarificationRound || undefined,
+            page_trace: Array.isArray(item.pageTrace)
+              ? item.pageTrace.map((trace) => ({
+                  title: trace.title,
+                  brief: trace.brief
+                }))
+              : undefined,
             tool_trace: Array.isArray(item.toolTrace)
               ? item.toolTrace.map((trace) => ({
                   tool: trace.tool,
@@ -1765,7 +2221,7 @@ async function sendAIChat(event) {
   const pendingMessage = {
     id: aiChatMessageId(),
     role: 'assistant',
-    content: '处理中...',
+    content: '处理中',
     attachments: [],
     createdAt: new Date().toISOString(),
     modelLabel: currentModelLabel || undefined,
@@ -1819,6 +2275,15 @@ async function sendAIChat(event) {
 
     const result = body.data || {};
     state.aiChat.messages = (state.aiChat.messages || []).filter((item) => item.id !== pendingMessage.id);
+    const pageTrace = Array.isArray(result.page_trace)
+      ? result.page_trace
+          .filter((item) => item && typeof item === 'object')
+          .map((item) => ({
+            title: String(item.title || '').trim(),
+            brief: String(item.brief || '').trim()
+          }))
+          .filter((item) => item.title)
+      : [];
     const toolTrace = Array.isArray(result.tool_trace)
       ? result.tool_trace
           .filter((item) => item && typeof item === 'object')
@@ -1836,6 +2301,7 @@ async function sendAIChat(event) {
       role: 'assistant',
       content: String(result.reply || '').trim() || '模型没有返回可展示内容。',
       modelLabel: String(result.model_label || currentModelLabel || '').trim() || undefined,
+      pageTrace,
       toolTrace,
       meta: {
         agentAction,
@@ -2558,6 +3024,13 @@ function renderMarkdownHtml(raw) {
 }
 
 function renderAIChatMessageBubble(item) {
+  if (item.pending) {
+    return {
+      bubbleClass: 'is-pending',
+      bubbleHtml:
+        '<span class="ai-chat-pending-copy">处理中</span><span class="ai-chat-dot-loader" aria-hidden="true">...</span>'
+    };
+  }
   if (item.role === 'user') {
     return {
       bubbleClass: 'is-plain',
@@ -4855,6 +5328,8 @@ async function previewDailyBrief(event) {
   const params = new URLSearchParams({ reportDate });
   selectedMediaSources.forEach((item) => params.append('mediaSources', item));
   const body = await api(`/api/daily-brief/preview?${params.toString()}`);
+  state.dailyBriefPreviewPayload = body.data || null;
+  state.dailyBriefPreviewLoadedAt = new Date().toISOString();
   renderDailyBriefModal(body.data, 'preview');
   el.dailyBriefStatus.textContent = `已生成 ${reportDate} 的日报预览，可直接发送到飞书。`;
 }
@@ -4880,6 +5355,8 @@ async function sendDailyBriefOnce() {
       method: 'POST',
       body: JSON.stringify({ reportDate, force: true, mediaSources: selectedMediaSources })
     });
+    state.dailyBriefPreviewPayload = body.data || null;
+    state.dailyBriefPreviewLoadedAt = new Date().toISOString();
     renderDailyBriefModal(body.data, 'send');
     el.dailyBriefStatus.textContent = `日报已发送到飞书：${reportDate}`;
     showToast('每日简报已发送到飞书');
@@ -5261,6 +5738,7 @@ async function loadPullRecords(event, pageOverride) {
 
   const body = await api(`/api/pull-records?${params.toString()}`);
   state.pullRecords = Array.isArray(body.data) ? body.data : [];
+  state.pullRecordsLoadedAt = new Date().toISOString();
   state.pullPage = Number(body.meta?.page || 1);
   state.pullTotalPages = Number(body.meta?.totalPages || 1);
   state.pullTotal = Number(body.meta?.total || 0);
@@ -5435,6 +5913,7 @@ async function loadKeywordLifecycle(event, pageOverride) {
 
   const body = await api(`/api/keywords/lifecycle?${params.toString()}`);
   state.keywordRows = Array.isArray(body.data) ? body.data : [];
+  state.keywordLoadedAt = new Date().toISOString();
   state.keywordPage = Number(body.meta?.page || 1);
   state.keywordTotalPages = Number(body.meta?.totalPages || 1);
   state.keywordTotal = Number(body.meta?.total || 0);
@@ -5596,6 +6075,7 @@ async function loadBudgetRecommendations(event, pageOverride) {
 
   const body = await api(`/api/budget/recommendations?${params.toString()}`);
   state.budgetRows = Array.isArray(body.data) ? body.data : [];
+  state.budgetLoadedAt = new Date().toISOString();
   state.budgetPage = Number(body.meta?.page || 1);
   state.budgetTotalPages = Number(body.meta?.totalPages || 1);
   state.budgetTotal = Number(body.meta?.total || 0);
@@ -5714,6 +6194,7 @@ async function triggerBudgetRecompute() {
 }
 
 function updateAsaSummary(summary = {}) {
+  state.asaSummary = summary && typeof summary === 'object' ? { ...summary } : {};
   const totalCost = Number(summary.total_cost || 0);
   const installs = Number(summary.installs || 0);
   const revenueD7 = Number(summary.revenue_d7 || 0);
@@ -6033,6 +6514,7 @@ async function loadAsaKeywords(event, pageOverride) {
 
   const body = await api(`/api/asa-keywords?${params.toString()}`);
   state.asaKeywordRows = Array.isArray(body.data) ? body.data : [];
+  state.asaKeywordsLoadedAt = new Date().toISOString();
   state.asaKeywordPage = Number(body.meta?.page || 1);
   state.asaKeywordTotalPages = Number(body.meta?.totalPages || 1);
   state.asaKeywordTotal = Number(body.meta?.total || 0);
@@ -6216,6 +6698,8 @@ async function previewAsaBrief(event) {
   if (appKey) params.set('appKey', appKey);
   if (platform) params.set('platform', platform);
   const body = await api(`/api/asa-keywords/brief/preview?${params.toString()}`);
+  state.asaBriefPreviewPayload = body.data || null;
+  state.asaBriefPreviewLoadedAt = new Date().toISOString();
   renderAsaBriefModal(body.data, 'preview');
   el.asaBriefStatus.textContent = `已生成 ${reportDate} 的 ASA 简报预览，建议动作会随简报一起发送。`;
 }
@@ -6229,6 +6713,8 @@ async function sendAsaBrief() {
     method: 'POST',
     body: JSON.stringify({ reportDate, appKey: appKey || undefined, platform: platform || undefined, force: true })
   });
+  state.asaBriefPreviewPayload = body.data || null;
+  state.asaBriefPreviewLoadedAt = new Date().toISOString();
   renderAsaBriefModal(body.data, 'send');
   el.asaBriefStatus.textContent = `ASA 简报已发送到飞书：${reportDate}，建议动作已随简报一并发送。`;
   showToast('ASA 简报已发送到飞书');
@@ -6273,6 +6759,17 @@ async function loadMetrics(event) {
 
   const body = await api(`/api/metrics?${params.toString()}`);
   const rows = body.data || [];
+  state.metricsRows = Array.isArray(rows) ? rows : [];
+  state.metricsQuery = {
+    appKey,
+    platform,
+    from: params.get('from') || '',
+    to: params.get('to') || '',
+    source,
+    metric,
+    eventName
+  };
+  state.metricsLoadedAt = new Date().toISOString();
   const chartRows = rows.map((item) => ({
     ...item,
     label: item.hour || item.date,

@@ -393,6 +393,28 @@ function aggregateKeywordValueRevenueRows(rows: KeywordValueRevenueAggRow[]): Ma
   return aggregate;
 }
 
+function accumulateKeywordValueRevenueGroupRow(
+  aggregate: Map<string, KeywordValueRevenueAggRow>,
+  row: KeywordValueRevenueAggRow
+): void {
+  const key = buildKeywordValueSourceGroupKey({
+    install_date: row.install_date,
+    platform: row.platform,
+    media_source: row.media_source,
+    campaign: row.campaign
+  });
+  const existing = aggregate.get(key);
+  if (existing) {
+    existing.raw_event_count += row.raw_event_count;
+    existing.purchase_count += row.purchase_count;
+    existing.revenue_d7 += row.revenue_d7;
+    existing.d7_roas = row.source_complete && row.d7_roas > 0 ? row.d7_roas : existing.d7_roas;
+    existing.source_complete = existing.source_complete || row.source_complete;
+    return;
+  }
+  aggregate.set(key, { ...row, country: 'unknown' });
+}
+
 export function mergeKeywordValueRevenueRows(rowsList: KeywordValueRevenueAggRow[][]): KeywordValueRevenueAggRow[] {
   const merged = new Map<string, KeywordValueRevenueAggRow>();
   for (const rows of rowsList) {
@@ -642,6 +664,20 @@ function buildKeywordValueSourceKey(input: {
   ].join('|');
 }
 
+function buildKeywordValueSourceGroupKey(input: {
+  install_date: string;
+  platform: string;
+  media_source: string;
+  campaign: string;
+}): string {
+  return [
+    input.install_date,
+    normalizeSourceDimension(input.platform),
+    normalizeSourceDimension(input.media_source),
+    normalizeSourceDimension(input.campaign)
+  ].join('|');
+}
+
 export function buildKeywordValueRows(
   appKey: string,
   rows: PullAggRow[],
@@ -651,6 +687,7 @@ export function buildKeywordValueRows(
 ): KeywordValueFactRow[] {
   const rules = rulesByApp.get(appKey) ?? [];
   const revenueMap = new Map<string, KeywordValueRevenueAggRow>();
+  const revenueAllCountriesMap = new Map<string, KeywordValueRevenueAggRow>();
   for (const row of revenueRows) {
     revenueMap.set(
       buildKeywordValueSourceKey({
@@ -662,9 +699,11 @@ export function buildKeywordValueRows(
       }),
       row
     );
+    accumulateKeywordValueRevenueGroupRow(revenueAllCountriesMap, row);
   }
 
   const aggregate = new Map<string, KeywordValueCostAgg>();
+  const pullCountryGroupStats = new Map<string, { hasPreciseCountry: boolean }>();
   for (const row of rows) {
     const extracted = extractKeywordFromCampaign(row.campaign, rules);
     const installDate = row.report_date;
@@ -672,13 +711,20 @@ export function buildKeywordValueRows(
     const campaign = row.campaign || 'unknown';
     const mediaSource = row.media_source || 'unknown';
     const country = row.country || 'unknown';
-    const revenueKey = buildKeywordValueSourceKey({
+    const sourceGroupKey = buildKeywordValueSourceGroupKey({
       install_date: installDate,
       platform,
       media_source: mediaSource,
-      country,
       campaign
     });
+    const existingGroupStats = pullCountryGroupStats.get(sourceGroupKey);
+    if (existingGroupStats) {
+      existingGroupStats.hasPreciseCountry ||= normalizeSourceDimension(country) !== 'unknown';
+    } else {
+      pullCountryGroupStats.set(sourceGroupKey, {
+        hasPreciseCountry: normalizeSourceDimension(country) !== 'unknown'
+      });
+    }
     const key = [
       installDate,
       appKey,
@@ -719,7 +765,7 @@ export function buildKeywordValueRows(
   }
 
   return Array.from(aggregate.values()).flatMap((row) => {
-    const revenue = revenueMap.get(
+    const exactRevenue = revenueMap.get(
       buildKeywordValueSourceKey({
         install_date: row.install_date,
         platform: row.platform,
@@ -728,6 +774,17 @@ export function buildKeywordValueRows(
         campaign: row.campaign
       })
     );
+    const sourceGroupKey = buildKeywordValueSourceGroupKey({
+      install_date: row.install_date,
+      platform: row.platform,
+      media_source: row.media_source,
+      campaign: row.campaign
+    });
+    const hasPreciseCountry = pullCountryGroupStats.get(sourceGroupKey)?.hasPreciseCountry ?? false;
+    const revenue =
+      normalizeSourceDimension(row.country) === 'unknown' && !hasPreciseCountry
+        ? revenueAllCountriesMap.get(sourceGroupKey) ?? exactRevenue
+        : exactRevenue;
     const revenueSourceMissing = revenue?.source_complete ? 0 : 1;
     const purchaseCount = revenue ? revenue.purchase_count : 0;
     const revenueD7 = revenue ? revenue.revenue_d7 : 0;
