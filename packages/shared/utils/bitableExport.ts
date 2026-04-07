@@ -857,6 +857,9 @@ function formatBudgetCurrentValue(row: Record<string, unknown>): string {
     if (roasStatus === 'partial') {
       return `ROAS ${currentRoas.toFixed(2)}（按已覆盖成本计算） / eCPI $${currentEcpi.toFixed(2)}`;
     }
+    if (roasStatus === 'partial_low') {
+      return `ROAS ${currentRoas.toFixed(2)}（覆盖率偏低，仅供参考） / eCPI $${currentEcpi.toFixed(2)}`;
+    }
     if (roasStatus === 'unavailable') {
       return `ROAS 暂无成熟数据 / 当前 eCPI $${currentEcpi.toFixed(2)}`;
     }
@@ -901,6 +904,9 @@ function formatAsaCurrentValue(row: Record<string, unknown>): string {
     }
     if (roasStatus === 'partial') {
       return `ROAS ${Number(row.current_d7_roas || 0).toFixed(2)}（按已覆盖成本计算） / CPP $${Number(row.current_cpp || 0).toFixed(2)}（按已覆盖成本计算）`;
+    }
+    if (roasStatus === 'partial_low') {
+      return `ROAS ${Number(row.current_d7_roas || 0).toFixed(2)}（覆盖率偏低，仅供参考） / CPP $${Number(row.current_cpp || 0).toFixed(2)}（覆盖率偏低，仅供参考）`;
     }
     if (roasStatus === 'unavailable') {
       return 'ROAS 暂无成熟数据 / CPP 暂无成熟数据';

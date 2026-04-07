@@ -2348,6 +2348,13 @@ function formatAsaSummaryCpp(input: {
         ? '—（覆盖率达阈值，但成熟窗口无购买）'
         : '-';
   }
+  if (status === 'partial_low') {
+    return Number(input.purchase_count || 0) > 0
+      ? `$${Number(input.cpp || 0).toFixed(2)}（覆盖率偏低，仅供参考）`
+      : Number(input.total_cost || 0) > 0
+        ? '—（覆盖率偏低，成熟窗口无购买）'
+        : '-';
+  }
   if (status === 'unavailable') {
     return Number(input.total_cost || 0) > 0 ? '暂无成熟数据' : '-';
   }
@@ -2373,6 +2380,13 @@ function formatAsaSummaryRoas(input: {
     return hasCostWithoutD7Revenue(input)
       ? `${value}（覆盖率达阈值，按已覆盖成本计算；成熟窗口未观察到 D7 收入）`
       : `${value}（覆盖率达阈值，按已覆盖成本计算）`;
+  }
+  if (status === 'partial_low') {
+    if (Number(input.total_cost || 0) <= 0) return '-';
+    const value = `${Number(input.d7_roas || 0).toFixed(2)}`;
+    return hasCostWithoutD7Revenue(input)
+      ? `${value}（覆盖率偏低，仅供参考；成熟窗口未观察到 D7 收入）`
+      : `${value}（覆盖率偏低，仅供参考）`;
   }
   if (status === 'unavailable') {
     return Number(input.total_cost || 0) > 0 ? '暂无成熟数据' : '-';

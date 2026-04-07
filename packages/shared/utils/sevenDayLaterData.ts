@@ -99,15 +99,21 @@ function formatAsaSevenDayText(
           : totalCost > 0
             ? '—（覆盖率达阈值，但成熟窗口无购买）'
             : '-'
-        : roasDataStatus === 'unavailable'
-          ? totalCost > 0
-            ? '暂无成熟数据'
-            : '-'
-      : purchaseCount > 0
-        ? formatUsd(cpp)
-        : totalCost > 0
-          ? '—（成熟窗口无购买）'
-          : '-';
+        : roasDataStatus === 'partial_low'
+          ? purchaseCount > 0
+            ? `${formatUsd(cpp)}（覆盖率偏低，仅供参考）`
+            : totalCost > 0
+              ? '—（覆盖率偏低，成熟窗口无购买）'
+              : '-'
+          : roasDataStatus === 'unavailable'
+            ? totalCost > 0
+              ? '暂无成熟数据'
+              : '-'
+        : purchaseCount > 0
+          ? formatUsd(cpp)
+          : totalCost > 0
+            ? '—（成熟窗口无购买）'
+            : '-';
   const roasText =
     roasDataStatus === 'pending'
       ? '待补齐（源数据缺失）'
@@ -117,10 +123,16 @@ function formatAsaSevenDayText(
             ? `${d7Roas.toFixed(2)}（覆盖率达阈值，按已覆盖成本计算）`
             : `${d7Roas.toFixed(2)}（覆盖率达阈值，按已覆盖成本计算；成熟窗口未观察到D7收入）`
           : '-'
-        : roasDataStatus === 'unavailable'
+        : roasDataStatus === 'partial_low'
           ? totalCost > 0
-            ? '暂无成熟数据'
+            ? revenueD7 > 0
+              ? `${d7Roas.toFixed(2)}（覆盖率偏低，仅供参考）`
+              : `${d7Roas.toFixed(2)}（覆盖率偏低，仅供参考；成熟窗口未观察到D7收入）`
             : '-'
+          : roasDataStatus === 'unavailable'
+            ? totalCost > 0
+              ? '暂无成熟数据'
+              : '-'
       : totalCost > 0
         ? revenueD7 > 0
           ? d7Roas.toFixed(2)

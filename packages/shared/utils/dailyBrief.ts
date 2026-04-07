@@ -55,7 +55,7 @@ interface DailyBriefBudgetHighlight {
   target_roas: number | null;
   roas_window_from: string | null;
   roas_window_to: string | null;
-  roas_data_status: 'complete' | 'partial' | 'pending' | 'unavailable';
+  roas_data_status: 'complete' | 'partial' | 'partial_low' | 'pending' | 'unavailable';
   confidence: number;
   reason_code: string;
   execution_actions?: Array<{ label?: string; code?: string }> | null;
@@ -371,6 +371,9 @@ function formatBudgetMetricStatus(row: DailyBriefBudgetHighlight): string {
   if (row.roas_data_status === 'partial') {
     return `成熟窗口 ROAS ${row.current_roas != null ? `${row.current_roas.toFixed(2)}x` : '可采纳'}（覆盖率达阈值，按已覆盖成本计算）`;
   }
+  if (row.roas_data_status === 'partial_low') {
+    return `成熟窗口 ROAS ${row.current_roas != null ? `${row.current_roas.toFixed(2)}x` : '可采纳'}（覆盖率偏低，仅供参考）`;
+  }
   if (row.roas_data_status === 'unavailable') {
     return `成熟窗口 ROAS 暂无数据（${windowLabel}）`;
   }
@@ -411,6 +414,9 @@ function buildBudgetAdjustmentReason(row: DailyBriefBudgetHighlight): string {
     }
     if (row.roas_data_status === 'partial') {
       return `成熟窗口（${windowLabel}）内的 Cohort 覆盖率已达可采纳阈值，当前 ROAS 按已覆盖成本计算，建议结合执行动作继续观察缺口是否补齐。`;
+    }
+    if (row.roas_data_status === 'partial_low') {
+      return `成熟窗口（${windowLabel}）内的 Cohort 覆盖率偏低，当前 ROAS 仅供参考，建议结合执行动作继续观察数据回流。`;
     }
     if (row.roas_data_status === 'unavailable') {
       return `当前成熟窗口（${windowLabel}）暂无可用于判断的 Cohort 回收数据，先观察成本、安装与 eCPI，再等待成熟窗口补齐。`;

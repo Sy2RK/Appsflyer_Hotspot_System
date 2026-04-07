@@ -25,7 +25,7 @@ export function resolveRoasCoverageRatio(input: { coveredCost?: number | null; m
 }
 
 export function isRoasDataUsableStatus(status: RoasDataStatus | null | undefined): boolean {
-  return status === 'complete' || status === 'partial';
+  return status === 'complete' || status === 'partial' || status === 'partial_low';
 }
 
 export function buildMatureRoasWindow(
@@ -74,10 +74,20 @@ export function resolveRoasDataStatus(input: {
       coveredCost: input.coveredCost,
       missingCost
     });
-    if (coverageRatio < getRoasCostCoverageThreshold()) {
+    const threshold = getRoasCostCoverageThreshold();
+    const partialLowThreshold = threshold * 0.625; // 80% * 0.625 = 50%
+    const pendingThreshold = threshold * 0.375;    // 80% * 0.375 = 30%
+
+    if (coverageRatio >= threshold) {
+      return 'partial';
+    }
+    if (coverageRatio >= partialLowThreshold) {
+      return 'partial_low';
+    }
+    if (coverageRatio >= pendingThreshold) {
       return 'pending';
     }
-    return 'partial';
+    return 'unavailable';
   }
   return 'complete';
 }
