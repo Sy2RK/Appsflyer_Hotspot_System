@@ -106,6 +106,7 @@ export const env = {
     24 * 60 * 60 * 1000
   ),
   scheduledWorkerMaxRuntimeMs: optionalNumber('SCHEDULED_WORKER_MAX_RUNTIME_MS', 6 * 60 * 60 * 1000),
+  roasCostCoverageThreshold: optionalNumber('ROAS_COST_COVERAGE_THRESHOLD', 0.8),
 
   keywordEngineInitialBackfillDays: optionalNumber('KEYWORD_ENGINE_INITIAL_BACKFILL_DAYS', 30),
   keywordEngineRollingBackfillDays: optionalNumber('KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS', 3),

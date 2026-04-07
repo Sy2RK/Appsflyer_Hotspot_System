@@ -1,9 +1,13 @@
 import type { RecommendationPolicyRuleJson, RoasDataStatus } from '../types/models.js';
 import { shiftDateString } from './businessDate.js';
+import { env } from '../config/env.js';
 
 const DEFAULT_EXCLUDE_RECENT_DAYS = 7;
 const DEFAULT_DECISION_WINDOW_DAYS = 14;
-export const ROAS_COST_COVERAGE_ACCEPTANCE_THRESHOLD = 0.8;
+
+function getRoasCostCoverageThreshold(): number {
+  return env.roasCostCoverageThreshold;
+}
 
 export interface MatureRoasWindow {
   from: string;
@@ -70,7 +74,7 @@ export function resolveRoasDataStatus(input: {
       coveredCost: input.coveredCost,
       missingCost
     });
-    if (coverageRatio < ROAS_COST_COVERAGE_ACCEPTANCE_THRESHOLD) {
+    if (coverageRatio < getRoasCostCoverageThreshold()) {
       return 'pending';
     }
     return 'partial';
