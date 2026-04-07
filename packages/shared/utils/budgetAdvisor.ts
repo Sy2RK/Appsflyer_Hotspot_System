@@ -1229,7 +1229,7 @@ export async function runBudgetAdvisorCycle(
               action: 'hold' as const,
               changeRatio: 0,
               confidence: roasDataStatus === 'pending' ? 0.52 : 0.46,
-              reasonCode: roasDataStatus === 'pending' ? 'roas_pending_revenue' : 'roas_window_unavailable',
+              reasonCode: roasDataStatus === 'pending' ? 'roas_pending_revenue' : roasDataStatus === 'partial_low' ? 'roas_coverage_low' : 'roas_window_unavailable',
               volumeTier
             }
           : valueDriven
