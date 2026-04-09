@@ -29,7 +29,12 @@ import {
   buildAsaRoasWindow,
   buildAsaRelativeCompareDecision
 } from '../packages/shared/utils/asaKeywords.js';
-import { buildAiContextPrompt, runAiChat } from '../packages/shared/utils/aiChat.js';
+import {
+  buildAiChatToolDefinitionsForModel,
+  buildAiContextPrompt,
+  normalizeGuruToolName,
+  runAiChat
+} from '../packages/shared/utils/aiChat.js';
 import { env } from '../packages/shared/config/env.js';
 import { GURU_MCP_TOOL_NAMES, resolveGuruMcpToolForContextPack } from '../packages/shared/utils/guruMcp.js';
 import {
@@ -1089,8 +1094,20 @@ async function main(): Promise<void> {
   assert.ok(contextPrompt.prompt.includes('上下文包一'));
   assert.ok(!contextPrompt.prompt.includes('结构化摘要'));
   assert.ok(contextPrompt.warnings.some((item) => /截短|跳过/.test(item)));
+  assert.deepEqual(
+    buildAiChatToolDefinitionsForModel('openai_gpt54').map((item) => item.function.name),
+    ['apps_list', 'metrics_get_trend', 'roas_get_summary', 'budget_get_summary', 'asa_keywords_get_summary']
+  );
+  assert.deepEqual(
+    buildAiChatToolDefinitionsForModel('qwen').map((item) => item.function.name),
+    Object.values(GURU_MCP_TOOL_NAMES)
+  );
+  assert.equal(normalizeGuruToolName('budget_get_summary'), GURU_MCP_TOOL_NAMES.budgetGetSummary);
+  assert.equal(normalizeGuruToolName('roas_get_summary'), GURU_MCP_TOOL_NAMES.roasGetSummary);
+  assert.equal(normalizeGuruToolName('metrics.get_trend'), GURU_MCP_TOOL_NAMES.metricsGetTrend);
 
   const toolCallsCaptured: Array<{ toolName: string; args: Record<string, unknown> }> = [];
+  const completionToolNamesCaptured: string[][] = [];
   let toolStepIndex = 0;
   const toolCallResult = await runAiChat(
     {
@@ -1141,7 +1158,8 @@ async function main(): Promise<void> {
           applied_filters: args
         };
       },
-      requestCompletion: async () => {
+      requestCompletion: async (input) => {
+        completionToolNamesCaptured.push(Array.isArray(input.tools) ? input.tools.map((item) => item.function.name) : []);
         toolStepIndex += 1;
         if (toolStepIndex === 1) {
           return {
@@ -1193,8 +1211,210 @@ async function main(): Promise<void> {
   assert.equal(toolCallsCaptured.length, 1);
   assert.equal(toolCallsCaptured[0]?.toolName, GURU_MCP_TOOL_NAMES.budgetGetSummary);
   assert.equal(toolCallsCaptured[0]?.args.appKey, 'demo_app');
+  assert.deepEqual(completionToolNamesCaptured[0], Object.values(GURU_MCP_TOOL_NAMES));
   assert.equal(toolCallResult.page_trace.length, 0);
   assert.equal(toolCallResult.tool_trace[0]?.title, '预算建议 · 平台 / 媒体源');
+
+  const roasToolCallsCaptured: Array<{ toolName: string; args: Record<string, unknown> }> = [];
+  let roasSystemPrompt = '';
+  let roasStepIndex = 0;
+  const roasResult = await runAiChat(
+    {
+      message: '帮我看看昨天的ROAS数据喵>w<',
+      history: [],
+      contextPacks: [],
+      images: [],
+      modelId: 'openai_gpt54',
+      pageContext: {
+        activeSection: 'section-overview',
+        pageLabel: '概览',
+        defaults: {
+          appKey: 'demo_app',
+          platform: 'ios',
+          from: '2026-04-08',
+          to: '2026-04-08'
+        },
+        currentFilters: {},
+        recommendedSpecs: [],
+        coreSpecs: []
+      }
+    },
+    {
+      buildAiContextPacksViaMcp: async () => ({ packs: [], packSpecs: [], warnings: [] }),
+      callGuruMcpTool: async (toolName, args) => {
+        roasToolCallsCaptured.push({
+          toolName,
+          args
+        });
+        return {
+          title: '指标时序 · 媒体源',
+          summary_markdown: '### 指标时序包\n- 收入已自动切换为 push 口径查询。',
+          structured: {},
+          row_count: 1,
+          truncated: false,
+          applied_filters: args
+        };
+      },
+      requestCompletion: async (input) => {
+        if (!roasSystemPrompt && typeof input.messages[0]?.content === 'string') {
+          roasSystemPrompt = input.messages[0].content;
+        }
+        roasStepIndex += 1;
+        if (roasStepIndex === 1) {
+          return {
+            content: '',
+            toolCalls: [
+              {
+                id: 'tool-roas-revenue',
+                name: GURU_MCP_TOOL_NAMES.metricsGetTrend,
+                rawArguments: JSON.stringify({
+                  templateId: 'media_source',
+                  metric: 'revenue',
+                  source: 'pull'
+                }),
+                arguments: {
+                  templateId: 'media_source',
+                  metric: 'revenue',
+                  source: 'pull'
+                }
+              }
+            ],
+            usage: null,
+            raw: {},
+            rawMessage: {
+              tool_calls: [
+                {
+                  id: 'tool-roas-revenue',
+                  type: 'function',
+                  function: {
+                    name: GURU_MCP_TOOL_NAMES.metricsGetTrend,
+                    arguments: JSON.stringify({
+                      templateId: 'media_source',
+                      metric: 'revenue',
+                      source: 'pull'
+                    })
+                  }
+                }
+              ]
+            }
+          };
+        }
+        return {
+          content: '结论：昨日收入已按 push 口径查询，可以继续结合 cost 估算 ROAS。',
+          toolCalls: [],
+          usage: null,
+          raw: {},
+          rawMessage: {}
+        };
+      }
+    } as never
+  );
+  assert.equal(roasResult.agent_action, 'answer');
+  assert.equal(roasToolCallsCaptured[0]?.toolName, GURU_MCP_TOOL_NAMES.metricsGetTrend);
+  assert.equal(roasToolCallsCaptured[0]?.args.source, 'push');
+  assert.equal(roasToolCallsCaptured[0]?.args.metric, 'revenue');
+  assert.equal(roasToolCallsCaptured[0]?.args.from, '2026-04-08');
+  assert.equal(roasToolCallsCaptured[0]?.args.to, '2026-04-08');
+  assert.match(roasSystemPrompt, /不要把 ROAS 当成可直接查询的 metric/);
+  assert.match(roasSystemPrompt, /优先使用 roas.get_summary/);
+  assert.match(roasSystemPrompt, /数据缺失或未回传/);
+
+  const matureRoasToolCallsCaptured: Array<{ toolName: string; args: Record<string, unknown> }> = [];
+  let matureRoasStepIndex = 0;
+  let matureRoasSystemPrompt = '';
+  const matureRoasResult = await runAiChat(
+    {
+      message: '按简报口径帮我看昨天的 ROAS',
+      history: [],
+      contextPacks: [],
+      images: [],
+      modelId: 'openai_gpt54',
+      pageContext: {
+        activeSection: 'section-dashboard',
+        pageLabel: '投放总览',
+        defaults: {
+          appKey: 'demo_app',
+          platform: 'ios',
+          from: '2026-04-08',
+          to: '2026-04-08'
+        },
+        currentFilters: {},
+        recommendedSpecs: [],
+        coreSpecs: []
+      }
+    },
+    {
+      buildAiContextPacksViaMcp: async () => ({ packs: [], packSpecs: [], warnings: [] }),
+      callGuruMcpTool: async (toolName, args) => {
+        matureRoasToolCallsCaptured.push({ toolName, args });
+        return {
+          title: '成熟窗口 ROAS',
+          summary_markdown:
+            '### 成熟窗口 ROAS\n- 报告日期：2026-04-08\n- 时间窗口：2026-04-01 至 2026-04-07\n- 当前 ROAS：1.23x',
+          structured: {
+            reportDate: '2026-04-08',
+            summary: {
+              roasWindow: {
+                from: '2026-04-01',
+                to: '2026-04-07'
+              },
+              currentRoas: 1.23
+            }
+          },
+          row_count: 1,
+          truncated: false,
+          applied_filters: args
+        };
+      },
+      requestCompletion: async (input) => {
+        if (!matureRoasSystemPrompt && typeof input.messages[0]?.content === 'string') {
+          matureRoasSystemPrompt = input.messages[0].content;
+        }
+        matureRoasStepIndex += 1;
+        if (matureRoasStepIndex === 1) {
+          return {
+            content: '',
+            toolCalls: [
+              {
+                id: 'tool-mature-roas',
+                name: GURU_MCP_TOOL_NAMES.roasGetSummary,
+                rawArguments: JSON.stringify({}),
+                arguments: {}
+              }
+            ],
+            usage: null,
+            raw: {},
+            rawMessage: {
+              tool_calls: [
+                {
+                  id: 'tool-mature-roas',
+                  type: 'function',
+                  function: {
+                    name: GURU_MCP_TOOL_NAMES.roasGetSummary,
+                    arguments: JSON.stringify({})
+                  }
+                }
+              ]
+            }
+          };
+        }
+        return {
+          content: '结论：按 2026-04-08 报告日期、成熟窗口 2026-04-01 至 2026-04-07，ROAS 为 1.23x。',
+          toolCalls: [],
+          usage: null,
+          raw: {},
+          rawMessage: {}
+        };
+      }
+    } as never
+  );
+  assert.equal(matureRoasResult.agent_action, 'answer');
+  assert.equal(matureRoasToolCallsCaptured[0]?.toolName, GURU_MCP_TOOL_NAMES.roasGetSummary);
+  assert.equal(matureRoasToolCallsCaptured[0]?.args.appKey, 'demo_app');
+  assert.equal(matureRoasToolCallsCaptured[0]?.args.platform, 'ios');
+  assert.equal(matureRoasToolCallsCaptured[0]?.args.reportDate, '2026-04-08');
+  assert.equal(matureRoasToolCallsCaptured[0]?.args.templateId, 'mature_window');
+  assert.match(matureRoasSystemPrompt, /必须明确写出“报告日期”和“成熟窗口 from 至 to”/);
 
   const clarificationResult = await runAiChat(
     {
@@ -1557,6 +1777,24 @@ async function main(): Promise<void> {
         executionStatus: undefined,
         isAdopted: undefined,
         hasManualReview: undefined
+      }
+    }
+  );
+  assert.deepEqual(
+    resolveGuruMcpToolForContextPack({
+      type: 'roas_summary',
+      templateId: 'mature_window',
+      appKey: 'demo',
+      platform: 'ios',
+      reportDate: '2026-04-08'
+    }),
+    {
+      name: GURU_MCP_TOOL_NAMES.roasGetSummary,
+      arguments: {
+        appKey: 'demo',
+        platform: 'ios',
+        reportDate: '2026-04-08',
+        templateId: 'mature_window'
       }
     }
   );

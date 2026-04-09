@@ -2,12 +2,14 @@ import { env } from '../config/env.js';
 import { getDateStringInTimezone, getDateTimeStringInTimezone, shiftDateString } from './businessDate.js';
 import { chQuery } from './clickhouse.js';
 import { pgQuery } from './postgres.js';
+import { buildMatureRoasContextPack } from './roasSummaryTool.js';
 
-export type AiContextPackType = 'metrics_trend' | 'budget_summary' | 'asa_keyword_summary';
+export type AiContextPackType = 'metrics_trend' | 'roas_summary' | 'budget_summary' | 'asa_keyword_summary';
 export type AiContextPackTemplateId =
   | 'media_source'
   | 'country'
   | 'campaign'
+  | 'mature_window'
   | 'platform_media_source'
   | 'action_status'
   | 'keyword'
@@ -21,6 +23,7 @@ export interface AiContextPackSpec {
   platform?: string;
   from?: string;
   to?: string;
+  reportDate?: string;
   sourceSection?: string;
   source?: 'push' | 'pull';
   metric?: string;
@@ -101,6 +104,12 @@ function sliceTail<T>(items: T[], limit: number): T[] {
   return items.length <= limit ? items : items.slice(items.length - limit);
 }
 
+function buildMetricsNoDataHint(source: 'pull' | 'push', metric: string): string {
+  const sourceLabel = source === 'pull' ? '广告日报（日级）' : '实时回传（小时级）';
+  const metricLabel = formatMetricLabel(metric);
+  return `- 当前时间范围内没有任何 ${sourceLabel} 的「${metricLabel}」聚合记录；这通常表示数据缺失、尚未回传或尚未完成聚合，不能直接视为 0。`;
+}
+
 function formatMetricLabel(metric: string): string {
   switch (metric) {
     case 'revenue':
@@ -128,6 +137,8 @@ function formatDimensionLabel(templateId: AiContextPackTemplateId): string {
       return '国家';
     case 'campaign':
       return '活动';
+    case 'mature_window':
+      return '成熟窗口';
     case 'platform_media_source':
       return '平台 / 媒体源';
     case 'action_status':
@@ -159,8 +170,21 @@ function buildMetricsEventFilter(metric: string, eventName?: string): { sql: str
   return { sql: '', params: {} };
 }
 
+function resolveMetricsTrendSource(metric: string | undefined, source: string | undefined): 'pull' | 'push' {
+  const normalizedMetric = String(metric || '')
+    .trim()
+    .toLowerCase();
+  if (PUSH_METRICS.has(normalizedMetric)) {
+    return 'push';
+  }
+  if (PULL_METRICS.has(normalizedMetric)) {
+    return 'pull';
+  }
+  return source === 'push' ? 'push' : 'pull';
+}
+
 async function buildMetricsTrendPack(spec: AiContextPackSpec): Promise<AiBuiltContextPack> {
-  const source = spec.source === 'push' ? 'push' : 'pull';
+  const source = resolveMetricsTrendSource(spec.metric, spec.source);
   const platform = normalizePlatform(spec.platform);
   const dim = METRICS_DIMS[spec.templateId];
   if (!dim) {
@@ -253,15 +277,22 @@ async function buildMetricsTrendPack(spec: AiContextPackSpec): Promise<AiBuiltCo
   );
   const deltaRatio = first.value > 0 ? ((latest.value - first.value) / first.value) * 100 : null;
   const truncated = normalizedBuckets.length > trimmedBuckets.length;
+  const hasData = normalizedBuckets.length > 0 || normalizedGroups.length > 0;
 
   const summaryMarkdown = [
     `### 指标时序包`,
     `- 应用：${spec.appKey}${platform ? ` / ${platform}` : ''}`,
     `- 来源：${source === 'pull' ? '广告日报（日级）' : '实时回传（小时级）'}；指标：${formatMetricLabel(metric)}；维度：${formatDimensionLabel(spec.templateId)}`,
     `- 时间范围：${from} ~ ${to}`,
-    `- 总量：${formatNum(total)}；最新点：${latest.bucket} = ${formatNum(latest.value)}；峰值：${peak.bucket} = ${formatNum(peak.value)}`,
-    deltaRatio === null ? '- 趋势变化：首点为 0，暂不计算变化率' : `- 趋势变化：相对首点 ${deltaRatio >= 0 ? '+' : ''}${formatNum(deltaRatio)}%`,
-    normalizedGroups.length
+    hasData
+      ? `- 总量：${formatNum(total)}；最新点：${latest.bucket} = ${formatNum(latest.value)}；峰值：${peak.bucket} = ${formatNum(peak.value)}`
+      : buildMetricsNoDataHint(source, metric),
+    hasData
+      ? deltaRatio === null
+        ? '- 趋势变化：首点为 0，暂不计算变化率'
+        : `- 趋势变化：相对首点 ${deltaRatio >= 0 ? '+' : ''}${formatNum(deltaRatio)}%`
+      : '- 这份结果不能直接用于判断收入为 0、ROAS 为 0% 或转化为 0；更准确的结论是当前来源暂无可用数据。',
+    hasData && normalizedGroups.length
       ? `- Top 维度：${normalizedGroups.map((row) => `${row.label} ${formatNum(row.value)}`).join('；')}`
       : '- Top 维度：当前筛选条件下暂无聚合结果'
   ].join('\n');
@@ -284,7 +315,9 @@ async function buildMetricsTrendPack(spec: AiContextPackSpec): Promise<AiBuiltCo
       total,
       latest,
       peak,
-      deltaRatio
+      deltaRatio,
+      hasData,
+      dataStatus: hasData ? 'available' : 'missing'
     },
     rowCount: normalizedGroups.length + trimmedBuckets.length,
     truncated,
@@ -515,6 +548,27 @@ async function buildBudgetSummaryPack(spec: AiContextPackSpec): Promise<AiBuiltC
   };
 }
 
+async function buildRoasSummaryPack(spec: AiContextPackSpec): Promise<AiBuiltContextPack> {
+  if (spec.templateId !== 'mature_window') {
+    throw new Error('invalid_roas_template');
+  }
+  const pack = await buildMatureRoasContextPack({
+    appKey: spec.appKey,
+    platform: normalizePlatform(spec.platform),
+    reportDate: spec.reportDate
+  });
+  return {
+    type: 'roas_summary',
+    templateId: spec.templateId,
+    title: pack.title,
+    summaryMarkdown: pack.summaryMarkdown,
+    structured: pack.structured,
+    rowCount: pack.rowCount,
+    truncated: false,
+    appliedFilters: pack.appliedFilters
+  };
+}
+
 function buildAsaWhere(spec: AiContextPackSpec): { whereSql: string; values: unknown[] } {
   const values: unknown[] = [];
   const clauses: string[] = [];
@@ -739,6 +793,9 @@ export async function buildAiContextPack(spec: AiContextPackSpec): Promise<AiBui
   }
   if (spec.type === 'metrics_trend') {
     return buildMetricsTrendPack(spec);
+  }
+  if (spec.type === 'roas_summary') {
+    return buildRoasSummaryPack(spec);
   }
   if (spec.type === 'budget_summary') {
     return buildBudgetSummaryPack(spec);

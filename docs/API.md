@@ -157,8 +157,13 @@ Response:
 - 当前自动工具面固定为只读业务工具：
   - `apps.list`
   - `metrics.get_trend`
+  - `roas.get_summary`
   - `budget.get_summary`
   - `asa_keywords.get_summary`
+- `roas.get_summary` 用于查询与每日简报一致的成熟窗口 D7 ROAS 摘要
+  - 返回结果会显式包含 `reportDate` 与 `summary.roasWindow.from / to`
+  - 该口径不是“当日实时 ROAS”，而是按策略成熟窗口聚合后的 D7 ROAS
+  - 若同一应用跨平台成熟窗口不一致，且请求未指定 `platform`，工具可能只返回 `platformBreakdown`，不强行给出单一汇总 ROAS
 - 手动附加的数据包优先于自动查询；命中同一查询时会优先复用手动数据包结果
 - 若 MCP 工具或上下文包查询超时，最终会收敛为 `ai_chat_timeout` 或业务可读 warning，而不是原始协议错误串
 - `Kimi-K2.5 (OpenRouter)` 即使在模型列表中可见，特定账号或地区下仍可能返回 provider 侧限制错误

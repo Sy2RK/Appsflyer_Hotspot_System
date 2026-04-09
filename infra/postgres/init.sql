@@ -511,6 +511,7 @@ CREATE TABLE IF NOT EXISTS asa_keyword_states (
   roas_window_from DATE,
   roas_window_to DATE,
   roas_data_status TEXT NOT NULL DEFAULT 'unavailable',
+  roas_coverage_ratio DOUBLE PRECISION NOT NULL DEFAULT 0,
   target_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
   target_cpp DOUBLE PRECISION NOT NULL DEFAULT 0,
   target_d7_roas DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -526,6 +527,7 @@ CREATE TABLE IF NOT EXISTS asa_keyword_states (
 ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_window_from DATE;
 ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_window_to DATE;
 ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_data_status TEXT NOT NULL DEFAULT 'unavailable';
+ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_coverage_ratio DOUBLE PRECISION NOT NULL DEFAULT 0;
 
 ALTER TABLE asa_keyword_states
   ADD COLUMN IF NOT EXISTS adset TEXT NOT NULL DEFAULT 'unknown';

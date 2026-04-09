@@ -426,6 +426,7 @@ export interface AsaKeywordStateRow {
   roas_window_from: string | null;
   roas_window_to: string | null;
   roas_data_status: RoasDataStatus;
+  roas_coverage_ratio: number;
   target_ecpi: number;
   target_cpp: number;
   target_d7_roas: number;

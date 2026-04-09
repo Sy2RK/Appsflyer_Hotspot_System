@@ -3,6 +3,7 @@ import type { AiBuiltContextPack, AiContextPackSpec } from './aiContextPacks.js'
 export const GURU_MCP_TOOL_NAMES = {
   appsList: 'apps.list',
   metricsGetTrend: 'metrics.get_trend',
+  roasGetSummary: 'roas.get_summary',
   budgetGetSummary: 'budget.get_summary',
   asaKeywordsGetSummary: 'asa_keywords.get_summary'
 } as const;
@@ -80,6 +81,17 @@ export function resolveGuruMcpToolForContextPack(spec: AiContextPackSpec): {
         executionStatus: spec.executionStatus,
         isAdopted: spec.isAdopted,
         hasManualReview: spec.hasManualReview
+      }
+    };
+  }
+  if (spec.type === 'roas_summary') {
+    return {
+      name: GURU_MCP_TOOL_NAMES.roasGetSummary,
+      arguments: {
+        appKey: spec.appKey,
+        platform: spec.platform,
+        reportDate: spec.reportDate,
+        templateId: spec.templateId
       }
     };
   }

@@ -241,6 +241,40 @@ function createGuruMcpServer(requestId?: string): McpServer {
   );
 
   server.registerTool(
+    GURU_MCP_TOOL_NAMES.roasGetSummary,
+    {
+      title: '成熟窗口 ROAS',
+      description: '按简报口径读取成熟窗口 D7 ROAS 摘要，并返回明确的时间窗口。',
+      annotations: {
+        readOnlyHint: true
+      },
+      inputSchema: {
+        appKey: z.string().min(1),
+        templateId: z.enum(['mature_window']).optional(),
+        platform: z.string().optional(),
+        reportDate: z.string().optional()
+      }
+    },
+    async (args) =>
+      executeReadOnlyTool(
+        {
+          requestId,
+          toolName: GURU_MCP_TOOL_NAMES.roasGetSummary,
+          appKey: args.appKey,
+          filters: args
+        },
+        async () =>
+          toGuruMcpStructuredResult(
+            await buildAiContextPack({
+              type: 'roas_summary',
+              ...args,
+              templateId: args.templateId ?? 'mature_window'
+            })
+          )
+      )
+  );
+
+  server.registerTool(
     GURU_MCP_TOOL_NAMES.budgetGetSummary,
     {
       title: '预算建议摘要',

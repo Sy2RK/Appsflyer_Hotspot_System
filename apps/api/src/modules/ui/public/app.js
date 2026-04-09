@@ -96,6 +96,8 @@ const state = {
 let budgetRecomputePollTimer = null;
 let aiDockScrollY = 0;
 let aiDockPreviousFocus = null;
+let aiDockDragState = null;
+let aiDockSuppressToggleClick = false;
 
 const PUSH_METRIC_OPTIONS = [
   { value: 'revenue', label: '收入金额' },
@@ -438,6 +440,7 @@ const el = {
 
   aiDock: document.getElementById('aiDock'),
   aiDockBackdrop: document.getElementById('aiDockBackdrop'),
+  aiDockFabShell: document.getElementById('aiDockFabShell'),
   aiDockToggle: document.getElementById('aiDockToggle'),
   aiDockPanel: document.getElementById('aiDockPanel'),
   aiChatDialog: document.getElementById('aiChatDialog'),
@@ -487,6 +490,9 @@ let scrollTicking = false;
 const chartState = new WeakMap();
 const helpPopoverGroups = Array.from(document.querySelectorAll('.help-group'));
 const AI_CHAT_MODEL_STORAGE_KEY = 'hotspot.aiChat.modelId';
+const AI_DOCK_FAB_POSITION_STORAGE_KEY = 'hotspot.aiDock.fabPosition';
+const AI_DOCK_DRAG_THRESHOLD_PX = 8;
+const AI_DOCK_VIEWPORT_MARGIN_PX = 12;
 const helpPopoverMap = new WeakMap();
 const activeHelpPopovers = new Set();
 const helpPopoverHideTimers = new WeakMap();
@@ -674,6 +680,211 @@ function setAIDockOpen(open) {
 
 function toggleAIDock() {
   setAIDockOpen(!state.aiChat.aiDockOpen);
+}
+
+function readStoredAIDockFabPosition() {
+  try {
+    const raw = String(window.localStorage.getItem(AI_DOCK_FAB_POSITION_STORAGE_KEY) || '').trim();
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw);
+    const left = Number(parsed?.left);
+    const top = Number(parsed?.top);
+    if (!Number.isFinite(left) || !Number.isFinite(top)) {
+      return null;
+    }
+    return { left, top };
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredAIDockFabPosition(position) {
+  try {
+    window.localStorage.setItem(
+      AI_DOCK_FAB_POSITION_STORAGE_KEY,
+      JSON.stringify({
+        left: Number(position?.left || 0),
+        top: Number(position?.top || 0)
+      })
+    );
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function clampAIDockFabPosition(position) {
+  if (!(el.aiDockFabShell instanceof HTMLElement)) {
+    return { left: 0, top: 0 };
+  }
+  const rect = el.aiDockFabShell.getBoundingClientRect();
+  const width = Math.max(rect.width || 0, el.aiDockFabShell.offsetWidth || 0, 120);
+  const height = Math.max(rect.height || 0, el.aiDockFabShell.offsetHeight || 0, 56);
+  const maxLeft = Math.max(AI_DOCK_VIEWPORT_MARGIN_PX, window.innerWidth - width - AI_DOCK_VIEWPORT_MARGIN_PX);
+  const maxTop = Math.max(AI_DOCK_VIEWPORT_MARGIN_PX, window.innerHeight - height - AI_DOCK_VIEWPORT_MARGIN_PX);
+  return {
+    left: Math.min(maxLeft, Math.max(AI_DOCK_VIEWPORT_MARGIN_PX, Number(position?.left || 0))),
+    top: Math.min(maxTop, Math.max(AI_DOCK_VIEWPORT_MARGIN_PX, Number(position?.top || 0)))
+  };
+}
+
+function applyAIDockFabPosition(position, options = {}) {
+  if (!(el.aiDockFabShell instanceof HTMLElement)) {
+    return;
+  }
+  if (!position || !Number.isFinite(Number(position.left)) || !Number.isFinite(Number(position.top))) {
+    el.aiDockFabShell.style.left = '';
+    el.aiDockFabShell.style.top = '';
+    el.aiDockFabShell.style.right = '';
+    el.aiDockFabShell.style.bottom = '';
+    return;
+  }
+  const next = clampAIDockFabPosition(position);
+  el.aiDockFabShell.style.left = `${next.left}px`;
+  el.aiDockFabShell.style.top = `${next.top}px`;
+  el.aiDockFabShell.style.right = 'auto';
+  el.aiDockFabShell.style.bottom = 'auto';
+  if (options.persist !== false) {
+    writeStoredAIDockFabPosition(next);
+  }
+}
+
+function restoreAIDockFabPosition() {
+  const stored = readStoredAIDockFabPosition();
+  if (!stored) {
+    return;
+  }
+  requestAnimationFrame(() => applyAIDockFabPosition(stored));
+}
+
+function readCurrentAIDockFabStylePosition() {
+  if (!(el.aiDockFabShell instanceof HTMLElement)) {
+    return null;
+  }
+  const left = Number.parseFloat(el.aiDockFabShell.style.left || '');
+  const top = Number.parseFloat(el.aiDockFabShell.style.top || '');
+  if (!Number.isFinite(left) || !Number.isFinite(top)) {
+    return null;
+  }
+  return { left, top };
+}
+
+function refreshAIDockFabPosition() {
+  if (!(el.aiDockFabShell instanceof HTMLElement)) {
+    return;
+  }
+  const hasCustomPosition = Boolean(el.aiDockFabShell.style.left && el.aiDockFabShell.style.top);
+  if (!hasCustomPosition) {
+    return;
+  }
+  const currentPosition = readCurrentAIDockFabStylePosition();
+  if (!currentPosition) {
+    return;
+  }
+  applyAIDockFabPosition(currentPosition);
+}
+
+function releaseAIDockPointerCapture(pointerId) {
+  if (!(el.aiDockToggle instanceof HTMLElement)) {
+    return;
+  }
+  try {
+    if (typeof el.aiDockToggle.hasPointerCapture === 'function' && el.aiDockToggle.hasPointerCapture(pointerId)) {
+      el.aiDockToggle.releasePointerCapture(pointerId);
+    }
+  } catch {
+    // ignore release errors
+  }
+}
+
+function endAIDockDrag(pointerId, options = {}) {
+  const dragState = aiDockDragState;
+  if (!dragState) {
+    return;
+  }
+  releaseAIDockPointerCapture(pointerId);
+  const wasDragging = dragState.dragging === true;
+  aiDockDragState = null;
+  el.aiDockFabShell?.classList.remove('is-dragging');
+  if (wasDragging && el.aiDockFabShell instanceof HTMLElement) {
+    const currentPosition = readCurrentAIDockFabStylePosition();
+    if (currentPosition) {
+      applyAIDockFabPosition(currentPosition);
+    }
+    aiDockSuppressToggleClick = true;
+    window.setTimeout(() => {
+      aiDockSuppressToggleClick = false;
+    }, 120);
+  } else if (options.resetSuppression === true) {
+    aiDockSuppressToggleClick = false;
+  }
+}
+
+function handleAIDockPointerDown(event) {
+  if (!(event instanceof PointerEvent)) {
+    return;
+  }
+  if (state.aiChat.aiDockOpen) {
+    return;
+  }
+  if (event.pointerType !== 'touch' && event.button !== 0) {
+    return;
+  }
+  if (!(el.aiDockFabShell instanceof HTMLElement) || !(el.aiDockToggle instanceof HTMLElement)) {
+    return;
+  }
+  const rect = el.aiDockFabShell.getBoundingClientRect();
+  aiDockDragState = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    originLeft: rect.left,
+    originTop: rect.top,
+    dragging: false
+  };
+  try {
+    if (typeof el.aiDockToggle.setPointerCapture === 'function') {
+      el.aiDockToggle.setPointerCapture(event.pointerId);
+    }
+  } catch {
+    // ignore capture errors
+  }
+}
+
+function handleAIDockPointerMove(event) {
+  if (!(event instanceof PointerEvent) || !aiDockDragState || aiDockDragState.pointerId !== event.pointerId) {
+    return;
+  }
+  const deltaX = event.clientX - aiDockDragState.startX;
+  const deltaY = event.clientY - aiDockDragState.startY;
+  if (!aiDockDragState.dragging && Math.hypot(deltaX, deltaY) < AI_DOCK_DRAG_THRESHOLD_PX) {
+    return;
+  }
+  aiDockDragState.dragging = true;
+  el.aiDockFabShell?.classList.add('is-dragging');
+  event.preventDefault();
+  applyAIDockFabPosition(
+    {
+      left: aiDockDragState.originLeft + deltaX,
+      top: aiDockDragState.originTop + deltaY
+    },
+    { persist: false }
+  );
+}
+
+function handleAIDockPointerUp(event) {
+  if (!(event instanceof PointerEvent) || !aiDockDragState || aiDockDragState.pointerId !== event.pointerId) {
+    return;
+  }
+  endAIDockDrag(event.pointerId, { resetSuppression: true });
+}
+
+function handleAIDockPointerCancel(event) {
+  if (!(event instanceof PointerEvent) || !aiDockDragState || aiDockDragState.pointerId !== event.pointerId) {
+    return;
+  }
+  endAIDockDrag(event.pointerId, { resetSuppression: true });
 }
 
 function parseTriStateBoolean(value) {
@@ -6202,27 +6413,14 @@ function updateAsaSummary(summary = {}) {
   state.asaSummary = summary && typeof summary === 'object' ? { ...summary } : {};
   const totalCost = Number(summary.total_cost || 0);
   const installs = Number(summary.installs || 0);
-  const revenueD7 = Number(summary.revenue_d7 || 0);
-  const purchaseCount = Number(summary.purchase_count || 0);
-  const roasStatus = normalizeRoasDataStatus(summary.roas_data_status);
   el.asaSummaryKeywordCount.textContent = String(summary.keyword_count || 0);
   el.asaSummaryInstalls.textContent = toFixed2(summary.installs || 0);
   el.asaSummaryCost.textContent = `$${toFixed2(summary.total_cost || 0)}`;
   el.asaSummaryEcpi.textContent = totalCost > 0 && installs <= 0 ? '—' : `$${toFixed2(summary.ecpi || 0)}`;
-  el.asaSummaryCpp.textContent = formatAsaCppDisplay(summary.cpp || 0, totalCost, purchaseCount, roasStatus);
-  el.asaSummaryRoas.textContent = formatAsaD7RoasDisplay(summary.d7_roas || 0, totalCost, revenueD7, roasStatus);
-  el.asaSummaryRoas.title =
-    roasStatus === 'pending'
-      ? 'Cohort 源数据仍在补齐'
-      : roasStatus === 'partial'
-        ? 'Cohort 覆盖率已达可采纳阈值，当前值按已覆盖成本计算'
-      : roasStatus === 'partial_low'
-        ? 'Cohort 覆盖率偏低，当前值仅供参考'
-      : roasStatus === 'unavailable'
-        ? '当前没有可用的成熟窗口 D7 数据'
-        : totalCost > 0 && revenueD7 <= 0
-          ? '成熟窗口内未观察到 D7 收入'
-          : '';
+  el.asaSummaryCpp.innerHTML = buildAsaCppMetricStackHtml(summary);
+  el.asaSummaryRoas.innerHTML = buildAsaD7RoasMetricStackHtml(summary);
+  el.asaSummaryCpp.title = buildAsaCppMetricTitle(summary);
+  el.asaSummaryRoas.title = buildAsaD7RoasMetricTitle(summary);
   el.asaSummaryEcpi.title = totalCost > 0 && installs <= 0 ? '当前有花费但没有安装，eCPI 不可计算' : '';
 }
 
@@ -6321,6 +6519,111 @@ function normalizeRoasDataStatus(value) {
     return status;
   }
   return 'unavailable';
+}
+
+function isAsaRoasDisplayableStatus(value) {
+  const status = normalizeRoasDataStatus(value);
+  return status === 'complete' || status === 'partial' || status === 'partial_low';
+}
+
+function normalizeRoasCoverageRatio(value, roasDataStatus) {
+  const ratio = Number(value || 0);
+  if (Number.isFinite(ratio) && ratio > 0) {
+    return Math.min(1, Math.max(0, ratio));
+  }
+  return normalizeRoasDataStatus(roasDataStatus) === 'complete' ? 1 : 0;
+}
+
+function formatAsaCoverageMeta(roasDataStatus, coverageRatio) {
+  const status = normalizeRoasDataStatus(roasDataStatus);
+  const ratio = normalizeRoasCoverageRatio(coverageRatio, roasDataStatus);
+  if (ratio > 0) {
+    return `覆盖 ${Math.round(ratio * 100)}%`;
+  }
+  if (status === 'partial') return '覆盖达阈值';
+  if (status === 'partial_low') return '覆盖偏低';
+  if (status === 'pending') return '待补齐';
+  if (status === 'complete') return '覆盖 100%';
+  return '暂无成熟数据';
+}
+
+function buildAsaCoverageTitle(roasDataStatus, coverageRatio) {
+  const status = normalizeRoasDataStatus(roasDataStatus);
+  const ratio = normalizeRoasCoverageRatio(coverageRatio, status);
+  const ratioText = ratio > 0 ? `Cohort 数据覆盖率 ${Math.round(ratio * 100)}%` : '';
+  if (status === 'complete') {
+    return ratioText || 'Cohort 数据覆盖完整，当前值可直接使用';
+  }
+  if (status === 'partial') {
+    return ratioText ? `${ratioText}，当前值按已覆盖成本计算` : 'Cohort 覆盖率已达可采纳阈值，当前值按已覆盖成本计算';
+  }
+  if (status === 'partial_low') {
+    return ratioText ? `${ratioText}，覆盖率偏低，当前值仅供参考` : 'Cohort 覆盖率偏低，当前值仅供参考';
+  }
+  if (status === 'pending') {
+    return ratioText ? `${ratioText}，数据仍在补齐，当前值暂不展示` : 'Cohort 源数据仍在补齐，当前值暂不展示';
+  }
+  return ratioText ? `${ratioText}，覆盖仍偏低，当前值暂不展示` : '当前没有可用的成熟窗口 D7 数据';
+}
+
+function buildAsaMetricStackHtml(metaText, valueText) {
+  return `
+    <span class="metric-stack">
+      <span class="metric-stack-meta">${escapeHtml(metaText)}</span>
+      <span class="metric-stack-value">${escapeHtml(valueText)}</span>
+    </span>
+  `;
+}
+
+function buildAsaMetricDisplaySource(source = {}) {
+  const roasDataStatus = normalizeRoasDataStatus(source.roas_data_status);
+  return {
+    roasDataStatus,
+    roasDisplayable: isAsaRoasDisplayableStatus(roasDataStatus),
+    roasCoverageRatio: normalizeRoasCoverageRatio(source.roas_coverage_ratio, roasDataStatus),
+    totalCost: Number((source.total_cost ?? source.total_cost_7d) || 0),
+    purchaseCount: Number((source.purchase_count ?? source.purchase_count_7d) || 0),
+    revenueD7: Number((source.revenue_d7 ?? source.revenue_d7_7d) || 0),
+    cpp: Number((source.cpp ?? source.current_cpp) || 0),
+    d7Roas: Number((source.d7_roas ?? source.current_d7_roas) || 0)
+  };
+}
+
+function buildAsaCppMetricTitle(source = {}) {
+  const metric = buildAsaMetricDisplaySource(source);
+  let title = buildAsaCoverageTitle(metric.roasDataStatus, metric.roasCoverageRatio);
+  if (metric.roasDisplayable && metric.totalCost > 0 && metric.purchaseCount <= 0) {
+    title = title ? `${title}；覆盖窗口内无购买` : '覆盖窗口内无购买';
+  }
+  return title;
+}
+
+function buildAsaD7RoasMetricTitle(source = {}) {
+  const metric = buildAsaMetricDisplaySource(source);
+  let title = buildAsaCoverageTitle(metric.roasDataStatus, metric.roasCoverageRatio);
+  if (metric.roasDisplayable && metric.totalCost > 0 && metric.revenueD7 <= 0) {
+    title = title ? `${title}；覆盖窗口内未观察到 D7 收入` : '覆盖窗口内未观察到 D7 收入';
+  }
+  return title;
+}
+
+function buildAsaCppMetricStackHtml(source = {}) {
+  const metric = buildAsaMetricDisplaySource(source);
+  const valueText =
+    !metric.roasDisplayable
+      ? '—'
+      : metric.purchaseCount > 0
+        ? `$${toFixed2(metric.cpp)}`
+        : metric.totalCost > 0
+          ? '—'
+          : '-';
+  return buildAsaMetricStackHtml(formatAsaCoverageMeta(metric.roasDataStatus, metric.roasCoverageRatio), valueText);
+}
+
+function buildAsaD7RoasMetricStackHtml(source = {}) {
+  const metric = buildAsaMetricDisplaySource(source);
+  const valueText = !metric.roasDisplayable ? '—' : metric.totalCost > 0 ? `${toFixed2(metric.d7Roas)}x` : '-';
+  return buildAsaMetricStackHtml(formatAsaCoverageMeta(metric.roasDataStatus, metric.roasCoverageRatio), valueText);
 }
 
 function formatAsaEcpiDisplay(value, totalCost, installs, options = {}) {
@@ -6450,20 +6753,8 @@ function renderAsaKeywordTable() {
         <td>$${toFixed2(row.total_cost_7d || 0)}</td>
         <td>${toFixed2(row.purchase_count_7d || 0)}</td>
         <td title="${escapeHtml(asaHasSpendWithoutInstalls(row.total_cost_7d, row.installs_7d || row.last_installs || 0) ? '当前有花费但没有安装，eCPI 不可计算' : '')}">${escapeHtml(formatAsaEcpiDisplay(row.current_ecpi || 0, row.total_cost_7d || 0, row.installs_7d || row.last_installs || 0))}</td>
-        <td>${escapeHtml(formatAsaCppDisplay(row.current_cpp, row.total_cost_7d, row.purchase_count_7d, row.roas_data_status))}</td>
-        <td title="${escapeHtml(
-          normalizeRoasDataStatus(row.roas_data_status) === 'pending'
-            ? 'Cohort 源数据仍在补齐'
-            : normalizeRoasDataStatus(row.roas_data_status) === 'partial'
-              ? 'Cohort 覆盖率已达可采纳阈值，当前值按已覆盖成本计算'
-            : normalizeRoasDataStatus(row.roas_data_status) === 'partial_low'
-              ? 'Cohort 覆盖率偏低，当前值仅供参考'
-            : normalizeRoasDataStatus(row.roas_data_status) === 'unavailable'
-              ? '当前没有可用的成熟窗口 D7 数据'
-              : asaHasCostWithoutD7Revenue(row.total_cost_7d, row.revenue_d7_7d)
-                ? '成熟窗口内未观察到 D7 收入'
-                : ''
-        )}">${escapeHtml(formatAsaD7RoasDisplay(row.current_d7_roas, row.total_cost_7d, row.revenue_d7_7d, row.roas_data_status))}</td>
+        <td title="${escapeHtml(buildAsaCppMetricTitle(row))}">${buildAsaCppMetricStackHtml(row)}</td>
+        <td title="${escapeHtml(buildAsaD7RoasMetricTitle(row))}">${buildAsaD7RoasMetricStackHtml(row)}</td>
         <td><span class="badge badge-stage-${escapeHtml(row.current_stage)}">${asaStageLabel(row.current_stage)}</span></td>
         <td>${row.recommendation_action ? `<span class="badge ${asaRecommendationBadgeClass(row.recommendation_action)}">${escapeHtml(actionLabel(row.recommendation_action))}</span>` : '-'}</td>
         <td>${escapeHtml(asaRecommendationStatusLabel(row.recommendation_status))}</td>
@@ -7359,8 +7650,16 @@ el.dailyBriefModalCloseBtn.addEventListener('click', () => setDailyBriefModalOpe
 el.dailyBriefModalBackdrop.addEventListener('click', () => setDailyBriefModalOpen(false));
 el.aiDockToggle?.addEventListener('click', (event) => {
   event.stopPropagation();
+  if (aiDockSuppressToggleClick) {
+    event.preventDefault();
+    return;
+  }
   toggleAIDock();
 });
+el.aiDockToggle?.addEventListener('pointerdown', (event) => handleAIDockPointerDown(event));
+el.aiDockToggle?.addEventListener('pointermove', (event) => handleAIDockPointerMove(event));
+el.aiDockToggle?.addEventListener('pointerup', (event) => handleAIDockPointerUp(event));
+el.aiDockToggle?.addEventListener('pointercancel', (event) => handleAIDockPointerCancel(event));
 el.aiDockBackdrop?.addEventListener('click', () => setAIDockOpen(false));
 el.aiChatCloseBtn?.addEventListener('click', () => setAIDockOpen(false));
 el.aiChatClearBtn?.addEventListener('click', () => {
@@ -7516,7 +7815,10 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-window.addEventListener('resize', refreshHelpPopoverPositions);
+window.addEventListener('resize', () => {
+  refreshHelpPopoverPositions();
+  refreshAIDockFabPosition();
+});
 window.addEventListener(
   'scroll',
   () => {
@@ -7532,4 +7834,5 @@ window.addEventListener(
   true
 );
 
+restoreAIDockFabPosition();
 bootstrap();

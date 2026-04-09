@@ -15,12 +15,14 @@ import {
   type GuruMcpStructuredResult,
   type GuruMcpToolName
 } from './guruMcp.js';
+import { buildMatureRoasContextPack } from './roasSummaryTool.js';
 
-export type AiContextPackType = 'metrics_trend' | 'budget_summary' | 'asa_keyword_summary';
+export type AiContextPackType = 'metrics_trend' | 'roas_summary' | 'budget_summary' | 'asa_keyword_summary';
 export type AiContextPackTemplateId =
   | 'media_source'
   | 'country'
   | 'campaign'
+  | 'mature_window'
   | 'platform_media_source'
   | 'action_status'
   | 'keyword'
@@ -90,6 +92,7 @@ export interface AiContextPackSpec {
   platform?: string;
   from?: string;
   to?: string;
+  reportDate?: string;
   sourceSection?: string;
   source?: 'push' | 'pull';
   metric?: string;
@@ -167,10 +170,19 @@ interface AiChatProviderConfig {
   extraHeaders?: Record<string, string>;
 }
 
-interface AiChatToolDefinition {
+interface AiChatCanonicalToolDefinition {
   type: 'function';
   function: {
     name: GuruMcpToolName;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export interface AiChatToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
     description: string;
     parameters: Record<string, unknown>;
   };
@@ -239,7 +251,15 @@ const AI_CHAT_PROVIDER_LABELS: Record<AiChatProviderId, string> = {
   openai: 'OpenAI'
 };
 
-const AI_CHAT_TOOL_DEFINITIONS: AiChatToolDefinition[] = [
+const OPENAI_GURU_TOOL_NAME_ALIASES: Record<GuruMcpToolName, string> = {
+  [GURU_MCP_TOOL_NAMES.appsList]: 'apps_list',
+  [GURU_MCP_TOOL_NAMES.metricsGetTrend]: 'metrics_get_trend',
+  [GURU_MCP_TOOL_NAMES.roasGetSummary]: 'roas_get_summary',
+  [GURU_MCP_TOOL_NAMES.budgetGetSummary]: 'budget_get_summary',
+  [GURU_MCP_TOOL_NAMES.asaKeywordsGetSummary]: 'asa_keywords_get_summary'
+};
+
+const AI_CHAT_TOOL_DEFINITIONS: AiChatCanonicalToolDefinition[] = [
   {
     type: 'function',
     function: {
@@ -280,6 +300,29 @@ const AI_CHAT_TOOL_DEFINITIONS: AiChatToolDefinition[] = [
           },
           metric: { type: 'string', description: '如 installs/clicks/total_cost/revenue/event_count/purchase_count' },
           eventName: { type: 'string', description: '当 metric=event_count 时可指定事件名' }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: GURU_MCP_TOOL_NAMES.roasGetSummary,
+      description:
+        '查询与简报一致的成熟窗口 D7 ROAS 摘要。适用于 ROAS、回收、成熟窗口、日报口径对齐问题；回答时必须说明时间窗口。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['appKey'],
+        properties: {
+          appKey: { type: 'string', description: '应用 appKey' },
+          templateId: {
+            type: 'string',
+            enum: ['mature_window'],
+            description: '固定为 mature_window，可不填'
+          },
+          platform: { type: 'string', description: 'ios / android / unknown，可为空' },
+          reportDate: { type: 'string', description: '报告日期 YYYY-MM-DD；默认按昨天' }
         }
       }
     }
@@ -340,6 +383,67 @@ const AI_CHAT_TOOL_DEFINITIONS: AiChatToolDefinition[] = [
     }
   }
 ];
+
+function isGuruMcpToolName(name: string): name is GuruMcpToolName {
+  return (
+    name === GURU_MCP_TOOL_NAMES.appsList ||
+    name === GURU_MCP_TOOL_NAMES.metricsGetTrend ||
+    name === GURU_MCP_TOOL_NAMES.roasGetSummary ||
+    name === GURU_MCP_TOOL_NAMES.budgetGetSummary ||
+    name === GURU_MCP_TOOL_NAMES.asaKeywordsGetSummary
+  );
+}
+
+export function normalizeGuruToolName(name: string): GuruMcpToolName | null {
+  const normalizedName = String(name || '').trim();
+  if (!normalizedName) {
+    return null;
+  }
+  if (isGuruMcpToolName(normalizedName)) {
+    return normalizedName;
+  }
+  if (OPENAI_GURU_TOOL_NAME_ALIASES[GURU_MCP_TOOL_NAMES.appsList] === normalizedName) {
+    return GURU_MCP_TOOL_NAMES.appsList;
+  }
+  if (OPENAI_GURU_TOOL_NAME_ALIASES[GURU_MCP_TOOL_NAMES.metricsGetTrend] === normalizedName) {
+    return GURU_MCP_TOOL_NAMES.metricsGetTrend;
+  }
+  if (OPENAI_GURU_TOOL_NAME_ALIASES[GURU_MCP_TOOL_NAMES.roasGetSummary] === normalizedName) {
+    return GURU_MCP_TOOL_NAMES.roasGetSummary;
+  }
+  if (OPENAI_GURU_TOOL_NAME_ALIASES[GURU_MCP_TOOL_NAMES.budgetGetSummary] === normalizedName) {
+    return GURU_MCP_TOOL_NAMES.budgetGetSummary;
+  }
+  if (OPENAI_GURU_TOOL_NAME_ALIASES[GURU_MCP_TOOL_NAMES.asaKeywordsGetSummary] === normalizedName) {
+    return GURU_MCP_TOOL_NAMES.asaKeywordsGetSummary;
+  }
+  return null;
+}
+
+function toProviderToolFunctionName(toolName: GuruMcpToolName, provider: AiChatProviderId): string {
+  if (provider !== 'openai') {
+    return toolName;
+  }
+  return OPENAI_GURU_TOOL_NAME_ALIASES[toolName] || toolName;
+}
+
+export function buildAiChatToolDefinitionsForModel(
+  modelId: AiChatModelId,
+  definitions: AiChatToolDefinition[] | AiChatCanonicalToolDefinition[] = AI_CHAT_TOOL_DEFINITIONS
+): AiChatToolDefinition[] {
+  const provider: AiChatProviderId =
+    modelId === 'openai_gpt54' ? 'openai' : modelId === 'openrouter_kimi_k25' ? 'openrouter' : 'dashscope';
+  return definitions.map((item) => ({
+    ...item,
+    function: {
+      ...item.function,
+      name: (() => {
+        const canonicalName = normalizeGuruToolName(item.function.name);
+        return canonicalName ? toProviderToolFunctionName(canonicalName, provider) : String(item.function.name || '').trim();
+      })()
+    }
+  }));
+}
 
 const defaultAiChatRuntimeDeps: AiChatRuntimeDeps = {
   buildAiContextPacksViaMcp,
@@ -580,6 +684,7 @@ function normalizeHistory(history: AiChatHistoryMessage[]): AiChatHistoryMessage
                       tool:
                         trace.tool === GURU_MCP_TOOL_NAMES.appsList ||
                         trace.tool === GURU_MCP_TOOL_NAMES.metricsGetTrend ||
+                        trace.tool === GURU_MCP_TOOL_NAMES.roasGetSummary ||
                         trace.tool === GURU_MCP_TOOL_NAMES.budgetGetSummary ||
                         trace.tool === GURU_MCP_TOOL_NAMES.asaKeywordsGetSummary
                           ? trace.tool
@@ -654,6 +759,12 @@ function formatMetricLabel(metric: string): string {
   }
 }
 
+function buildMetricsNoDataHint(source: 'pull' | 'push', metric: string): string {
+  const sourceLabel = source === 'pull' ? '广告日报（日级）' : '实时回传（小时级）';
+  const metricLabel = formatMetricLabel(metric);
+  return `- 当前时间范围内没有任何 ${sourceLabel} 的「${metricLabel}」聚合记录；这通常表示数据缺失、尚未回传或尚未完成聚合，不能直接视为 0。`;
+}
+
 function truncateText(value: string, maxChars: number): { text: string; truncated: boolean } {
   const normalized = String(value || '').trim();
   if (!normalized) {
@@ -707,6 +818,8 @@ function formatDimensionLabel(templateId: AiContextPackTemplateId): string {
       return '国家';
     case 'campaign':
       return '活动';
+    case 'mature_window':
+      return '成熟窗口';
     case 'platform_media_source':
       return '平台 / 媒体源';
     case 'action_status':
@@ -738,8 +851,21 @@ function buildMetricsEventFilter(metric: string, eventName?: string): { sql: str
   return { sql: '', params: {} };
 }
 
+function resolveMetricsTrendSource(metric: string | undefined, source: string | undefined): 'pull' | 'push' {
+  const normalizedMetric = String(metric || '')
+    .trim()
+    .toLowerCase();
+  if (PUSH_METRICS.has(normalizedMetric)) {
+    return 'push';
+  }
+  if (PULL_METRICS.has(normalizedMetric)) {
+    return 'pull';
+  }
+  return source === 'push' ? 'push' : 'pull';
+}
+
 async function buildMetricsTrendPack(spec: AiContextPackSpec): Promise<AiBuiltContextPack> {
-  const source = spec.source === 'push' ? 'push' : 'pull';
+  const source = resolveMetricsTrendSource(spec.metric, spec.source);
   const platform = normalizePlatform(spec.platform);
   const dim = METRICS_DIMS[spec.templateId];
   if (!dim) {
@@ -752,12 +878,7 @@ async function buildMetricsTrendPack(spec: AiContextPackSpec): Promise<AiBuiltCo
   const defaultPushTo = getDateTimeStringInTimezone(now, env.timezone);
   const defaultPushFrom = getDateTimeStringInTimezone(new Date(now.getTime() - 72 * 60 * 60 * 1000), env.timezone);
 
-  const metric = String(
-    spec.metric ||
-      (source === 'pull'
-        ? 'installs'
-        : 'revenue')
-  )
+  const metric = String(spec.metric || (source === 'pull' ? 'installs' : 'revenue'))
     .trim()
     .toLowerCase();
 
@@ -837,15 +958,22 @@ async function buildMetricsTrendPack(spec: AiContextPackSpec): Promise<AiBuiltCo
   );
   const deltaRatio = first.value > 0 ? ((latest.value - first.value) / first.value) * 100 : null;
   const truncated = normalizedBuckets.length > trimmedBuckets.length;
+  const hasData = normalizedBuckets.length > 0 || normalizedGroups.length > 0;
 
   const summaryMarkdown = [
     `### 指标时序包`,
     `- 应用：${spec.appKey}${platform ? ` / ${platform}` : ''}`,
     `- 来源：${source === 'pull' ? '广告日报（日级）' : '实时回传（小时级）'}；指标：${formatMetricLabel(metric)}；维度：${formatDimensionLabel(spec.templateId)}`,
     `- 时间范围：${from} ~ ${to}`,
-    `- 总量：${formatNum(total)}；最新点：${latest.bucket} = ${formatNum(latest.value)}；峰值：${peak.bucket} = ${formatNum(peak.value)}`,
-    deltaRatio === null ? '- 趋势变化：首点为 0，暂不计算变化率' : `- 趋势变化：相对首点 ${deltaRatio >= 0 ? '+' : ''}${formatNum(deltaRatio)}%`,
-    normalizedGroups.length
+    hasData
+      ? `- 总量：${formatNum(total)}；最新点：${latest.bucket} = ${formatNum(latest.value)}；峰值：${peak.bucket} = ${formatNum(peak.value)}`
+      : buildMetricsNoDataHint(source, metric),
+    hasData
+      ? deltaRatio === null
+        ? '- 趋势变化：首点为 0，暂不计算变化率'
+        : `- 趋势变化：相对首点 ${deltaRatio >= 0 ? '+' : ''}${formatNum(deltaRatio)}%`
+      : '- 这份结果不能直接用于判断收入为 0、ROAS 为 0% 或转化为 0；更准确的结论是当前来源暂无可用数据。',
+    hasData && normalizedGroups.length
       ? `- Top 维度：${normalizedGroups.map((row) => `${row.label} ${formatNum(row.value)}`).join('；')}`
       : '- Top 维度：当前筛选条件下暂无聚合结果'
   ].join('\n');
@@ -868,7 +996,9 @@ async function buildMetricsTrendPack(spec: AiContextPackSpec): Promise<AiBuiltCo
       total,
       latest,
       peak,
-      deltaRatio
+      deltaRatio,
+      hasData,
+      dataStatus: hasData ? 'available' : 'missing'
     },
     rowCount: normalizedGroups.length + trimmedBuckets.length,
     truncated,
@@ -881,6 +1011,27 @@ async function buildMetricsTrendPack(spec: AiContextPackSpec): Promise<AiBuiltCo
       metric,
       eventName: spec.eventName || null
     }
+  };
+}
+
+async function buildRoasSummaryPack(spec: AiContextPackSpec): Promise<AiBuiltContextPack> {
+  if (spec.templateId !== 'mature_window') {
+    throw new Error('invalid_roas_template');
+  }
+  const pack = await buildMatureRoasContextPack({
+    appKey: spec.appKey,
+    platform: normalizePlatform(spec.platform),
+    reportDate: spec.reportDate
+  });
+  return {
+    type: 'roas_summary',
+    templateId: spec.templateId,
+    title: pack.title,
+    summaryMarkdown: pack.summaryMarkdown,
+    structured: pack.structured,
+    rowCount: pack.rowCount,
+    truncated: false,
+    appliedFilters: pack.appliedFilters
   };
 }
 
@@ -1331,6 +1482,8 @@ export async function buildAiContextPacks(
       }
       if (spec.type === 'metrics_trend') {
         packs.push(await buildMetricsTrendPack(spec));
+      } else if (spec.type === 'roas_summary') {
+        packs.push(await buildRoasSummaryPack(spec));
       } else if (spec.type === 'budget_summary') {
         packs.push(await buildBudgetSummaryPack(spec));
       } else if (spec.type === 'asa_keyword_summary') {
@@ -1437,13 +1590,8 @@ function normalizeGuruToolCalls(raw: unknown): AiChatToolCall[] {
     .map((item, index) => {
       const toolCall = isPlainObject(item) ? item : {};
       const fn = isPlainObject(toolCall.function) ? toolCall.function : {};
-      const name = String(fn.name || '').trim();
-      if (
-        name !== GURU_MCP_TOOL_NAMES.appsList &&
-        name !== GURU_MCP_TOOL_NAMES.metricsGetTrend &&
-        name !== GURU_MCP_TOOL_NAMES.budgetGetSummary &&
-        name !== GURU_MCP_TOOL_NAMES.asaKeywordsGetSummary
-      ) {
+      const name = normalizeGuruToolName(String(fn.name || '').trim());
+      if (!name) {
         return null;
       }
       const rawArguments =
@@ -1646,6 +1794,9 @@ function buildAiChatSystemPrompt(input: {
     pageContextRule,
     clarificationRule,
     '调用工具前，先判断是否已经有足够的手动上下文或历史工具结果；避免重复查询同一份数据。',
+    '使用 metrics.get_trend 时：installs/clicks/total_cost 必须走 pull；revenue/event_count/purchase_count 必须走 push。不要把 ROAS 当成可直接查询的 metric；若用户明确要实时/当日收入口径，请分别查询 cost 与 revenue 后再回答。',
+    '若用户询问 ROAS、回收、D7 ROAS，且诉求是与简报/日报口径对齐，优先使用 roas.get_summary。使用 roas.get_summary 后，回答里必须明确写出“报告日期”和“成熟窗口 from 至 to”，并说明这不是当日实时 ROAS。',
+    '如果工具结果写明“暂无聚合记录/暂无可用数据”，要把它理解为数据缺失或未回传，而不是数值等于 0；此时不要直接下结论说收入为 0 或 ROAS 为 0%。',
     '最终回答默认结构：先给结论，再给 2-4 条关键证据，最后给一个可继续追问的方向。',
     '回答请使用简洁 Markdown：允许短段落、加粗、列表、行内代码；不要使用 HTML、复杂表格、冗长标题或花哨格式。',
     '不要编造系统里不存在的事实；如果工具失败或数据不足，要明确说明。'
@@ -1669,6 +1820,9 @@ function findFallbackContextSpec(
   const matched = allSpecs.find((spec) => {
     if (toolName === GURU_MCP_TOOL_NAMES.metricsGetTrend) {
       return spec.type === 'metrics_trend';
+    }
+    if (toolName === GURU_MCP_TOOL_NAMES.roasGetSummary) {
+      return spec.type === 'roas_summary';
     }
     if (toolName === GURU_MCP_TOOL_NAMES.budgetGetSummary) {
       return spec.type === 'budget_summary';
@@ -1694,6 +1848,19 @@ function findFallbackContextSpec(
       from: defaults?.from,
       to: defaults?.to,
       source: 'pull'
+    };
+  }
+  if (toolName === GURU_MCP_TOOL_NAMES.roasGetSummary) {
+    const fallbackReportDate =
+      (typeof defaults?.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(defaults.to.trim()) ? defaults.to.trim() : '') ||
+      (typeof defaults?.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(defaults.from.trim()) ? defaults.from.trim() : '') ||
+      shiftDateString(getDateStringInTimezone(new Date(), env.timezone), -1);
+    return {
+      type: 'roas_summary',
+      templateId: 'mature_window',
+      appKey: String(defaults?.appKey || '').trim(),
+      platform: defaults?.platform,
+      reportDate: fallbackReportDate
     };
   }
   if (toolName === GURU_MCP_TOOL_NAMES.budgetGetSummary) {
@@ -1746,15 +1913,24 @@ function resolveGuruToolArguments(input: {
     return {};
   }
   if (input.toolName === GURU_MCP_TOOL_NAMES.metricsGetTrend) {
+    const metric = readText('metric');
     return {
       appKey: readText('appKey') || '',
       templateId: readText('templateId') || 'media_source',
       platform: readText('platform'),
       from: readText('from'),
       to: readText('to'),
-      source: readText('source'),
-      metric: readText('metric'),
+      source: resolveMetricsTrendSource(metric, readText('source')),
+      metric,
       eventName: readText('eventName')
+    };
+  }
+  if (input.toolName === GURU_MCP_TOOL_NAMES.roasGetSummary) {
+    return {
+      appKey: readText('appKey') || '',
+      templateId: readText('templateId') || 'mature_window',
+      platform: readText('platform'),
+      reportDate: readText('reportDate')
     };
   }
   if (input.toolName === GURU_MCP_TOOL_NAMES.budgetGetSummary) {
@@ -1801,6 +1977,7 @@ function buildGuruToolTrace(toolName: GuruMcpToolName, result: GuruMcpStructured
   const labelMap: Record<string, string> = {
     appKey: '应用',
     platform: '平台',
+    reportDate: '报告日期',
     from: '开始',
     to: '结束',
     source: '来源',
@@ -1944,7 +2121,7 @@ async function requestAiChatCompletion(input: {
     };
   }
   if (Array.isArray(input.tools) && input.tools.length > 0) {
-    payload.tools = input.tools;
+    payload.tools = buildAiChatToolDefinitionsForModel(input.modelConfig.id, input.tools);
     payload.tool_choice = input.toolChoice || 'auto';
   }
 

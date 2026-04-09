@@ -333,6 +333,10 @@ export async function ensureAsaKeywordRoasSchema(): Promise<void> {
             ADD COLUMN IF NOT EXISTS roas_data_status TEXT NOT NULL DEFAULT 'unavailable'`
       );
       await pgQuery(
+        `ALTER TABLE asa_keyword_states
+            ADD COLUMN IF NOT EXISTS roas_coverage_ratio DOUBLE PRECISION NOT NULL DEFAULT 0`
+      );
+      await pgQuery(
         `ALTER TABLE asa_keyword_recommendations
             ADD COLUMN IF NOT EXISTS roas_window_from DATE`
       );
@@ -2565,7 +2569,7 @@ export async function queryAsaKeywordStates(filter: AsaKeywordStateFilter): Prom
 
   const rowsResult = await pgQuery<AsaKeywordStateRow>(
     `SELECT id, app_key, platform, keyword, campaign, adset, current_stage, stage_score, first_seen_date, last_seen_date,
-            current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, target_ecpi, target_cpp, target_d7_roas,
+            current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, roas_coverage_ratio, target_ecpi, target_cpp, target_d7_roas,
             installs_7d, total_cost_7d, purchase_count_7d, revenue_d7_7d, trend_json, created_at, updated_at
        FROM asa_keyword_states
        ${where}
@@ -2594,6 +2598,7 @@ export async function upsertAsaKeywordState(input: {
   roas_window_from?: string | null;
   roas_window_to?: string | null;
   roas_data_status?: RoasDataStatus;
+  roas_coverage_ratio?: number;
   target_ecpi: number;
   target_cpp: number;
   target_d7_roas: number;
@@ -2607,10 +2612,10 @@ export async function upsertAsaKeywordState(input: {
   const result = await pgQuery<AsaKeywordStateRow>(
     `INSERT INTO asa_keyword_states (
       app_key, platform, keyword, campaign, adset, current_stage, stage_score, first_seen_date, last_seen_date,
-      current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, target_ecpi, target_cpp, target_d7_roas,
+      current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, roas_coverage_ratio, target_ecpi, target_cpp, target_d7_roas,
       installs_7d, total_cost_7d, purchase_count_7d, revenue_d7_7d, trend_json
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8::date, $9::date, $10, $11, $12, $13::date, $14::date, $15, $16, $17, $18, $19, $20, $21, $22, $23
+      $1, $2, $3, $4, $5, $6, $7, $8::date, $9::date, $10, $11, $12, $13::date, $14::date, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
     )
     ON CONFLICT (app_key, platform, keyword, campaign, adset) DO UPDATE SET
       current_stage = EXCLUDED.current_stage,
@@ -2623,6 +2628,7 @@ export async function upsertAsaKeywordState(input: {
       roas_window_from = EXCLUDED.roas_window_from,
       roas_window_to = EXCLUDED.roas_window_to,
       roas_data_status = EXCLUDED.roas_data_status,
+      roas_coverage_ratio = EXCLUDED.roas_coverage_ratio,
       target_ecpi = EXCLUDED.target_ecpi,
       target_cpp = EXCLUDED.target_cpp,
       target_d7_roas = EXCLUDED.target_d7_roas,
@@ -2633,7 +2639,7 @@ export async function upsertAsaKeywordState(input: {
       trend_json = EXCLUDED.trend_json,
       updated_at = NOW()
     RETURNING id, app_key, platform, keyword, campaign, adset, current_stage, stage_score, first_seen_date, last_seen_date,
-              current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, target_ecpi, target_cpp, target_d7_roas,
+              current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, roas_coverage_ratio, target_ecpi, target_cpp, target_d7_roas,
               installs_7d, total_cost_7d, purchase_count_7d, revenue_d7_7d, trend_json, created_at, updated_at`,
     [
       input.app_key,
@@ -2651,6 +2657,7 @@ export async function upsertAsaKeywordState(input: {
       input.roas_window_from ?? null,
       input.roas_window_to ?? null,
       input.roas_data_status ?? 'unavailable',
+      Number(input.roas_coverage_ratio || 0),
       input.target_ecpi,
       input.target_cpp,
       input.target_d7_roas,

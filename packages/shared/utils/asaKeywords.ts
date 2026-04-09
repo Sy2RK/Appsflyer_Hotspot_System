@@ -33,6 +33,7 @@ import {
   buildMatureRoasWindow,
   isRoasDataDisplayableStatus,
   isRoasDataUsableStatus,
+  resolveRoasCoverageRatio,
   resolveRoasDataStatus
 } from './roasWindow.js';
 import {
@@ -205,6 +206,7 @@ interface AsaKeywordSummary {
   roas_data_status: RoasDataStatus;
   roas_window_from: string | null;
   roas_window_to: string | null;
+  roas_coverage_ratio: number;
 }
 
 export interface AsaKeywordQueryFilter {
@@ -378,11 +380,16 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
       d7_roas: 0,
       roas_data_status: 'unavailable',
       roas_window_from: filter.from ?? null,
-      roas_window_to: filter.to ?? null
+      roas_window_to: filter.to ?? null,
+      roas_coverage_ratio: 0
     };
   if (!rawSummary) {
     return fallback;
   }
+  const roasCoverageRatio = resolveRoasCoverageRatio({
+    coveredCost: Number(rawSummary.covered_roas_cost_sum || 0),
+    missingCost: Number(rawSummary.missing_roas_cost_sum || 0)
+  });
   const roasDataStatus = resolveRoasDataStatus({
     hasWindowRows: Number(rawSummary.keyword_count || 0) > 0,
     hasSpend: Number(rawSummary.total_cost || 0) > 0 || Number(rawSummary.spend_row_count || 0) > 0,
@@ -400,7 +407,8 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
     d7_roas: isRoasDataDisplayableStatus(roasDataStatus) ? Number(rawSummary.d7_roas || 0) : 0,
     roas_data_status: roasDataStatus,
     roas_window_from: filter.from ?? null,
-    roas_window_to: filter.to ?? null
+    roas_window_to: filter.to ?? null,
+    roas_coverage_ratio: roasCoverageRatio
   };
 }
 
@@ -1491,6 +1499,10 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     const missingRoasCost = effectiveRoasRows
       .filter((row) => Number(row.total_cost || 0) > 0 && Number(row.roas_source_missing || 0) === 1)
       .reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
+    const roasCoverageRatio = resolveRoasCoverageRatio({
+      coveredCost: coveredRoasCost,
+      missingCost: missingRoasCost
+    });
     const roasDataStatus = resolveRoasDataStatus({
       hasWindowRows: effectiveRoasRows.length > 0,
       hasSpend: roasHasSpend,
@@ -1614,6 +1626,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       roas_window_from: roasWindow.from,
       roas_window_to: roasWindow.to,
       roas_data_status: roasDataStatus,
+      roas_coverage_ratio: roasCoverageRatio,
       target_ecpi: effectiveTargetEcpi,
       target_cpp: targetCpp,
       target_d7_roas: effectiveTargetD7Roas,
@@ -2225,7 +2238,8 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
     d7_roas: matureSummary.d7_roas,
     roas_data_status: matureSummary.roas_data_status,
     roas_window_from: roasWindow.from,
-    roas_window_to: roasWindow.to
+    roas_window_to: roasWindow.to,
+    roas_coverage_ratio: matureSummary.roas_coverage_ratio
   };
 
   const rows: AsaKeywordDashboardRow[] = stateRows.map((row) => {

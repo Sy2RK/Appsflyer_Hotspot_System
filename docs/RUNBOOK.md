@@ -148,7 +148,13 @@ Web UI 新增能力:
 
 ```bash
 curl http://localhost:3000/health
+curl http://localhost:3000/ready
 ```
+
+说明：
+
+- `/health` 表示 API 进程仍然存活
+- `/ready` 表示 API 到 Postgres / ClickHouse 的基础依赖已经就绪
 
 可选补充：
 
@@ -171,6 +177,9 @@ docker compose logs --tail=50 api mcp-server
 - `api_started`
 - `guru_mcp_started`
 - 若出现超时，优先检查 `MCP_TIMEOUT_MS`、`MCP_BASE_URL` 与 `MCP_INTERNAL_TOKEN`
+- 若用户问的是“与简报一致的 ROAS”，`tool_trace` 中应优先出现 `roas.get_summary`
+  - 返回内容应带 `reportDate` 与 `roasWindow.from / to`
+  - 若未指定 `platform` 且同一应用跨平台成熟窗口不同，Agent 可能返回分平台结果而不是单一 ROAS
 
 ---
 
@@ -338,6 +347,10 @@ curl -s "http://localhost:8123/?query=SELECT%20install_date,app_key,platform,med
 - `d7_roas` 只在 `revenue_d7` 与 `total_cost` 都具备时有意义
 - ASA 页面摘要卡会直接复用这套口径
   - 若成熟窗口覆盖率未达到 80%，即使部分 keyword 已有 Cohort 收入，`CPP / D7 ROAS` 仍会整体显示为“待补齐（源数据缺失）”
+- Guru Ads Agent 中与简报对齐的 ROAS 问答默认也复用这套价值事实
+  - 工具名：`roas.get_summary`
+  - `reportDate` 只是报告锚点，真正用于计算的是策略成熟窗口 `from ~ to`
+  - 若跨平台成熟窗口不一致，Agent 应按平台拆开回答，不应硬拼一个总 ROAS
 
 如果大量行都为 `revenue_source_missing=1`：
 - 先检查 `APPSFLYER_COHORT_*` 配置
