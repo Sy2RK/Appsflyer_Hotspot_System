@@ -212,6 +212,7 @@ grep -E '^(TZ|FEISHU_|APPSFLYER_|BI_APPSFLYER_|QWEN_)' .env
 最低要求：
 
 - `TZ=Asia/Shanghai`
+- `API_PORT_MAPPING=3000:3000`
 - AppsFlyer token 已填写
 - Feishu 消息 token 已填写
 - Feishu 多维表格配置已填写
@@ -285,6 +286,7 @@ curl http://localhost:3000/ready
 
 - `/health` 返回 HTTP `200`
 - `/ready` 在数据库可用时返回 HTTP `200`
+- `/ready` 失败时只返回依赖状态，不再暴露数据库原始报错
 
 如果失败：
 

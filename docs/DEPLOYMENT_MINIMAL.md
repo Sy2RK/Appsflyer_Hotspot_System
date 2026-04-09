@@ -155,6 +155,7 @@ HOTSPOT_DOMAIN=hotspot.example.com
 - `OPENROUTER_*` 可以全部留空
 - 云端只保留 `Qwen` 一种模型即可
 - `API_PORT_MAPPING=127.0.0.1:3000:3000` 用于确保 `api` 只接受本机回环访问，再由 `Caddy` 暴露到公网
+- `docker-compose.cloud.yml` 也会强制覆盖 `api.ports` 为 `127.0.0.1:3000:3000`，避免误把 `3000` 裸露到公网
 - 如果飞书消息 / 多维表格还没准备好，先保持：
   - `FEISHU_BITABLE_ENABLED=false`
   - `DAILY_BRIEF_ENABLED=false`

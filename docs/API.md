@@ -160,7 +160,9 @@ Response:
   - `roas.get_summary`
   - `budget.get_summary`
   - `asa_keywords.get_summary`
-- `roas.get_summary` 用于查询与每日简报一致的成熟窗口 D7 ROAS 摘要
+- `roas.get_summary` 用于查询指定简报口径的成熟窗口 D7 ROAS 摘要
+  - `scope=budget`：每日简报 / 预算建议口径
+  - `scope=asa`：ASA 简报 / ASA 看板口径
   - 返回结果会显式包含 `reportDate` 与 `summary.roasWindow.from / to`
   - 该口径不是“当日实时 ROAS”，而是按策略成熟窗口聚合后的 D7 ROAS
   - 若同一应用跨平台成熟窗口不一致，且请求未指定 `platform`，工具可能只返回 `platformBreakdown`，不强行给出单一汇总 ROAS

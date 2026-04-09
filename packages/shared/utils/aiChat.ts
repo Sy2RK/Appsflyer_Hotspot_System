@@ -89,6 +89,7 @@ export interface AiContextPackSpec {
   type: AiContextPackType;
   templateId: AiContextPackTemplateId;
   appKey: string;
+  scope?: 'budget' | 'asa';
   platform?: string;
   from?: string;
   to?: string;
@@ -309,7 +310,7 @@ const AI_CHAT_TOOL_DEFINITIONS: AiChatCanonicalToolDefinition[] = [
     function: {
       name: GURU_MCP_TOOL_NAMES.roasGetSummary,
       description:
-        '查询与简报一致的成熟窗口 D7 ROAS 摘要。适用于 ROAS、回收、成熟窗口、日报口径对齐问题；回答时必须说明时间窗口。',
+        '查询指定简报口径的成熟窗口 D7 ROAS 摘要。适用于 ROAS、回收、成熟窗口、日报口径对齐问题；回答时必须说明时间窗口。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -320,6 +321,11 @@ const AI_CHAT_TOOL_DEFINITIONS: AiChatCanonicalToolDefinition[] = [
             type: 'string',
             enum: ['mature_window'],
             description: '固定为 mature_window，可不填'
+          },
+          scope: {
+            type: 'string',
+            enum: ['budget', 'asa'],
+            description: 'budget=每日简报/预算建议口径；asa=ASA 简报/ASA 看板口径'
           },
           platform: { type: 'string', description: 'ios / android / unknown，可为空' },
           reportDate: { type: 'string', description: '报告日期 YYYY-MM-DD；默认按昨天' }
@@ -618,6 +624,19 @@ function normalizePlatform(platform?: string): string | undefined {
     .trim()
     .toLowerCase();
   return value ? value : undefined;
+}
+
+function normalizeRoasScope(scope?: string): 'budget' | 'asa' {
+  return String(scope || '')
+    .trim()
+    .toLowerCase() === 'asa'
+    ? 'asa'
+    : 'budget';
+}
+
+function inferRoasScopeFromPageContext(pageContext?: AiChatPageContext): 'budget' | 'asa' {
+  const raw = `${String(pageContext?.pageLabel || '')} ${String(pageContext?.activeSection || '')}`.toLowerCase();
+  return raw.includes('asa') ? 'asa' : 'budget';
 }
 
 function normalizeDate(value: string | undefined, fallback: string): string {
@@ -1020,6 +1039,7 @@ async function buildRoasSummaryPack(spec: AiContextPackSpec): Promise<AiBuiltCon
   }
   const pack = await buildMatureRoasContextPack({
     appKey: spec.appKey,
+    scope: normalizeRoasScope(spec.scope),
     platform: normalizePlatform(spec.platform),
     reportDate: spec.reportDate
   });
@@ -1795,7 +1815,7 @@ function buildAiChatSystemPrompt(input: {
     clarificationRule,
     '调用工具前，先判断是否已经有足够的手动上下文或历史工具结果；避免重复查询同一份数据。',
     '使用 metrics.get_trend 时：installs/clicks/total_cost 必须走 pull；revenue/event_count/purchase_count 必须走 push。不要把 ROAS 当成可直接查询的 metric；若用户明确要实时/当日收入口径，请分别查询 cost 与 revenue 后再回答。',
-    '若用户询问 ROAS、回收、D7 ROAS，且诉求是与简报/日报口径对齐，优先使用 roas.get_summary。使用 roas.get_summary 后，回答里必须明确写出“报告日期”和“成熟窗口 from 至 to”，并说明这不是当日实时 ROAS。',
+    '若用户询问 ROAS、回收、D7 ROAS，且诉求是与简报/日报口径对齐，优先使用 roas.get_summary。通用每日简报 / 预算建议场景用 scope=budget；ASA 简报 / ASA 看板场景用 scope=asa。使用 roas.get_summary 后，回答里必须明确写出“报告日期”和“成熟窗口 from 至 to”，并说明这不是当日实时 ROAS。',
     '如果工具结果写明“暂无聚合记录/暂无可用数据”，要把它理解为数据缺失或未回传，而不是数值等于 0；此时不要直接下结论说收入为 0 或 ROAS 为 0%。',
     '最终回答默认结构：先给结论，再给 2-4 条关键证据，最后给一个可继续追问的方向。',
     '回答请使用简洁 Markdown：允许短段落、加粗、列表、行内代码；不要使用 HTML、复杂表格、冗长标题或花哨格式。',
@@ -1859,6 +1879,7 @@ function findFallbackContextSpec(
       type: 'roas_summary',
       templateId: 'mature_window',
       appKey: String(defaults?.appKey || '').trim(),
+      scope: inferRoasScopeFromPageContext(pageContext),
       platform: defaults?.platform,
       reportDate: fallbackReportDate
     };
@@ -1929,6 +1950,7 @@ function resolveGuruToolArguments(input: {
     return {
       appKey: readText('appKey') || '',
       templateId: readText('templateId') || 'mature_window',
+      scope: normalizeRoasScope(readText('scope')),
       platform: readText('platform'),
       reportDate: readText('reportDate')
     };

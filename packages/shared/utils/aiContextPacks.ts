@@ -20,6 +20,7 @@ export interface AiContextPackSpec {
   type: AiContextPackType;
   templateId: AiContextPackTemplateId;
   appKey: string;
+  scope?: 'budget' | 'asa';
   platform?: string;
   from?: string;
   to?: string;
@@ -73,6 +74,14 @@ function normalizePlatform(platform?: string): string | undefined {
     .trim()
     .toLowerCase();
   return value ? value : undefined;
+}
+
+function normalizeRoasScope(scope?: string): 'budget' | 'asa' {
+  return String(scope || '')
+    .trim()
+    .toLowerCase() === 'asa'
+    ? 'asa'
+    : 'budget';
 }
 
 function normalizeDate(value: string | undefined, fallback: string): string {
@@ -554,6 +563,7 @@ async function buildRoasSummaryPack(spec: AiContextPackSpec): Promise<AiBuiltCon
   }
   const pack = await buildMatureRoasContextPack({
     appKey: spec.appKey,
+    scope: normalizeRoasScope(spec.scope),
     platform: normalizePlatform(spec.platform),
     reportDate: spec.reportDate
   });

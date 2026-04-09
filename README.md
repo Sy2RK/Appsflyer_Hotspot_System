@@ -18,7 +18,10 @@
   - 已接入 `Qwen 3.6-Plus`、`Kimi-K2.5 (OpenRouter)`、`GPT-5.4 (OpenAI)`
   - 支持页面内多轮对话、图片上传、数据库聚合上下文包附带
   - 支持自然语言自动查库：模型可通过内部只读 MCP 工具自动调用 `apps.list / metrics.get_trend / roas.get_summary / budget.get_summary / asa_keywords.get_summary`
-  - `roas.get_summary` 专门用于“与简报 / 日报口径对齐”的成熟窗口 D7 ROAS 查询，返回结果会显式带 `报告日期` 与 `成熟窗口 from ~ to`
+  - `roas.get_summary` 专门用于“与简报 / 日报口径对齐”的成熟窗口 D7 ROAS 查询
+    - `scope=budget`：每日简报 / 预算建议口径
+    - `scope=asa`：ASA 简报 / ASA 看板口径
+    - 返回结果会显式带 `报告日期` 与 `成熟窗口 from ~ to`
   - 会在回复里回显 `已自动查询什么`，并在需要时进入澄清轮次
   - 模型可按当前已配置凭据动态显示，默认优先使用可用的主模型
   - 面板内保留 Gemini 官网外部工具快捷入口

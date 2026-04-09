@@ -40,7 +40,7 @@ services:
     env_file:
       - ../.env
     ports:
-      - '${API_PORT_MAPPING:-3000:3000}'
+      - '${API_PORT_MAPPING:-127.0.0.1:3000:3000}'
     environment:
       NODE_ENV: production
       PORT: 3000

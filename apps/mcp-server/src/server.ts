@@ -244,13 +244,14 @@ function createGuruMcpServer(requestId?: string): McpServer {
     GURU_MCP_TOOL_NAMES.roasGetSummary,
     {
       title: '成熟窗口 ROAS',
-      description: '按简报口径读取成熟窗口 D7 ROAS 摘要，并返回明确的时间窗口。',
+      description: '按指定简报口径读取成熟窗口 D7 ROAS 摘要，并返回明确的时间窗口。',
       annotations: {
         readOnlyHint: true
       },
       inputSchema: {
         appKey: z.string().min(1),
         templateId: z.enum(['mature_window']).optional(),
+        scope: z.enum(['budget', 'asa']).optional(),
         platform: z.string().optional(),
         reportDate: z.string().optional()
       }

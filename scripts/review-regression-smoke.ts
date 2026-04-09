@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import express from 'express';
 import { createAiRouter } from '../apps/api/src/modules/ai/ai.routes.js';
+import { createHealthRouter } from '../apps/api/src/modules/health/health.routes.js';
 import { createGuruMcpApp } from '../apps/mcp-server/src/server.js';
 import { createRecommendationPoliciesRouter } from '../apps/api/src/modules/recommendationPolicies/recommendationPolicies.routes.js';
 import {
@@ -1411,10 +1412,91 @@ async function main(): Promise<void> {
   assert.equal(matureRoasResult.agent_action, 'answer');
   assert.equal(matureRoasToolCallsCaptured[0]?.toolName, GURU_MCP_TOOL_NAMES.roasGetSummary);
   assert.equal(matureRoasToolCallsCaptured[0]?.args.appKey, 'demo_app');
+  assert.equal(matureRoasToolCallsCaptured[0]?.args.scope, 'budget');
   assert.equal(matureRoasToolCallsCaptured[0]?.args.platform, 'ios');
   assert.equal(matureRoasToolCallsCaptured[0]?.args.reportDate, '2026-04-08');
   assert.equal(matureRoasToolCallsCaptured[0]?.args.templateId, 'mature_window');
   assert.match(matureRoasSystemPrompt, /必须明确写出“报告日期”和“成熟窗口 from 至 to”/);
+
+  const asaRoasToolCallsCaptured: Array<{ toolName: string; args: Record<string, unknown> }> = [];
+  let asaRoasStepIndex = 0;
+  const asaRoasResult = await runAiChat(
+    {
+      message: '按 ASA 简报口径帮我看昨天的 ROAS',
+      history: [],
+      contextPacks: [],
+      images: [],
+      modelId: 'openai_gpt54',
+      pageContext: {
+        activeSection: 'section-asa-keywords',
+        pageLabel: 'ASA 关键词管理',
+        defaults: {
+          appKey: 'demo_app',
+          platform: 'ios',
+          from: '2026-04-08',
+          to: '2026-04-08'
+        },
+        currentFilters: {},
+        recommendedSpecs: [],
+        coreSpecs: []
+      }
+    },
+    {
+      buildAiContextPacksViaMcp: async () => ({ packs: [], packSpecs: [], warnings: [] }),
+      callGuruMcpTool: async (toolName, args) => {
+        asaRoasToolCallsCaptured.push({ toolName, args });
+        return {
+          title: '成熟窗口 ROAS',
+          summary_markdown:
+            '### 成熟窗口 ROAS\n- 报告日期：2026-04-08\n- 时间窗口：2026-04-01 至 2026-04-07\n- 当前 ROAS：1.11x',
+          structured: {},
+          row_count: 1,
+          truncated: false,
+          applied_filters: args
+        };
+      },
+      requestCompletion: async () => {
+        asaRoasStepIndex += 1;
+        if (asaRoasStepIndex === 1) {
+          return {
+            content: '',
+            toolCalls: [
+              {
+                id: 'tool-asa-roas',
+                name: GURU_MCP_TOOL_NAMES.roasGetSummary,
+                rawArguments: JSON.stringify({}),
+                arguments: {}
+              }
+            ],
+            usage: null,
+            raw: {},
+            rawMessage: {
+              tool_calls: [
+                {
+                  id: 'tool-asa-roas',
+                  type: 'function',
+                  function: {
+                    name: GURU_MCP_TOOL_NAMES.roasGetSummary,
+                    arguments: JSON.stringify({})
+                  }
+                }
+              ]
+            }
+          };
+        }
+        return {
+          content: '结论：按 ASA 简报口径，昨天的成熟窗口 ROAS 为 1.11x。',
+          toolCalls: [],
+          usage: null,
+          raw: {},
+          rawMessage: {}
+        };
+      }
+    } as never
+  );
+  assert.equal(asaRoasResult.agent_action, 'answer');
+  assert.equal(asaRoasToolCallsCaptured[0]?.toolName, GURU_MCP_TOOL_NAMES.roasGetSummary);
+  assert.equal(asaRoasToolCallsCaptured[0]?.args.scope, 'asa');
 
   const clarificationResult = await runAiChat(
     {
@@ -1794,6 +1876,7 @@ async function main(): Promise<void> {
         appKey: 'demo',
         platform: 'ios',
         reportDate: '2026-04-08',
+        scope: undefined,
         templateId: 'mature_window'
       }
     }
@@ -2324,6 +2407,46 @@ async function main(): Promise<void> {
       error: 'ai_chat_timeout',
       message: 'Guru Ads Agent 响应超时，请重试，或减少上下文后再发送。'
     });
+  });
+
+  const healthRouter = createHealthRouter({
+    requestMetrics: {
+      clickhouseInsertLatencyMs: [],
+      totalPushRequests: 0,
+      pushErrors: 0
+    } as never,
+    probePostgres: async () => ({
+      ok: false,
+      status: 'timeout',
+      durationMs: 3000
+    }),
+    probeClickhouse: async () => ({
+      ok: false,
+      status: 'dependency_unavailable',
+      durationMs: 12
+    })
+  });
+
+  await withHttpApi(healthRouter, async (baseUrl) => {
+    const readyResponse = await fetch(`${baseUrl}/ready`);
+    assert.equal(readyResponse.status, 503);
+    const readyJson = await readyResponse.json();
+    assert.equal(readyJson.ok, false);
+    assert.deepEqual(readyJson.checks, {
+      postgres: {
+        ok: false,
+        status: 'timeout',
+        duration_ms: 3000
+      },
+      clickhouse: {
+        ok: false,
+        status: 'dependency_unavailable',
+        duration_ms: 12
+      }
+    });
+    assert.equal(typeof readyJson.now, 'string');
+    assert.equal('error' in readyJson.checks.postgres, false);
+    assert.equal('error' in readyJson.checks.clickhouse, false);
   });
 
   const mockedPolicyRouter = createRecommendationPoliciesRouter({

@@ -200,6 +200,7 @@ function sanitizeContextPacks(raw: unknown): AiContextPackSpec[] {
         type: String(obj.type || '') as AiContextPackSpec['type'],
         templateId: String(obj.templateId || '') as AiContextPackSpec['templateId'],
         appKey: String(obj.appKey || '').trim(),
+        scope: obj.scope === 'asa' ? 'asa' : obj.scope === 'budget' ? 'budget' : undefined,
         platform: String(obj.platform || '').trim() || undefined,
         from: String(obj.from || '').trim() || undefined,
         to: String(obj.to || '').trim() || undefined,

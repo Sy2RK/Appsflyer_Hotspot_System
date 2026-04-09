@@ -194,7 +194,7 @@ interface AsaKeywordDashboardRow extends AsaKeywordStateRow {
   llm_summary: unknown;
 }
 
-interface AsaKeywordSummary {
+export interface AsaKeywordSummary {
   keyword_count: number;
   installs: number;
   total_cost: number;
@@ -410,6 +410,20 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
     roas_window_to: filter.to ?? null,
     roas_coverage_ratio: roasCoverageRatio
   };
+}
+
+export async function queryAsaKeywordMatureSummary(input: {
+  appKey: string;
+  platform?: string;
+  from: string;
+  to: string;
+}): Promise<AsaKeywordSummary> {
+  return queryAsaKeywordSummary({
+    appKey: input.appKey,
+    platform: input.platform,
+    from: input.from,
+    to: input.to
+  });
 }
 
 const RAW_MEDIA_SOURCE = 'apple search ads';

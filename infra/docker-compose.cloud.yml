@@ -1,4 +1,8 @@
 services:
+  api:
+    ports: !override
+      - '127.0.0.1:3000:3000'
+
   caddy:
     image: caddy:2-alpine
     container_name: hotspot-caddy

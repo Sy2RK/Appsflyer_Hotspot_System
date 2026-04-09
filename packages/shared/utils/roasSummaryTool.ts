@@ -1,6 +1,7 @@
 import { env } from '../config/env.js';
 import type { RecommendationPolicyConfigRecord, RecommendationPolicyRuleJson, RoasDataStatus } from '../types/models.js';
 import { getDateStringInTimezone, shiftDateString } from './businessDate.js';
+import { buildAsaRoasWindow, queryAsaKeywordMatureSummary } from './asaKeywords.js';
 import { chQuery } from './clickhouse.js';
 import {
   buildRecommendationPolicyKey,
@@ -17,6 +18,7 @@ import {
 } from './roasWindow.js';
 
 const MAX_TOP_MEDIA_SOURCES = 5;
+export type MatureRoasScope = 'budget' | 'asa';
 
 function hasText(value: unknown): boolean {
   return String(value ?? '').trim().length > 0;
@@ -33,6 +35,14 @@ function normalizeReportDate(reportDate?: string): string {
   const fallback = shiftDateString(getDateStringInTimezone(new Date(), env.timezone), -1);
   const raw = String(reportDate ?? '').trim();
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : fallback;
+}
+
+function normalizeRoasScope(scope?: string): MatureRoasScope {
+  return String(scope || '')
+    .trim()
+    .toLowerCase() === 'asa'
+    ? 'asa'
+    : 'budget';
 }
 
 function formatUsd(value: number): string {
@@ -131,7 +141,7 @@ export interface MatureRoasContextPackResult {
   appliedFilters: Record<string, unknown>;
 }
 
-async function listValuePlatforms(appKey: string): Promise<string[]> {
+async function listBudgetValuePlatforms(appKey: string): Promise<string[]> {
   const rows = await chQuery<Record<string, unknown>>(
     `SELECT DISTINCT platform
        FROM keyword_value_daily_metrics FINAL
@@ -145,7 +155,21 @@ async function listValuePlatforms(appKey: string): Promise<string[]> {
     .filter((value): value is string => Boolean(value));
 }
 
-function resolvePolicyWindow(
+async function listAsaValuePlatforms(appKey: string): Promise<string[]> {
+  const rows = await chQuery<Record<string, unknown>>(
+    `SELECT DISTINCT platform
+       FROM asa_keyword_daily_metrics_v2 FINAL
+      WHERE app_key = {appKey:String}
+      ORDER BY platform ASC
+      LIMIT 8`,
+    { appKey }
+  ).catch(() => []);
+  return rows
+    .map((row) => normalizePlatform(String(row.platform || '')))
+    .filter((value): value is string => Boolean(value));
+}
+
+function resolveBudgetPolicyWindow(
   reportDate: string,
   policyRecord: RecommendationPolicyConfigRecord | null
 ): { policy: RecommendationPolicyRuleJson | null; from: string; to: string } {
@@ -254,7 +278,7 @@ async function queryTopMediaSources(input: {
   });
 }
 
-async function buildPlatformSummary(input: {
+async function buildBudgetPlatformSummary(input: {
   appKey: string;
   platform?: string;
   reportDate: string;
@@ -262,7 +286,7 @@ async function buildPlatformSummary(input: {
   roasWindowOverride?: { from: string; to: string };
 }): Promise<MatureRoasPlatformSummary> {
   const platform = normalizePlatform(input.platform);
-  const roasWindow = input.roasWindowOverride ?? resolvePolicyWindow(input.reportDate, input.policyRecord);
+  const roasWindow = input.roasWindowOverride ?? resolveBudgetPolicyWindow(input.reportDate, input.policyRecord);
   const aggregate = await queryMatureRoasAggregate({
     appKey: input.appKey,
     platform,
@@ -311,6 +335,79 @@ async function buildPlatformSummary(input: {
   };
 }
 
+function buildAsaTopMediaSources(summary: MatureRoasPlatformSummary): MatureRoasTopSource[] {
+  if (!summary.hasData) {
+    return [];
+  }
+  return [
+    {
+      mediaSource: 'Apple Search Ads',
+      totalCost: summary.totalCost,
+      coveredCost: summary.coveredCost,
+      missingCost: summary.missingCost,
+      revenueD7: summary.revenueD7,
+      installs: summary.installs,
+      roasDataStatus: summary.roasDataStatus,
+      coverageRatio: summary.coverageRatio,
+      currentRoas: summary.currentRoas
+    }
+  ];
+}
+
+async function buildAsaPlatformSummary(input: {
+  appKey: string;
+  platform?: string;
+  reportDate: string;
+  policyRecord: RecommendationPolicyConfigRecord | null;
+  roasWindowOverride?: { from: string; to: string };
+}): Promise<MatureRoasPlatformSummary> {
+  const platform = normalizePlatform(input.platform);
+  const policy = input.policyRecord ? normalizeRecommendationPolicyRule(input.policyRecord.rule_json) : null;
+  const roasWindow = input.roasWindowOverride ?? buildAsaRoasWindow(input.reportDate, policy);
+  const summary = await queryAsaKeywordMatureSummary({
+    appKey: input.appKey,
+    platform,
+    from: roasWindow.from,
+    to: roasWindow.to
+  });
+  const totalCost = Number(summary.total_cost || 0);
+  const coverageRatio = Number(summary.roas_coverage_ratio || 0);
+  const coveredCost = totalCost > 0 ? totalCost * coverageRatio : 0;
+  const missingCost = totalCost > 0 ? Math.max(0, totalCost - coveredCost) : 0;
+  const hasData =
+    Number(summary.keyword_count || 0) > 0 ||
+    Number(summary.installs || 0) > 0 ||
+    totalCost > 0 ||
+    Number(summary.revenue_d7 || 0) > 0;
+  const platformSummary: MatureRoasPlatformSummary = {
+    platform: platform || null,
+    reportDate: input.reportDate,
+    roasWindow: {
+      from: roasWindow.from,
+      to: roasWindow.to
+    },
+    rowCount: Number(summary.keyword_count || 0),
+    installs: Number(summary.installs || 0),
+    totalCost,
+    coveredCost,
+    missingCost,
+    revenueD7: Number(summary.revenue_d7 || 0),
+    purchaseCount: Number(summary.purchase_count || 0),
+    coverageRatio,
+    roasDataStatus: summary.roas_data_status,
+    currentRoas:
+      isRoasDataDisplayableStatus(summary.roas_data_status) && Number(summary.d7_roas || 0) > 0
+        ? Number(summary.d7_roas || 0)
+        : isRoasDataDisplayableStatus(summary.roas_data_status) && coveredCost > 0
+          ? Number(summary.revenue_d7 || 0) / coveredCost
+          : null,
+    hasData,
+    topMediaSources: []
+  };
+  platformSummary.topMediaSources = buildAsaTopMediaSources(platformSummary);
+  return platformSummary;
+}
+
 function buildTopMediaSourcesLine(rows: MatureRoasTopSource[]): string {
   if (rows.length === 0) {
     return '- Top 媒体源：当前窗口暂无聚合结果';
@@ -335,6 +432,7 @@ function buildPlatformSummaryLine(row: MatureRoasPlatformSummary): string {
 
 async function resolvePlatformSummaries(input: {
   appKey: string;
+  scope?: MatureRoasScope;
   platform?: string;
   reportDate: string;
 }): Promise<{
@@ -342,17 +440,25 @@ async function resolvePlatformSummaries(input: {
   overall: MatureRoasPlatformSummary | null;
   consistency: 'single' | 'consistent' | 'mixed';
 }> {
+  const scope = normalizeRoasScope(input.scope);
   const normalizedPlatform = normalizePlatform(input.platform);
   const policyRows = await listRecommendationPolicyConfigs({
     appKey: input.appKey,
-    engine: 'budget',
+    engine: scope,
     enabled: true
   }).catch(() => []);
   const policyMap = buildRecommendationPolicyMap(policyRows);
+  const buildSummary = (args: {
+    appKey: string;
+    platform?: string;
+    reportDate: string;
+    policyRecord: RecommendationPolicyConfigRecord | null;
+    roasWindowOverride?: { from: string; to: string };
+  }) => (scope === 'asa' ? buildAsaPlatformSummary(args) : buildBudgetPlatformSummary(args));
 
   if (normalizedPlatform) {
-    const policyRecord = policyMap.get(buildRecommendationPolicyKey(input.appKey, normalizedPlatform, 'budget')) ?? null;
-    const overall = await buildPlatformSummary({
+    const policyRecord = policyMap.get(buildRecommendationPolicyKey(input.appKey, normalizedPlatform, scope)) ?? null;
+    const overall = await buildSummary({
       appKey: input.appKey,
       platform: normalizedPlatform,
       reportDate: input.reportDate,
@@ -368,11 +474,11 @@ async function resolvePlatformSummaries(input: {
   const policyPlatforms = policyRows
     .map((row) => normalizePlatform(row.platform))
     .filter((value): value is string => Boolean(value));
-  const valuePlatforms = await listValuePlatforms(input.appKey);
+  const valuePlatforms = scope === 'asa' ? await listAsaValuePlatforms(input.appKey) : await listBudgetValuePlatforms(input.appKey);
   const candidatePlatforms = Array.from(new Set([...policyPlatforms, ...valuePlatforms]));
 
   if (candidatePlatforms.length === 0) {
-    const overall = await buildPlatformSummary({
+    const overall = await buildSummary({
       appKey: input.appKey,
       reportDate: input.reportDate,
       policyRecord: null
@@ -386,11 +492,11 @@ async function resolvePlatformSummaries(input: {
 
   const platformSummaries = await Promise.all(
     candidatePlatforms.map((platform) =>
-      buildPlatformSummary({
+      buildSummary({
         appKey: input.appKey,
         platform,
         reportDate: input.reportDate,
-        policyRecord: policyMap.get(buildRecommendationPolicyKey(input.appKey, platform, 'budget')) ?? null
+        policyRecord: policyMap.get(buildRecommendationPolicyKey(input.appKey, platform, scope)) ?? null
       })
     )
   );
@@ -403,7 +509,7 @@ async function resolvePlatformSummaries(input: {
   }
   const windowKeys = new Set(platformSummaries.map((row) => `${row.roasWindow.from}|${row.roasWindow.to}`));
   if (windowKeys.size === 1) {
-    const overall = await buildPlatformSummary({
+    const overall = await buildSummary({
       appKey: input.appKey,
       reportDate: input.reportDate,
       policyRecord: null,
@@ -424,6 +530,7 @@ async function resolvePlatformSummaries(input: {
 
 export async function buildMatureRoasContextPack(input: {
   appKey: string;
+  scope?: MatureRoasScope;
   platform?: string;
   reportDate?: string;
 }): Promise<MatureRoasContextPackResult> {
@@ -431,9 +538,11 @@ export async function buildMatureRoasContextPack(input: {
   if (!hasText(appKey)) {
     throw new Error('missing_app_key');
   }
+  const scope = normalizeRoasScope(input.scope);
   const reportDate = normalizeReportDate(input.reportDate);
   const { platformSummaries, overall, consistency } = await resolvePlatformSummaries({
     appKey,
+    scope,
     platform: input.platform,
     reportDate
   });
@@ -442,7 +551,9 @@ export async function buildMatureRoasContextPack(input: {
     '### 成熟窗口 ROAS',
     `- 应用：${appKey}${hasText(input.platform) ? ` / ${formatPlatformLabel(input.platform)}` : ''}`,
     `- 报告日期：${reportDate}`,
-    '- 口径：与简报一致的成熟窗口 D7 ROAS，不是当日实时 ROAS。'
+    scope === 'asa'
+      ? '- 口径：与 ASA 简报 / ASA 看板一致的成熟窗口 D7 ROAS，不是当日实时 ROAS。'
+      : '- 口径：与每日简报 / 预算建议一致的成熟窗口 D7 ROAS，不是当日实时 ROAS。'
   ];
 
   if (overall) {
@@ -460,13 +571,17 @@ export async function buildMatureRoasContextPack(input: {
   }
 
   if (!overall && platformSummaries.length === 0) {
-    const defaultWindow = buildMatureRoasWindow(reportDate, defaultRecommendationPolicyRule());
+    const defaultWindow =
+      scope === 'asa'
+        ? buildAsaRoasWindow(reportDate, defaultRecommendationPolicyRule())
+        : buildMatureRoasWindow(reportDate, defaultRecommendationPolicyRule());
     summaryLines.push(`- 时间窗口：${defaultWindow.from} 至 ${defaultWindow.to}`);
     summaryLines.push('- 当前窗口暂无成熟价值数据。');
   }
 
   const structured = {
     appKey,
+    scope,
     platform: normalizePlatform(input.platform) || null,
     reportDate,
     consistency,
@@ -514,6 +629,7 @@ export async function buildMatureRoasContextPack(input: {
       platformSummaries.reduce((sum, row) => sum + row.topMediaSources.length, 0),
     appliedFilters: {
       appKey,
+      scope,
       platform: normalizePlatform(input.platform) || null,
       reportDate
     }

@@ -91,6 +91,7 @@ export function resolveGuruMcpToolForContextPack(spec: AiContextPackSpec): {
         appKey: spec.appKey,
         platform: spec.platform,
         reportDate: spec.reportDate,
+        scope: spec.scope,
         templateId: spec.templateId
       }
     };

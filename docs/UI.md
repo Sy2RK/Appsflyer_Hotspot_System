@@ -51,6 +51,8 @@
     - `asa_keywords.get_summary`
   - 回复下方会显示简洁 `tool_trace`，例如“已自动查询：预算建议摘要”
   - 当用户问“ROAS / 回收 / D7 ROAS”，且语义更接近日报 / 简报口径时，Agent 会优先使用 `roas.get_summary`
+    - 通用每日简报 / 预算建议走 `scope=budget`
+    - ASA 简报 / ASA 看板走 `scope=asa`
     - 回答中应明确写出 `报告日期` 与 `成熟窗口 from ~ to`
     - 这不是最新单日实时 ROAS，而是成熟窗口聚合值
 - 图片上传
