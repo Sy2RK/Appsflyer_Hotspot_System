@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { verifyPushAuthorization } from '../../common/auth/pushAuth.js';
 import { logger } from '../../common/logger/logger.js';
 import { normalizeEvent } from '../../common/utils/normalizeEvent.js';
-import { requestMetrics } from '../../common/utils/request.js';
+import { recordClickhouseInsertLatency, requestMetrics } from '../../common/utils/request.js';
 import { chInsertJSON, chQuery } from '../../common/clickhouse/client.js';
 import { claimIngestDedupKeys, releaseIngestDedupKeys } from '@shared/utils/repositories.js';
 
@@ -115,7 +115,7 @@ router.post('/appsflyer/api/v1/event/:appKey/:dataset/callback', async (req, res
     const start = Date.now();
     try {
       await chInsertJSON('raw_events', rowsToInsert);
-      requestMetrics.clickhouseInsertLatencyMs.push(Date.now() - start);
+      recordClickhouseInsertLatency(Date.now() - start);
     } catch (error) {
       await releaseIngestDedupKeys(claimedEventUids);
       throw error;

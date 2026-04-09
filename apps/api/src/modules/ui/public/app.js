@@ -2468,6 +2468,7 @@ function primaryMetricLabel(metric) {
 function metricModeLabel(mode, roasDataStatus) {
   if (roasDataStatus === 'pending' || mode === 'roas_pending_revenue') return '收入数据待补齐';
   if (roasDataStatus === 'partial') return '覆盖率达阈值（按已覆盖成本计算）';
+  if (roasDataStatus === 'partial_low') return '覆盖率偏低（仅供参考）';
   if (roasDataStatus === 'unavailable') return '暂无成熟数据';
   return '当前生效';
 }
@@ -6121,6 +6122,10 @@ function openBudgetDetail(row) {
         ? row.current_roas == null
           ? '覆盖率达阈值（按已覆盖成本计算）'
           : `${toFixed2(row.current_roas)}（按已覆盖成本计算）`
+      : row.roas_data_status === 'partial_low'
+        ? row.current_roas == null
+          ? '覆盖率偏低（仅供参考）'
+          : `${toFixed2(row.current_roas)}（覆盖率偏低，仅供参考）`
       : row.roas_data_status === 'unavailable'
         ? '暂无成熟数据'
         : row.current_roas == null
@@ -6211,6 +6216,8 @@ function updateAsaSummary(summary = {}) {
       ? 'Cohort 源数据仍在补齐'
       : roasStatus === 'partial'
         ? 'Cohort 覆盖率已达可采纳阈值，当前值按已覆盖成本计算'
+      : roasStatus === 'partial_low'
+        ? 'Cohort 覆盖率偏低，当前值仅供参考'
       : roasStatus === 'unavailable'
         ? '当前没有可用的成熟窗口 D7 数据'
         : totalCost > 0 && revenueD7 <= 0
@@ -6310,7 +6317,7 @@ function asaHasCostWithoutD7Revenue(totalCost, revenueD7) {
 
 function normalizeRoasDataStatus(value) {
   const status = String(value || '').trim().toLowerCase();
-  if (status === 'complete' || status === 'partial' || status === 'pending' || status === 'unavailable') {
+  if (status === 'complete' || status === 'partial' || status === 'partial_low' || status === 'pending' || status === 'unavailable') {
     return status;
   }
   return 'unavailable';
@@ -6343,6 +6350,12 @@ function formatAsaCppDisplay(value, totalCost, purchaseCount, roasDataStatus) {
     }
     return `$${toFixed2(value || 0)}（按已覆盖成本计算）`;
   }
+  if (status === 'partial_low') {
+    if (Number(purchaseCount || 0) <= 0) {
+      return Number(totalCost || 0) > 0 ? '—（覆盖率偏低，成熟窗口无购买）' : '-';
+    }
+    return `$${toFixed2(value || 0)}（覆盖率偏低，仅供参考）`;
+  }
   if (status === 'unavailable') {
     return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
   }
@@ -6363,6 +6376,12 @@ function formatAsaD7RoasDisplay(value, totalCost, revenueD7, roasDataStatus) {
     }
     return `${toFixed2(value || 0)}x（按已覆盖成本计算）`;
   }
+  if (status === 'partial_low') {
+    if (Number(totalCost || 0) <= 0) {
+      return '-';
+    }
+    return `${toFixed2(value || 0)}x（覆盖率偏低，仅供参考）`;
+  }
   if (status === 'unavailable') {
     return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
   }
@@ -6382,6 +6401,15 @@ function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7, roasDataS
       return '-';
     }
     const base = `${toFixed2(value || 0)}x（按已覆盖成本计算）`;
+    return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
+      ? `${base}（成熟窗口未观察到D7收入）`
+      : base;
+  }
+  if (status === 'partial_low') {
+    if (Number(totalCost || 0) <= 0) {
+      return '-';
+    }
+    const base = `${toFixed2(value || 0)}x（覆盖率偏低，仅供参考）`;
     return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
       ? `${base}（成熟窗口未观察到D7收入）`
       : base;
@@ -6428,6 +6456,8 @@ function renderAsaKeywordTable() {
             ? 'Cohort 源数据仍在补齐'
             : normalizeRoasDataStatus(row.roas_data_status) === 'partial'
               ? 'Cohort 覆盖率已达可采纳阈值，当前值按已覆盖成本计算'
+            : normalizeRoasDataStatus(row.roas_data_status) === 'partial_low'
+              ? 'Cohort 覆盖率偏低，当前值仅供参考'
             : normalizeRoasDataStatus(row.roas_data_status) === 'unavailable'
               ? '当前没有可用的成熟窗口 D7 数据'
               : asaHasCostWithoutD7Revenue(row.total_cost_7d, row.revenue_d7_7d)

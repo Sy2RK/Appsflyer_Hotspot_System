@@ -188,6 +188,7 @@ async function bootstrap(): Promise<void> {
             logger.info('bitable_export_blocked_by_downstream_gate', {
               report_date: reportDate,
               reason: downstreamGate.reason,
+              keyword_engine: downstreamGate.keyword_engine,
               budget_advisor: downstreamGate.budget_advisor,
               asa_keywords: downstreamGate.asa_keywords
             });

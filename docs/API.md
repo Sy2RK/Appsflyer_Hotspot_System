@@ -437,6 +437,7 @@ Request:
 - 返回中的 `roas_data_status` 用于区分：
   - `complete`：成熟窗口 Cohort 数据完整
   - `partial`：成熟窗口内仍有 Cohort 缺口，但覆盖率已达到可采纳阈值（当前 80%）；此时 `ROAS / CPP` 按已覆盖成本计算
+  - `partial_low`：成熟窗口覆盖率偏低但仍有部分 Cohort 数据；当前值仅供参考，不直接驱动动作
   - `pending`：成熟窗口内存在 Cohort 源数据缺口，且覆盖率低于 80%
   - `unavailable`：当前还没有可用于判断的成熟窗口数据
 

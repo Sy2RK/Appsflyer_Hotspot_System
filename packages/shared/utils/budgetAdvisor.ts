@@ -29,7 +29,12 @@ import {
   normalizeRecommendationPolicyRule,
   resolveRecommendationTarget
 } from './recommendationPolicies.js';
-import { buildMatureRoasWindow, isRoasDataUsableStatus, resolveRoasDataStatus } from './roasWindow.js';
+import {
+  buildMatureRoasWindow,
+  isRoasDataDisplayableStatus,
+  isRoasDataUsableStatus,
+  resolveRoasDataStatus
+} from './roasWindow.js';
 
 export interface BudgetAdvisorLogger {
   info: (message: string, context?: Record<string, unknown>) => void;
@@ -1143,8 +1148,8 @@ export async function runBudgetAdvisorCycle(
           policyWindow.from,
           policyWindow.to
         );
-        const currentRoas = isRoasDataUsableStatus(roasDataStatus) ? valueCoverage.currentRoas : null;
-        const currentCpp = isRoasDataUsableStatus(roasDataStatus) ? valueCoverage.currentCpp : null;
+        const currentRoas = isRoasDataDisplayableStatus(roasDataStatus) ? valueCoverage.currentRoas : null;
+        const currentCpp = isRoasDataDisplayableStatus(roasDataStatus) ? valueCoverage.currentCpp : null;
         const currentCtr = averageOrNull(decisionValueFacts.map((row) => row.ctr));
         const currentCvr = fact.last7_clicks > 0 ? fact.last7_installs / fact.last7_clicks : null;
         const currentCpi = fact.current_ecpi > 0 ? fact.current_ecpi : null;

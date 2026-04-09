@@ -29,7 +29,12 @@ import { getDailyBriefDefaultReportDate } from './dailyBrief.js';
 import { getPushScheduleTarget } from './runtimeSchedule.js';
 import { getTzParts } from './schedule.js';
 import { buildPreviousDateList, shiftDateString } from './businessDate.js';
-import { buildMatureRoasWindow, isRoasDataUsableStatus, resolveRoasDataStatus } from './roasWindow.js';
+import {
+  buildMatureRoasWindow,
+  isRoasDataDisplayableStatus,
+  isRoasDataUsableStatus,
+  resolveRoasDataStatus
+} from './roasWindow.js';
 import {
   buildRecommendationPolicyKey,
   buildRecommendationPolicyMap,
@@ -388,11 +393,11 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
     keyword_count: Number(rawSummary.keyword_count || 0),
     installs: Number(rawSummary.installs || 0),
     total_cost: Number(rawSummary.total_cost || 0),
-    purchase_count: isRoasDataUsableStatus(roasDataStatus) ? Number(rawSummary.purchase_count || 0) : 0,
-    revenue_d7: isRoasDataUsableStatus(roasDataStatus) ? Number(rawSummary.revenue_d7 || 0) : 0,
+    purchase_count: isRoasDataDisplayableStatus(roasDataStatus) ? Number(rawSummary.purchase_count || 0) : 0,
+    revenue_d7: isRoasDataDisplayableStatus(roasDataStatus) ? Number(rawSummary.revenue_d7 || 0) : 0,
     ecpi: Number(rawSummary.ecpi || 0),
-    cpp: isRoasDataUsableStatus(roasDataStatus) ? Number(rawSummary.cpp || 0) : 0,
-    d7_roas: isRoasDataUsableStatus(roasDataStatus) ? Number(rawSummary.d7_roas || 0) : 0,
+    cpp: isRoasDataDisplayableStatus(roasDataStatus) ? Number(rawSummary.cpp || 0) : 0,
+    d7_roas: isRoasDataDisplayableStatus(roasDataStatus) ? Number(rawSummary.d7_roas || 0) : 0,
     roas_data_status: roasDataStatus,
     roas_window_from: filter.from ?? null,
     roas_window_to: filter.to ?? null
@@ -1493,20 +1498,20 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       missingCost: missingRoasCost
     });
     const purchaseCount7d =
-      isRoasDataUsableStatus(roasDataStatus)
+      isRoasDataDisplayableStatus(roasDataStatus)
         ? coveredRoasRows.reduce((sum, row) => sum + Number(row.purchase_count || 0), 0)
         : 0;
     const revenueD7Window =
-      isRoasDataUsableStatus(roasDataStatus)
+      isRoasDataDisplayableStatus(roasDataStatus)
         ? coveredRoasRows.reduce((sum, row) => sum + Number(row.revenue_d7 || 0), 0)
         : 0;
     const currentEcpi = installs7d > 0 ? totalCost7d / installs7d : Number(current.ecpi || 0);
     const matureRoasCost =
-      isRoasDataUsableStatus(roasDataStatus)
+      isRoasDataDisplayableStatus(roasDataStatus)
         ? coveredRoasCost
         : 0;
     const currentCpp = purchaseCount7d > 0 ? matureRoasCost / purchaseCount7d : 0;
-    const currentD7Roas = isRoasDataUsableStatus(roasDataStatus) ? weightedAsaRoas(coveredRoasRows) : 0;
+    const currentD7Roas = isRoasDataDisplayableStatus(roasDataStatus) ? weightedAsaRoas(coveredRoasRows) : 0;
 
     const peerStats = peerStatsByDate.get(`${current.app_key}|${current.platform}|${current.date}`) ?? {
       ecpi: [],
@@ -2440,6 +2445,11 @@ function buildAsaTodayJudgment(
     return actionCount > 0
       ? `当前成熟窗口的 Cohort 覆盖率已达可采纳阈值，ROAS/CPP 按已覆盖成本计算，先处理 ${actionCount} 条建议操作并继续观察缺口补齐。`
       : '当前成熟窗口的 Cohort 覆盖率已达可采纳阈值，ROAS/CPP 按已覆盖成本计算，后续继续观察缺口是否补齐。';
+  }
+  if (summary.roas_data_status === 'partial_low') {
+    return actionCount > 0
+      ? `当前成熟窗口的 Cohort 覆盖率偏低，ROAS/CPP 仅供参考，先优先处理 ${actionCount} 条建议操作，并谨慎解读当前回收表现。`
+      : '当前成熟窗口的 Cohort 覆盖率偏低，ROAS/CPP 仅供参考，建议先结合 eCPI、安装与执行动作继续观察数据回流。';
   }
   if (summary.roas_data_status === 'unavailable') {
     return actionCount > 0

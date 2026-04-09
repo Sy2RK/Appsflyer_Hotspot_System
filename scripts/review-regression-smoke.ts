@@ -32,7 +32,12 @@ import {
 import { buildAiContextPrompt, runAiChat } from '../packages/shared/utils/aiChat.js';
 import { env } from '../packages/shared/config/env.js';
 import { GURU_MCP_TOOL_NAMES, resolveGuruMcpToolForContextPack } from '../packages/shared/utils/guruMcp.js';
-import { buildMatureRoasWindow, resolveRoasDataStatus } from '../packages/shared/utils/roasWindow.js';
+import {
+  buildMatureRoasWindow,
+  isRoasDataDisplayableStatus,
+  isRoasDataUsableStatus,
+  resolveRoasDataStatus
+} from '../packages/shared/utils/roasWindow.js';
 import {
   didKeywordEngineCycleComplete,
   resolveKeywordEngineBackfillDays
@@ -577,6 +582,24 @@ async function main(): Promise<void> {
       coveredCost: 79,
       missingCost: 21
     }),
+    'partial_low'
+  );
+  assert.equal(
+    resolveRoasDataStatus({
+      hasWindowRows: true,
+      hasSpend: true,
+      coveredCost: 40,
+      missingCost: 60
+    }),
+    'partial_low'
+  );
+  assert.equal(
+    resolveRoasDataStatus({
+      hasWindowRows: true,
+      hasSpend: true,
+      coveredCost: 39,
+      missingCost: 61
+    }),
     'pending'
   );
   assert.equal(
@@ -606,6 +629,8 @@ async function main(): Promise<void> {
     }),
     'complete'
   );
+  assert.equal(isRoasDataUsableStatus('partial_low'), false);
+  assert.equal(isRoasDataDisplayableStatus('partial_low'), true);
   const asaRelativeIncrease = buildAsaRelativeCompareDecision({
     stage: 'rising',
     currentEcpi: 2,
@@ -696,7 +721,7 @@ async function main(): Promise<void> {
       coveredCost: partialValueCoverage.coveredCost,
       missingCost: partialValueCoverage.missingCost
     }),
-    'pending'
+    'partial_low'
   );
 
   const thresholdValueCoverage = summarizeBudgetValueCoverage([

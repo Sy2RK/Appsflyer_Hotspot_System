@@ -114,6 +114,7 @@ Web UI 新增能力:
   - 同时显式输出 `roas_window_from / roas_window_to / roas_data_status`
   - `roas_data_status=complete`：成熟窗口 Cohort 源数据完整
   - `roas_data_status=partial`：成熟窗口仍有 Cohort 缺口，但覆盖率已达到可采纳阈值（当前 80%）；`ROAS / CPP` 按已覆盖成本计算
+  - `roas_data_status=partial_low`：成熟窗口覆盖率偏低但仍有部分 Cohort 数据；当前值仅供参考，不直接驱动动作
   - `roas_data_status=pending`：成熟窗口内存在 Cohort 缺口且覆盖率低于 80%，显示“待补齐”
   - `roas_data_status=unavailable`：当前还没有可用于判断的成熟窗口，显示“暂无成熟数据”
 - 每日报告页面（结构化预览、飞书 `interactive` 卡片发送、阈值说明）
@@ -123,9 +124,9 @@ Web UI 新增能力:
 
 自动调度说明：
 - `pull_time` 到达后，先由 `puller` / `keyword-engine` / `budget-advisor` / `asa-keywords` 为前一报告日准备数据
-- `push_time` 到达后，`daily-brief` 与 `asa-daily-brief` 不会立刻发送，而是先检查同一 `reportDate` 的 `budget-advisor` 与 `asa-keywords` 是否已经完成
-- `bitable-export` 固定在 `push_time + 5 分钟` 检查，但同样会等待上述两个长任务完成后再导出
-- 当前门控的真实效果是：只要 `budget-advisor` 仍处于 `running` 或没有落下 completion log，日报 / ASA 简报 / 执行表都会持续等待
+- `push_time` 到达后，`daily-brief` 与 `asa-daily-brief` 不会立刻发送，而是先检查同一 `reportDate` 的 `keyword-engine`、`budget-advisor` 与 `asa-keywords` 是否已经完成
+- `bitable-export` 固定在 `push_time + 5 分钟` 检查，但同样会等待上述三个长任务完成后再导出
+- 当前门控优先使用 `scheduled_worker_runs` 判定完成态，`operation_logs` 仅作为补充诊断信息；即使 completion log 单次写失败，也不会把下游永久卡在 `missing_completion_log`
 - `asa-keywords` 对单个 `app + platform + date` 切片的瞬时 cohort `404 / 5xx / timeout` 已支持“降级完成”策略
   - 若本轮没有可调度重试失败，则允许将 worker completion 记为成功，并在 summary 中保留 failed slice 信息，避免单点终态失败阻塞日报下游
 - 每日 worker 的“是否已跑过 / 是否还能重试”由 Postgres `scheduled_worker_runs` 持久化控制，避免多实例部署时串行重复跑
@@ -331,6 +332,7 @@ curl -s "http://localhost:8123/?query=SELECT%20install_date,app_key,platform,med
 - 需要结合 `roas_data_status` 判断：
   - `complete`：可作为真实 D7 ROAS 使用
   - `partial`：成熟窗口仍有缺口，但覆盖率已达到可采纳阈值；`ROAS / CPP / 收入 / 购买数` 按已覆盖成本计算
+  - `partial_low`：成熟窗口覆盖率偏低；`ROAS / CPP / 收入 / 购买数` 仅供参考，不直接驱动动作
   - `pending`：成熟窗口内仍有 Cohort 源数据缺口，且覆盖率低于 80%
   - `unavailable`：当前没有成熟窗口数据
 - `d7_roas` 只在 `revenue_d7` 与 `total_cost` 都具备时有意义
@@ -360,6 +362,7 @@ WHERE date >= toDate('2026-03-17') AND date <= toDate('2026-03-30')
 说明：
 - `covered_cost_sum / (covered_cost_sum + missing_cost_sum)` < `0.8` 时，页面会显示“待补齐（源数据缺失）”
 - 覆盖率达到 `0.8` 以上后，会进入 `partial`，UI 会显示“按已覆盖成本计算”的 `CPP / D7 ROAS`
+- 覆盖率位于 `0.4 ~ 0.8` 时，会进入 `partial_low`，UI 会显示“覆盖率偏低，仅供参考”
 
 预算建议页面联动验证：
 - 当价值回收尚未补齐时，建议主指标会显示“收入数据待补齐”

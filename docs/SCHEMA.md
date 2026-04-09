@@ -277,7 +277,7 @@
 - `current_roas`
 - `target_roas`
 - `roas_window_from`, `roas_window_to`
-- `roas_data_status` (`complete|pending|unavailable`)
+- `roas_data_status` (`complete|partial|partial_low|pending|unavailable`)
 - `volume_tier` (`low|medium|high`)
 - `expected_installs_delta`
 - `confidence`
@@ -289,8 +289,8 @@
 说明：
 - 飞书执行表回读后的 `执行状态 / 是否采纳 / 人工批复` 不直接写回该表，而是通过 `recommendation_execution_feedbacks` 关联展示
 - WebUI 查询预算建议时会按 `recommendation_id = budget_recommendations.id` 左联反馈快照
-- `current_roas` 仅表示成熟窗口内 Cohort API 源数据完整覆盖后的真实 D7 ROAS
-- `roas_data_status=pending` 表示成熟窗口内仍有 Cohort 缺口；`unavailable` 表示当前没有成熟窗口数据
+- `current_roas` 表示成熟窗口内 Cohort API 口径的 D7 ROAS；当状态为 `partial / partial_low` 时，该值基于已覆盖成本计算
+- `roas_data_status=partial` 表示成熟窗口覆盖率已达到可采纳阈值；`partial_low` 表示覆盖率偏低、仅供参考；`pending` 表示成熟窗口内仍有明显 Cohort 缺口；`unavailable` 表示当前没有成熟窗口数据
 
 ### `recommendation_policy_configs`
 - 应用级预算 / ASA 规则配置表

@@ -22,6 +22,58 @@ export interface NotificationResult {
   render_mode?: 'interactive' | 'post' | 'text' | 'text_fallback';
 }
 
+function resolveWebhookBusinessMessage(body: Record<string, unknown>): string | undefined {
+  const candidates = [
+    body.msg,
+    body.message,
+    body.errmsg,
+    body.error,
+    body.StatusMessage
+  ];
+  const text = candidates.find((value) => typeof value === 'string' && value.trim());
+  return typeof text === 'string' ? text.trim() : undefined;
+}
+
+function resolveWebhookBusinessResult(body: unknown): { ok: boolean | null; error?: string } {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: null };
+  }
+  const record = body as Record<string, unknown>;
+  const message = resolveWebhookBusinessMessage(record);
+
+  const numericCodeFields = ['code', 'errcode', 'statusCode', 'StatusCode'] as const;
+  for (const field of numericCodeFields) {
+    const raw = record[field];
+    if (raw == null || raw === '') continue;
+    const code = Number(raw);
+    if (Number.isFinite(code)) {
+      return code === 0
+        ? { ok: true }
+        : { ok: false, error: message ?? `webhook_business_error:${field}=${String(raw)}` };
+    }
+  }
+
+  if (typeof record.ok === 'boolean') {
+    return record.ok ? { ok: true } : { ok: false, error: message ?? 'webhook_business_error:ok=false' };
+  }
+
+  if (typeof record.success === 'boolean') {
+    return record.success ? { ok: true } : { ok: false, error: message ?? 'webhook_business_error:success=false' };
+  }
+
+  const statusText = typeof record.status === 'string' ? record.status.trim().toLowerCase() : '';
+  if (statusText) {
+    if (statusText === 'ok' || statusText === 'success' || statusText === 'succeeded') {
+      return { ok: true };
+    }
+    if (statusText === 'failed' || statusText === 'error') {
+      return { ok: false, error: message ?? `webhook_business_error:status=${statusText}` };
+    }
+  }
+
+  return { ok: null };
+}
+
 async function parseJsonBody<T>(
   response: Response,
   context: string
@@ -246,8 +298,26 @@ export async function sendWebhookNotification(
         ...payload.extra
       })
     });
+    const rawBody = await res.text();
+    let parsedBody: unknown = null;
+    if (rawBody.trim()) {
+      try {
+        parsedBody = JSON.parse(rawBody);
+      } catch {
+        parsedBody = null;
+      }
+    }
+    const business = resolveWebhookBusinessResult(parsedBody);
+    const ok = res.ok && (business.ok ?? true);
 
-    return { ok: res.ok, status: res.status };
+    return {
+      ok,
+      status: res.status,
+      error: ok
+        ? undefined
+        : business.error ??
+          (res.ok ? 'Webhook business response indicates failure' : `Webhook request failed: HTTP ${res.status}`)
+    };
   } catch (error) {
     return {
       ok: false,

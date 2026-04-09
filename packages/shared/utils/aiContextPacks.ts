@@ -1,3 +1,5 @@
+import { env } from '../config/env.js';
+import { getDateStringInTimezone, getDateTimeStringInTimezone, shiftDateString } from './businessDate.js';
 import { chQuery } from './clickhouse.js';
 import { pgQuery } from './postgres.js';
 
@@ -166,10 +168,10 @@ async function buildMetricsTrendPack(spec: AiContextPackSpec): Promise<AiBuiltCo
   }
 
   const now = new Date();
-  const defaultPullTo = now.toISOString().slice(0, 10);
-  const defaultPullFrom = new Date(now.getTime() - 13 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const defaultPushTo = now.toISOString().slice(0, 19).replace('T', ' ');
-  const defaultPushFrom = new Date(now.getTime() - 72 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  const defaultPullTo = getDateStringInTimezone(now, env.timezone);
+  const defaultPullFrom = shiftDateString(defaultPullTo, -13);
+  const defaultPushTo = getDateTimeStringInTimezone(now, env.timezone);
+  const defaultPushFrom = getDateTimeStringInTimezone(new Date(now.getTime() - 72 * 60 * 60 * 1000), env.timezone);
 
   const metric = String(spec.metric || (source === 'pull' ? 'installs' : 'revenue'))
     .trim()

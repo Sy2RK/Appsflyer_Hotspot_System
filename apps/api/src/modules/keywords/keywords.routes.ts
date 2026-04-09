@@ -5,6 +5,8 @@ import { logger } from '../../common/logger/logger.js';
 import { queryKeywordLifecycleStates, releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 import { runKeywordEngineCycle } from '@shared/utils/keywordEngine.js';
 import { writeOperationLog } from '@shared/utils/operationLog.js';
+import { getDateStringInTimezone, shiftDateString } from '@shared/utils/businessDate.js';
+import { env } from '@shared/config/env.js';
 
 const router = Router();
 const MANUAL_KEYWORD_RECOMPUTE_LOCK = 'api:keywords:recompute';
@@ -81,6 +83,9 @@ router.get('/api/keywords/:keyword/trend', async (req, res, next) => {
     if (!keyword) {
       return res.status(400).json({ ok: false, error: 'keyword_required' });
     }
+    const today = getDateStringInTimezone(new Date(), env.timezone);
+    const fromDate = shiftDateString(today, -days);
+    const toDate = shiftDateString(today, -1);
 
     const rows = await chQuery<Record<string, unknown>>(
       `SELECT
@@ -120,8 +125,8 @@ router.get('/api/keywords/:keyword/trend', async (req, res, next) => {
               AND ({platform:String} = '' OR platform = {platform:String})
               AND keyword = {keyword:String}
               AND ({match_type:String} = '' OR match_type = {match_type:String})
-              AND date >= toDate(today() - ${days})
-              AND date <= toDate(today() - 1)
+              AND date >= toDate({from:String})
+              AND date <= toDate({to:String})
           )
           GROUP BY report_date, keyword, match_type
         )
@@ -130,7 +135,9 @@ router.get('/api/keywords/:keyword/trend', async (req, res, next) => {
         app_key: appKey,
         platform,
         keyword,
-        match_type: matchType
+        match_type: matchType,
+        from: fromDate,
+        to: toDate
       }
     );
 

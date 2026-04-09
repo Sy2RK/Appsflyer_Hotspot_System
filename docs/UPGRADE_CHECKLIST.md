@@ -271,7 +271,7 @@ ORDER BY table_name, column_name;"
 预期：
 
 - 三张表都存在 `roas_window_from / roas_window_to / roas_data_status`
-- 后续 UI / 日报 / 多维表会基于这些元数据区分 `complete / pending / unavailable`
+- 后续 UI / 日报 / 多维表会基于这些元数据区分 `complete / partial / partial_low / pending / unavailable`
 
 检查快照表：
 

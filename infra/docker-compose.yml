@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     env_file:
       - ../.env
+    environment:
+      TZ: Asia/Shanghai
     ports:
       - '127.0.0.1:8123:8123'
       - '127.0.0.1:9000:9000'

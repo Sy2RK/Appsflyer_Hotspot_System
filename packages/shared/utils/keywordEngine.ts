@@ -9,7 +9,7 @@ import {
 import { extractKeywordFromCampaign, evaluateKeywordLifecycle } from './keyword.js';
 import type { AppConfigRecord, KeywordExtractRuleRecord, KeywordLifecycleStateRow } from '../types/models.js';
 import { env } from '../config/env.js';
-import { getPreviousDateString, shiftDateString } from './businessDate.js';
+import { getDateStringInTimezone, getPreviousDateString, shiftDateString } from './businessDate.js';
 
 export interface KeywordEngineLogger {
   info: (message: string, context?: Record<string, unknown>) => void;
@@ -816,6 +816,9 @@ export function buildKeywordValueRows(
 
 async function queryKeywordHistory(appKey: string, platform: string, days: number): Promise<KeywordDailyAgg[]> {
   const window = Math.max(1, Math.floor(days));
+  const today = getDateStringInTimezone(new Date(), env.timezone);
+  const from = shiftDateString(today, -window);
+  const to = shiftDateString(today, -1);
   return chQuery<KeywordDailyAgg>(
     `SELECT
         report_date,
@@ -843,12 +846,12 @@ async function queryKeywordHistory(appKey: string, platform: string, days: numbe
         FROM keyword_daily_metrics FINAL
         WHERE app_key = {app_key:String}
           AND platform = {platform:String}
-          AND date >= toDate(today() - ${window})
-          AND date <= toDate(today() - 1)
+          AND date >= toDate({from:String})
+          AND date <= toDate({to:String})
       )
       GROUP BY report_date, platform, keyword, match_type
       ORDER BY keyword ASC, match_type ASC, report_date ASC`,
-    { app_key: appKey, platform }
+    { app_key: appKey, platform, from, to }
   );
 }
 
