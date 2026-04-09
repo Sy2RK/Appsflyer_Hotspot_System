@@ -178,12 +178,12 @@ Request:
 {
   "contextPacks": [
     {
-      "type": "metrics_trend",
-      "templateId": "media_source",
+      "type": "roas_summary",
+      "templateId": "mature_window",
       "appKey": "demo-app",
+      "scope": "budget",
       "platform": "ios",
-      "from": "2026-03-01",
-      "to": "2026-03-14"
+      "reportDate": "2026-03-14"
     }
   ]
 }
@@ -194,6 +194,7 @@ Request:
 
 返回重点字段：
 - 每个上下文包的标题、筛选条件、摘要文本、是否截断
+- `roas_summary` 若显式传入 `reportDate`，后端会原样保留，不会静默回退到默认“昨天”
 
 ### `GET /api/apps`
 返回 app 列表（不返回 push token），包含：
@@ -288,6 +289,10 @@ Request:
 - `source`:
   - `push`（默认）: 查询 `metrics_hourly`
   - `pull`: 查询 `metrics_daily`
+- `from` / `to` 会按传入字符串原样解释，不做 UTC 自动换日
+  - `pull` 建议传 `YYYY-MM-DD`
+  - `push` 建议传本地业务时区下的 `YYYY-MM-DD HH:mm:ss`
+  - WebUI 默认按浏览器本地时间生成这两个边界，不再用 UTC `toISOString()` 截断
 - 当 `source=push`:
   - `granularity` 必须为 `hour`
   - `metric`: `revenue` / `event_count` / `purchase_count`

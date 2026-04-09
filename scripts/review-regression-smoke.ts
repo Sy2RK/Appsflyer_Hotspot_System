@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import express from 'express';
@@ -2060,11 +2061,15 @@ async function main(): Promise<void> {
 
   const capturedAiModelIds: string[] = [];
   const capturedPageContexts: Array<Record<string, unknown> | undefined> = [];
+  const capturedPreviewContextPacks: Array<Record<string, unknown>[]> = [];
   const aiRouter = createAiRouter({
-    buildAiContextPacks: async () => ({
-      packs: [],
-      warnings: []
-    }),
+    buildAiContextPacks: async (specs) => {
+      capturedPreviewContextPacks.push(specs as Record<string, unknown>[]);
+      return {
+        packs: [],
+        warnings: []
+      };
+    },
     runAiChat: async (input) => {
       capturedAiModelIds.push(String(input.modelId || ''));
       capturedPageContexts.push(input.pageContext as Record<string, unknown> | undefined);
@@ -2312,6 +2317,50 @@ async function main(): Promise<void> {
     assert.equal(capturedPageContexts[2]?.activeSection, 'section-budget');
     assert.equal(Array.isArray(capturedPageContexts[2]?.loaded_contexts), true);
     assert.equal(capturedPageContexts[2]?.loaded_contexts?.[0]?.title, '当前预算建议结果');
+
+    const previewResponse = await fetch(`${baseUrl}/api/ai/context-packs/preview`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        contextPacks: [
+          {
+            type: 'roas_summary',
+            templateId: 'mature_window',
+            appKey: 'demo_app',
+            platform: 'ios',
+            scope: 'budget',
+            reportDate: '2026-04-08'
+          }
+        ]
+      })
+    });
+    assert.equal(previewResponse.status, 200);
+    assert.equal(capturedPreviewContextPacks.length, 1);
+    assert.deepEqual(capturedPreviewContextPacks[0], [
+      {
+        type: 'roas_summary',
+        templateId: 'mature_window',
+        appKey: 'demo_app',
+        platform: 'ios',
+        scope: 'budget',
+        reportDate: '2026-04-08',
+        from: undefined,
+        to: undefined,
+        sourceSection: undefined,
+        source: undefined,
+        metric: undefined,
+        eventName: undefined,
+        status: undefined,
+        executionStatus: undefined,
+        isAdopted: undefined,
+        hasManualReview: undefined,
+        stage: undefined,
+        keyword: undefined,
+        campaign: undefined
+      }
+    ]);
   });
 
   const qwenOnlyAiRouter = createAiRouter({
@@ -2448,6 +2497,12 @@ async function main(): Promise<void> {
     assert.equal('error' in readyJson.checks.postgres, false);
     assert.equal('error' in readyJson.checks.clickhouse, false);
   });
+
+  const uiAppScript = readFileSync('apps/api/src/modules/ui/public/app.js', 'utf8');
+  assert.match(uiAppScript, /function toSqlDateTime\(date\)\s*\{\s*const y = date\.getFullYear\(\)/);
+  assert.match(uiAppScript, /function toSqlDate\(date\)\s*\{\s*return toLocalDate\(date\);\s*\}/);
+  assert.doesNotMatch(uiAppScript, /function toSqlDateTime\(date\)\s*\{\s*return date\.toISOString\(\)/);
+  assert.doesNotMatch(uiAppScript, /function toSqlDate\(date\)\s*\{\s*return date\.toISOString\(\)/);
 
   const mockedPolicyRouter = createRecommendationPoliciesRouter({
     getAppByKey: async () =>

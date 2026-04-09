@@ -2604,11 +2604,17 @@ function fmtTime(v) {
 }
 
 function toSqlDateTime(date) {
-  return date.toISOString().slice(0, 19).replace('T', ' ');
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
 }
 
 function toSqlDate(date) {
-  return date.toISOString().slice(0, 10);
+  return toLocalDate(date);
 }
 
 function toLocalDate(date) {
@@ -7056,7 +7062,7 @@ async function loadMetrics(event) {
     return;
   }
 
-  const to = new Date();
+  const now = new Date();
   const params = new URLSearchParams({
     appKey,
     metric,
@@ -7066,12 +7072,14 @@ async function loadMetrics(event) {
     params.set('platform', platform);
   }
   if (source === 'pull') {
-    const from = new Date(to.getTime() - 14 * 24 * 60 * 60 * 1000);
+    const to = new Date(now);
+    const from = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
     params.set('from', toSqlDate(from));
     params.set('to', toSqlDate(to));
     params.set('granularity', 'day');
   } else {
-    const from = new Date(to.getTime() - 72 * 60 * 60 * 1000);
+    const to = new Date(now);
+    const from = new Date(now.getTime() - 72 * 60 * 60 * 1000);
     params.set('from', toSqlDateTime(from));
     params.set('to', toSqlDateTime(to));
     params.set('granularity', 'hour');

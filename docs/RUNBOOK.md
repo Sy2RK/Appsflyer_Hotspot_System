@@ -184,6 +184,7 @@ docker compose logs --tail=50 api mcp-server
   - ASA 简报 / ASA 看板场景应带 `scope=asa`
   - 返回内容应带 `reportDate` 与 `roasWindow.from / to`
   - 若未指定 `platform` 且同一应用跨平台成熟窗口不同，Agent 可能返回分平台结果而不是单一 ROAS
+  - 若手动附加 `roas_summary` 上下文包并指定 `reportDate`，最终查询也应保持同一个报告日，不应静默回退到默认“昨天”
 
 ---
 
@@ -291,6 +292,10 @@ curl -s "http://localhost:8123/?query=SELECT%20date,app_key,metric,value%20FROM%
 ```bash
 curl "http://localhost:3000/api/metrics?appKey=ai-seek&metric=installs&source=pull&from=2026-03-01&to=2026-03-03&granularity=day"
 ```
+
+说明：
+- WebUI 的“指标趋势”默认时间窗现在按浏览器本地时间生成，不再使用 UTC `toISOString()` 截断
+- 如果你在脚本里手动调 `/api/metrics`，也建议显式传本地业务时区下的日期 / 日期时间边界，避免凌晨时段错一天
 
 ---
 

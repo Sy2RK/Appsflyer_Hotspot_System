@@ -204,6 +204,7 @@ function sanitizeContextPacks(raw: unknown): AiContextPackSpec[] {
         platform: String(obj.platform || '').trim() || undefined,
         from: String(obj.from || '').trim() || undefined,
         to: String(obj.to || '').trim() || undefined,
+        reportDate: String(obj.reportDate || '').trim() || undefined,
         sourceSection: String(obj.sourceSection || '').trim() || undefined,
         source: obj.source === 'push' ? 'push' : obj.source === 'pull' ? 'pull' : undefined,
         metric: String(obj.metric || '').trim() || undefined,

@@ -212,7 +212,7 @@ grep -E '^(TZ|FEISHU_|APPSFLYER_|BI_APPSFLYER_|QWEN_)' .env
 最低要求：
 
 - `TZ=Asia/Shanghai`
-- `API_PORT_MAPPING=3000:3000`
+- `API_PORT_MAPPING=127.0.0.1:3000:3000`
 - AppsFlyer token 已填写
 - Feishu 消息 token 已填写
 - Feishu 多维表格配置已填写
