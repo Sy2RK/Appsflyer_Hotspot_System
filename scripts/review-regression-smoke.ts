@@ -1155,6 +1155,10 @@ async function main(): Promise<void> {
     ['apps_list', 'metrics_get_trend', 'roas_get_summary', 'budget_get_summary', 'asa_keywords_get_summary']
   );
   assert.deepEqual(
+    buildAiChatToolDefinitionsForModel('openrouter_kimi_k25').map((item) => item.function.name),
+    ['apps_list', 'metrics_get_trend', 'roas_get_summary', 'budget_get_summary', 'asa_keywords_get_summary']
+  );
+  assert.deepEqual(
     buildAiChatToolDefinitionsForModel('qwen').map((item) => item.function.name),
     Object.values(GURU_MCP_TOOL_NAMES)
   );
@@ -1270,6 +1274,120 @@ async function main(): Promise<void> {
   assert.deepEqual(completionToolNamesCaptured[0], Object.values(GURU_MCP_TOOL_NAMES));
   assert.equal(toolCallResult.page_trace.length, 0);
   assert.equal(toolCallResult.tool_trace[0]?.title, '预算建议 · 平台 / 媒体源');
+
+  const inferredDateToolCalls: Array<{ toolName: string; args: Record<string, unknown> }> = [];
+  let inferredDateStepIndex = 0;
+  await runAiChat(
+    {
+      message: '现在帮我查一下4.2的Novix安装量',
+      history: [],
+      contextPacks: [],
+      images: [],
+      modelId: 'openrouter_kimi_k25',
+      pageContext: {
+        activeSection: 'section-metrics',
+        pageLabel: '指标趋势',
+        defaults: {
+          appKey: 'ai-seek',
+          platform: 'ios',
+          from: '2026-03-25',
+          to: '2026-04-07'
+        },
+        recommendedSpecs: [
+          {
+            type: 'metrics_trend',
+            templateId: 'media_source',
+            appKey: 'ai-seek',
+            platform: 'ios',
+            from: '2026-03-25',
+            to: '2026-04-07',
+            source: 'pull',
+            metric: 'installs'
+          }
+        ],
+        coreSpecs: []
+      }
+    },
+    {
+      buildAiContextPacksViaMcp: async () => ({ packs: [], packSpecs: [], warnings: [] }),
+      callGuruMcpTool: async (toolName, args) => {
+        inferredDateToolCalls.push({
+          toolName,
+          args
+        });
+        return {
+          title: '指标时序 · 媒体源',
+          summary_markdown: '### 指标时序包\n- 时间范围：2026-04-02 ~ 2026-04-02',
+          structured: {},
+          row_count: 1,
+          truncated: false,
+          applied_filters: args
+        };
+      },
+      requestCompletion: async () => {
+        inferredDateStepIndex += 1;
+        if (inferredDateStepIndex === 1) {
+          return {
+            content: '',
+            toolCalls: [
+              {
+                id: 'tool-date-1',
+                name: GURU_MCP_TOOL_NAMES.metricsGetTrend,
+                rawArguments: JSON.stringify({
+                  appKey: 'ai-seek',
+                  templateId: 'media_source',
+                  source: 'pull',
+                  metric: 'installs',
+                  from: '2025-04-02',
+                  to: '2025-04-02'
+                }),
+                arguments: {
+                  appKey: 'ai-seek',
+                  templateId: 'media_source',
+                  source: 'pull',
+                  metric: 'installs',
+                  from: '2025-04-02',
+                  to: '2025-04-02'
+                }
+              }
+            ],
+            usage: null,
+            raw: {},
+            rawMessage: {
+              tool_calls: [
+                {
+                  id: 'tool-date-1',
+                  type: 'function',
+                  function: {
+                    name: 'metrics_get_trend',
+                    arguments: JSON.stringify({
+                      appKey: 'ai-seek',
+                      templateId: 'media_source',
+                      source: 'pull',
+                      metric: 'installs',
+                      from: '2025-04-02',
+                      to: '2025-04-02'
+                    })
+                  }
+                }
+              ]
+            }
+          };
+        }
+        return {
+          content: '结论：4 月 2 日安装量已查询。',
+          toolCalls: [],
+          usage: null,
+          raw: {},
+          rawMessage: {}
+        };
+      }
+    } as never
+  );
+  assert.equal(inferredDateToolCalls.length, 1);
+  assert.equal(inferredDateToolCalls[0]?.toolName, GURU_MCP_TOOL_NAMES.metricsGetTrend);
+  assert.equal(inferredDateToolCalls[0]?.args.from, '2026-04-02');
+  assert.equal(inferredDateToolCalls[0]?.args.to, '2026-04-02');
 
   const roasToolCallsCaptured: Array<{ toolName: string; args: Record<string, unknown> }> = [];
   let roasSystemPrompt = '';
@@ -2561,12 +2679,53 @@ async function main(): Promise<void> {
   assert.match(uiAppScript, /function resolveAsaTrendRoasStatus\(source = \{\}\)\s*\{\s*return buildAsaTrendMetricDisplaySource\(source\)\.roasStatus;/);
   assert.match(uiAppScript, /function resolveAsaTrendCppStatus\(source = \{\}\)/);
   assert.match(uiAppScript, /const trendMetric = buildAsaTrendMetricDisplaySource\(item\);[\s\S]*trendMetric\.d7Roas/);
+  assert.match(uiAppScript, /投放项名称（飞书主字段）[\s\S]*七天后数据（系统自动回填）/);
+  assert.match(uiAppScript, /按日期创建或复用当天的「投放执行表」[\s\S]*历史日期自动留档/);
+  assert.doesNotMatch(uiAppScript, /创建或复用一张固定的「投放执行表」/);
+
+  const uiIndexHtml = readFileSync('apps/api/src/modules/ui/public/index.html', 'utf8');
+  assert.match(uiIndexHtml, /投放项名称.*飞书主字段.*七天后数据.*系统自动回填/);
+  assert.match(uiIndexHtml, /按日期创建或复用当天的「投放执行表」.*历史日期自动留档/);
+  assert.doesNotMatch(uiIndexHtml, /创建或复用一张固定的「投放执行表」/);
 
   const bitableExportScript = readFileSync('packages/shared/utils/bitableExport.ts', 'utf8');
   assert.match(bitableExportScript, /function formatRoasPercent\(value: unknown\): string/);
   assert.match(bitableExportScript, /目标 ROAS \$\{formatRoasPercent\(targetRoas\)\}/);
   assert.match(bitableExportScript, /成熟窗口 ROAS \$\{formatRoasPercent\(currentRoas\)\}/);
   assert.match(bitableExportScript, /ROAS \$\{formatRoasPercent\(row\.current_d7_roas\)\}/);
+  assert.match(bitableExportScript, /const ITEM_NAME_FIELD_LABEL = '投放项名称'/);
+  assert.match(
+    bitableExportScript,
+    /\{ key: 'display_item_name', label: ITEM_NAME_FIELD_LABEL, value_type: 'text', default_selected: true \}/
+  );
+  assert.match(
+    bitableExportScript,
+    /\{ key: 'display_product_name', label: '产品名', value_type: 'text', default_selected: true \}/
+  );
+  assert.match(bitableExportScript, /function formatBudgetItemDisplayName\(row: Record<string, unknown>\): string/);
+  assert.match(bitableExportScript, /function formatAsaItemDisplayName\(row: Record<string, unknown>\): string/);
+  assert.match(bitableExportScript, /await ensureAsaKeywordRoasSchema\(\);\s*const result = await pgQuery<Record<string, unknown>>\(\s*`SELECT[\s\S]*FROM asa_keyword_recommendations ar/);
+  assert.match(
+    bitableExportScript,
+    /function shouldCompactActionTableSchema\(reportDate: string, tableIsNew: boolean\): boolean \{\s*return tableIsNew \|\| reportDate >= getPreviousDateString\(1\);\s*\}/
+  );
+  assert.match(
+    bitableExportScript,
+    /const existingTableRecords = await listBitableRecords\(appToken, table\.table_id\);[\s\S]*const liveFeedback = await buildManualFeedbackMap\([\s\S]*existingTableRecords[\s\S]*const fieldSync = await ensureTableFields\(/
+  );
+  assert.match(
+    bitableExportScript,
+    /const fieldSync = await ensureTableFields\(\s*appToken,\s*table\.table_id,\s*selectedFields,\s*\{\s*cleanupExtraFields: compactSchema,\s*allowDestructiveFieldRebuild: existingTableRecordIds\.length === 0\s*\}/
+  );
+  assert.match(
+    bitableExportScript,
+    /if \(compactSchema && existingTableRecordIds\.length === 0\) \{\s*await reorderActionFields\(appToken, table\.table_id, selectedFields, logger\);\s*\}/
+  );
+  assert.doesNotMatch(bitableExportScript, /\{ key: 'platform', label: '平台', value_type: 'text', default_selected: true \}/);
+  assert.doesNotMatch(
+    bitableExportScript,
+    /\{ key: 'cost_reference', label: '成本参考', value_type: 'number', default_selected: true \}/
+  );
 
   const asaKeywordsScript = readFileSync('packages/shared/utils/asaKeywords.ts', 'utf8');
   assert.match(asaKeywordsScript, /revenue_source_complete: kpi === 'revenue'/);

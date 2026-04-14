@@ -816,6 +816,8 @@ Request:
 - `enabled=true` 且 `chatId` 非空时，才会被每日 `bitable_time` 定时任务纳入执行
 - `tableNamePrefix` 决定每日日期表名，最终格式为 `前缀_YYYY-MM-DD`
 - 字段列为系统固定输出，接口传入的 `selectedFields` 会被忽略
+- 当前固定字段顺序为：`投放项名称（飞书主字段）`、`产品名`、`主指标`、`当前表现`、`目标表现`、`量级参考`、`建议动作`、`建议理由`、`执行状态`、`是否采纳`、`人工批复`、`七天后数据`
+- `七天后数据` 为系统自动回填字段，不要求人工填写
 - `bitable_time` 固定按全局 `push_time + 5 分钟` 计算
 - 自动定时导出除了依赖 Pull 完成，也会等待 `budget-advisor` 与 `asa-keywords` 针对该 `reportDate` 完成，避免导出中间态建议
 

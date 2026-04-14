@@ -5468,7 +5468,7 @@ function renderRuntimeSchedule(snapshot) {
     el.runtimeScheduleStatus.textContent = `当前时间安排：数据准备 ${pullTime} ｜ 消息发送 ${pushTime} ｜ 执行表 ${bitableTime} ｜ 时区 ${timezoneLabel(timezone)} ｜ 最近更新 ${updatedAt}`;
   }
   if (el.bitableSchedulePrimaryNote) {
-    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（北京时间）自动执行。系统会在同一飞书多维表格中创建或复用一张固定的「投放执行表」，并覆盖为最新执行清单。`;
+    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（北京时间）自动执行。系统会在同一飞书多维表格中按日期创建或复用当天的「投放执行表」，同日重跑刷新当天内容，历史日期自动留档。`;
   }
 }
 
@@ -5484,7 +5484,7 @@ function renderRuntimeSchedulePreview() {
     el.runtimeSchedulePushSummary.textContent = `每日简报与 ASA 简报将在 ${pushTime} 发送，执行表会顺延到 ${bitableTime}。`;
   }
   if (el.bitableSchedulePrimaryNote) {
-    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（北京时间）自动执行。系统会在同一飞书多维表格中创建或复用一张固定的「投放执行表」，并覆盖为最新执行清单。`;
+    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（北京时间）自动执行。系统会在同一飞书多维表格中按日期创建或复用当天的「投放执行表」，同日重跑刷新当天内容，历史日期自动留档。`;
   }
 }
 
@@ -5687,7 +5687,7 @@ function renderBitableExportCards() {
                   : ''
               }
             </div>
-            <p class="hint">系统固定输出产品、平台、媒体源、主指标、建议动作、执行状态、是否采纳、人工批复与建议理由，不再允许在页面里拼装原始技术列。</p>
+            <p class="hint">系统固定输出投放项名称（飞书主字段）、产品名、主指标、当前/目标表现、量级参考、建议动作、建议理由、执行状态、是否采纳、人工批复，以及“七天后数据（系统自动回填）”。</p>
           </div>
 
           <div class="bitable-export-status">
