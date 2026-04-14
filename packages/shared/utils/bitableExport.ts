@@ -846,24 +846,47 @@ function formatExecutionActionSummary(value: unknown): string {
   return '';
 }
 
+function formatRoasPercent(value: unknown): string {
+  return `${(Number(value || 0) * 100).toFixed(2)}%`;
+}
+
+function formatRoasSourceLabel(row: Record<string, unknown>): string {
+  return String(row.roas_primary_source || '') === 'af_cohort' ? 'AF Cohort 主口径' : '本地回退口径';
+}
+
+function formatRoasWarningLabel(row: Record<string, unknown>): string {
+  const warningCode = String(row.roas_warning_code || '');
+  if (warningCode === 'af_missing') {
+    return 'AF 缺失，当前为本地派生，仅供参考';
+  }
+  if (warningCode === 'af_vs_local_mismatch') {
+    return 'AF 与本地派生偏差较大，已禁止自动动作';
+  }
+  if (warningCode === 'af_grain_unavailable') {
+    return '当前粒度无 AF 官方 ROAS，已回退本地派生';
+  }
+  return '';
+}
+
 function formatBudgetCurrentValue(row: Record<string, unknown>): string {
   if (String(row.primary_metric || '') === 'roas') {
     const currentRoas = Number(row.current_roas || 0);
     const currentEcpi = Number(row.current_ecpi || 0);
     const roasStatus = String(row.roas_data_status || '');
+    const sourceSuffix = ` / ${formatRoasSourceLabel(row)}${formatRoasWarningLabel(row) ? `（${formatRoasWarningLabel(row)}）` : ''}`;
     if (roasStatus === 'pending' || String(row.metric_mode || '') === 'roas_pending_revenue') {
-      return `ROAS 回流中 / 当前 eCPI $${currentEcpi.toFixed(2)}`;
+      return `成熟窗口 ROAS 回流中 / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
     }
     if (roasStatus === 'partial') {
-      return `ROAS ${currentRoas.toFixed(2)}（按已覆盖成本计算） / eCPI $${currentEcpi.toFixed(2)}`;
+      return `成熟窗口 ROAS ${formatRoasPercent(currentRoas)}（按已覆盖成本计算） / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
     }
     if (roasStatus === 'partial_low') {
-      return `ROAS ${currentRoas.toFixed(2)}（覆盖率偏低，仅供参考） / eCPI $${currentEcpi.toFixed(2)}`;
+      return `成熟窗口 ROAS ${formatRoasPercent(currentRoas)}（覆盖率偏低，仅供参考） / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
     }
     if (roasStatus === 'unavailable') {
-      return `ROAS 暂无成熟数据 / 当前 eCPI $${currentEcpi.toFixed(2)}`;
+      return `成熟窗口 ROAS 暂无数据 / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
     }
-    return `ROAS ${currentRoas.toFixed(2)} / eCPI $${currentEcpi.toFixed(2)}`;
+    return `成熟窗口 ROAS ${formatRoasPercent(currentRoas)} / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
   }
   return `eCPI $${Number(row.current_ecpi || 0).toFixed(2)}`;
 }
@@ -872,7 +895,7 @@ function formatBudgetTargetValue(row: Record<string, unknown>): string {
   if (String(row.primary_metric || '') === 'roas') {
     const targetRoas = Number(row.target_roas || 0);
     const targetEcpi = Number(row.target_ecpi || 0);
-    return `目标 ROAS ${targetRoas.toFixed(2)} / 目标 eCPI $${targetEcpi.toFixed(2)}`;
+    return `目标 ROAS ${formatRoasPercent(targetRoas)} / 目标 eCPI $${targetEcpi.toFixed(2)}`;
   }
   return `目标 eCPI $${Number(row.target_ecpi || 0).toFixed(2)}`;
 }
@@ -899,19 +922,20 @@ function formatAsaMetricLabel(primaryMetric: string): string {
 function formatAsaCurrentValue(row: Record<string, unknown>): string {
   if (String(row.primary_metric || '') === 'd7_roas_cpp') {
     const roasStatus = String(row.roas_data_status || '');
+    const sourceSuffix = ` / ${formatRoasSourceLabel(row)}${formatRoasWarningLabel(row) ? `（${formatRoasWarningLabel(row)}）` : ''}`;
     if (roasStatus === 'pending') {
-      return 'ROAS 待补齐 / CPP 待补齐';
+      return `ROAS 待补齐 / CPP 待补齐${sourceSuffix}`;
     }
     if (roasStatus === 'partial') {
-      return `ROAS ${Number(row.current_d7_roas || 0).toFixed(2)}（按已覆盖成本计算） / CPP $${Number(row.current_cpp || 0).toFixed(2)}（按已覆盖成本计算）`;
+      return `ROAS ${formatRoasPercent(row.current_d7_roas)}（按已覆盖成本计算） / CPP $${Number(row.current_cpp || 0).toFixed(2)}（按已覆盖成本计算）${sourceSuffix}`;
     }
     if (roasStatus === 'partial_low') {
-      return `ROAS ${Number(row.current_d7_roas || 0).toFixed(2)}（覆盖率偏低，仅供参考） / CPP $${Number(row.current_cpp || 0).toFixed(2)}（覆盖率偏低，仅供参考）`;
+      return `ROAS ${formatRoasPercent(row.current_d7_roas)}（覆盖率偏低，仅供参考） / CPP $${Number(row.current_cpp || 0).toFixed(2)}（覆盖率偏低，仅供参考）${sourceSuffix}`;
     }
     if (roasStatus === 'unavailable') {
-      return 'ROAS 暂无成熟数据 / CPP 暂无成熟数据';
+      return `ROAS 暂无成熟数据 / CPP 暂无成熟数据${sourceSuffix}`;
     }
-    return `ROAS ${Number(row.current_d7_roas || 0).toFixed(2)} / CPP $${Number(row.current_cpp || 0).toFixed(2)}`;
+    return `ROAS ${formatRoasPercent(row.current_d7_roas)} / CPP $${Number(row.current_cpp || 0).toFixed(2)}${sourceSuffix}`;
   }
   const ecpi = Number(row.current_ecpi || 0);
   return ecpi > 0 ? `eCPI $${ecpi.toFixed(2)}` : 'eCPI —（有花费无安装）';
@@ -919,7 +943,7 @@ function formatAsaCurrentValue(row: Record<string, unknown>): string {
 
 function formatAsaTargetValue(row: Record<string, unknown>): string {
   if (String(row.primary_metric || '') === 'd7_roas_cpp') {
-    return `目标 ROAS ${Number(row.target_d7_roas || 0).toFixed(2)} / 目标 CPP $${Number(row.target_cpp || 0).toFixed(2)}`;
+    return `目标 ROAS ${formatRoasPercent(row.target_d7_roas)} / 目标 CPP $${Number(row.target_cpp || 0).toFixed(2)}`;
   }
   return `目标 eCPI $${Number(row.target_ecpi || 0).toFixed(2)}`;
 }
@@ -955,6 +979,11 @@ async function queryBudgetActionRows(reportDate: string, options: BitableExportR
         br.current_ecpi,
         br.target_ecpi,
         br.current_roas,
+        br.af_cohort_roas,
+        br.local_derived_roas,
+        br.roas_primary_source,
+        br.roas_warning_code,
+        br.roas_deviation_ratio,
         br.target_roas,
         br.roas_window_from,
         br.roas_window_to,
@@ -1039,6 +1068,11 @@ async function queryAsaActionRows(reportDate: string, options: BitableExportRunO
         ar.current_ecpi,
         ar.current_cpp,
         ar.current_d7_roas,
+        ar.af_cohort_roas,
+        ar.local_derived_roas,
+        ar.roas_primary_source,
+        ar.roas_warning_code,
+        ar.roas_deviation_ratio,
         ar.roas_window_from,
         ar.roas_window_to,
         ar.roas_data_status,

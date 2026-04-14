@@ -17,7 +17,7 @@ import {
 import { sendAlertNotification, sendFeishuInteractiveCardNotification, type NotificationResult } from './notifier.js';
 import { resolveDisplayName, resolveProductViewName } from './displayName.js';
 import { getTzParts } from './schedule.js';
-import type { AppConfigRecord, DailyBriefRouteRecord } from '../types/models.js';
+import type { AppConfigRecord, DailyBriefRouteRecord, RoasPrimarySource, RoasWarningCode } from '../types/models.js';
 
 interface LoggerLike {
   info: (message: string, meta?: Record<string, unknown>) => void;
@@ -52,6 +52,11 @@ interface DailyBriefBudgetHighlight {
   primary_metric: 'ecpi' | 'roas';
   metric_mode: 'active' | 'roas_pending_revenue';
   current_roas: number | null;
+  af_cohort_roas: number | null;
+  local_derived_roas: number | null;
+  roas_primary_source: RoasPrimarySource;
+  roas_warning_code: RoasWarningCode;
+  roas_deviation_ratio: number | null;
   target_roas: number | null;
   roas_window_from: string | null;
   roas_window_to: string | null;
@@ -360,30 +365,43 @@ function formatRoasWindowSummary(row: Pick<DailyBriefBudgetHighlight, 'roas_wind
   return '成熟窗口';
 }
 
+function formatRoasPercent(value: number | null | undefined): string {
+  return `${(Math.max(0, Number(value || 0)) * 100).toFixed(2)}%`;
+}
+
 function formatBudgetMetricStatus(row: DailyBriefBudgetHighlight): string {
   if (row.primary_metric !== 'roas') {
     return `当前 eCPI ${formatUsd(row.current_ecpi)} ｜ 目标 ${formatUsd(row.target_ecpi)}`;
   }
   const windowLabel = formatRoasWindowSummary(row);
+  const sourceLabel = row.roas_primary_source === 'af_cohort' ? 'AF Cohort 主口径' : '本地回退口径';
+  const warningSuffix =
+    row.roas_warning_code === 'af_missing'
+      ? '（AF Cohort 缺失，当前为本地派生值）'
+      : row.roas_warning_code === 'af_vs_local_mismatch'
+        ? '（AF 与本地派生偏差较大，已禁止自动动作）'
+        : row.roas_warning_code === 'af_grain_unavailable'
+          ? '（当前粒度无 AF 官方 ROAS，已回退本地派生值）'
+          : '';
   if (row.roas_data_status === 'pending' || row.metric_mode === 'roas_pending_revenue') {
-    return `成熟窗口 ROAS 待补齐（${windowLabel}）`;
+    return `成熟窗口 ROAS 待补齐（${windowLabel}）｜${sourceLabel}${warningSuffix}`;
   }
   if (row.roas_data_status === 'partial') {
-    return `成熟窗口 ROAS ${row.current_roas != null ? `${row.current_roas.toFixed(2)}x` : '可采纳'}（覆盖率达阈值，按已覆盖成本计算）`;
+    return `成熟窗口 ROAS ${row.current_roas != null ? formatRoasPercent(row.current_roas) : '可采纳'}（覆盖率达阈值，按已覆盖成本计算）｜${sourceLabel}${warningSuffix}`;
   }
   if (row.roas_data_status === 'partial_low') {
-    return `成熟窗口 ROAS ${row.current_roas != null ? `${row.current_roas.toFixed(2)}x` : '可采纳'}（覆盖率偏低，仅供参考）`;
+    return `成熟窗口 ROAS ${row.current_roas != null ? formatRoasPercent(row.current_roas) : '可采纳'}（覆盖率偏低，仅供参考）｜${sourceLabel}${warningSuffix}`;
   }
   if (row.roas_data_status === 'unavailable') {
-    return `成熟窗口 ROAS 暂无数据（${windowLabel}）`;
+    return `成熟窗口 ROAS 暂无数据（${windowLabel}）｜${sourceLabel}${warningSuffix}`;
   }
   if (row.current_roas != null && row.target_roas != null) {
-    return `成熟窗口 ROAS ${row.current_roas.toFixed(2)}x ｜ 目标 ${row.target_roas.toFixed(2)}x`;
+    return `成熟窗口 ROAS ${formatRoasPercent(row.current_roas)} ｜ 目标 ${formatRoasPercent(row.target_roas)} ｜ ${sourceLabel}${warningSuffix}`;
   }
   if (row.current_roas != null) {
-    return `成熟窗口 ROAS ${row.current_roas.toFixed(2)}x`;
+    return `成熟窗口 ROAS ${formatRoasPercent(row.current_roas)} ｜ ${sourceLabel}${warningSuffix}`;
   }
-  return `成熟窗口 ROAS 暂无数据（${windowLabel}）`;
+  return `成熟窗口 ROAS 暂无数据（${windowLabel}）｜${sourceLabel}${warningSuffix}`;
 }
 
 function trimSentence(value: string, limit = 72): string {
@@ -409,8 +427,15 @@ function buildBudgetAdjustmentReason(row: DailyBriefBudgetHighlight): string {
 
   if (row.primary_metric === 'roas') {
     const windowLabel = formatRoasWindowSummary(row);
+    const sourceLabel = row.roas_primary_source === 'af_cohort' ? 'AF Cohort 主口径' : '本地回退口径';
+    if (row.roas_warning_code === 'af_missing' || row.roas_warning_code === 'af_grain_unavailable') {
+      return `成熟窗口（${windowLabel}）当前优先使用 ${sourceLabel}；由于 AF 官方 ROAS 缺失，当前仅能回退到本地派生值，自动动作已降级为保持。`;
+    }
+    if (row.roas_warning_code === 'af_vs_local_mismatch') {
+      return `成熟窗口（${windowLabel}）当前以 AF Cohort 为主口径，但 AF 与本地派生值偏差较大，为避免误动作，本轮已自动降级为保持。`;
+    }
     if (row.roas_data_status === 'pending' || row.metric_mode === 'roas_pending_revenue') {
-      return `成熟窗口（${windowLabel}）内的 Cohort 回收数据仍在补齐，先保持预算并继续观察 eCPI 与执行动作结果。`;
+      return `成熟窗口（${windowLabel}）内的 Cohort 回收数据仍在补齐，当前主口径为 ${sourceLabel}，先保持预算并继续观察 eCPI 与执行动作结果。`;
     }
     if (row.roas_data_status === 'partial') {
       return `成熟窗口（${windowLabel}）内的 Cohort 覆盖率已达可采纳阈值，当前 ROAS 按已覆盖成本计算，建议结合执行动作继续观察缺口是否补齐。`;
@@ -582,7 +607,7 @@ async function queryPendingBudgetHighlights(reportDate: string, filters: DailyBr
 
   const result = await pgQuery<DailyBriefBudgetHighlight>(
     `SELECT app_key, platform, media_source, keyword, action, change_ratio, current_ecpi, target_ecpi,
-            primary_metric, metric_mode, current_roas, target_roas, roas_window_from, roas_window_to, roas_data_status,
+            primary_metric, metric_mode, current_roas, af_cohort_roas, local_derived_roas, roas_primary_source, roas_warning_code, roas_deviation_ratio, target_roas, roas_window_from, roas_window_to, roas_data_status,
             confidence, reason_code, llm_summary, execution_actions, scenario_tags
        FROM budget_recommendations
       WHERE ${clauses.join(' AND ')}

@@ -704,12 +704,14 @@ async function main(): Promise<void> {
     {
       total_cost: 40,
       purchase_count: 2,
+      revenue_d7: 60,
       d7_roas: 1.5,
       revenue_source_missing: 0
     },
     {
       total_cost: 20,
       purchase_count: 0,
+      revenue_d7: 0,
       d7_roas: 0,
       revenue_source_missing: 1
     }
@@ -735,12 +737,14 @@ async function main(): Promise<void> {
     {
       total_cost: 80,
       purchase_count: 4,
+      revenue_d7: 100,
       d7_roas: 1.25,
       revenue_source_missing: 0
     },
     {
       total_cost: 20,
       purchase_count: 0,
+      revenue_d7: 0,
       d7_roas: 0,
       revenue_source_missing: 1
     }
@@ -764,6 +768,7 @@ async function main(): Promise<void> {
     {
       total_cost: 40,
       purchase_count: 2,
+      revenue_d7: 60,
       d7_roas: 1.5,
       revenue_source_missing: 0
     }
@@ -772,6 +777,51 @@ async function main(): Promise<void> {
   assert.equal(completeValueCoverage.currentRoas, 1.5);
   assert.equal(completeValueCoverage.currentCpp, 20);
   assert.equal(completeValueCoverage.coverageRatio, 1);
+
+  const revenueBasedCoverage = summarizeBudgetValueCoverage([
+    {
+      total_cost: 100,
+      purchase_count: 4,
+      revenue_d7: 200,
+      d7_roas: 99,
+      revenue_source_missing: 0
+    },
+    {
+      total_cost: 50,
+      purchase_count: 2,
+      revenue_d7: 25,
+      d7_roas: 77,
+      revenue_source_missing: 0
+    }
+  ]);
+  assert.equal(revenueBasedCoverage.currentRoas, 1.5);
+  assert.equal(revenueBasedCoverage.currentCpp, 25);
+
+  const zeroAfRoasCoverage = summarizeBudgetValueCoverage([
+    {
+      total_cost: 100,
+      purchase_count: 0,
+      revenue_d7: 0,
+      d7_roas: 0,
+      revenue_source_missing: 0,
+      af_cohort_roas: 0,
+      af_cohort_roas_missing: 0
+    },
+    {
+      total_cost: 100,
+      purchase_count: 2,
+      revenue_d7: 200,
+      d7_roas: 2,
+      revenue_source_missing: 0,
+      af_cohort_roas: 2,
+      af_cohort_roas_missing: 0
+    }
+  ]);
+  assert.equal(zeroAfRoasCoverage.afCohortRoas, 1);
+  assert.equal(zeroAfRoasCoverage.localDerivedRoas, 1);
+  assert.equal(zeroAfRoasCoverage.currentRoas, 1);
+  assert.equal(zeroAfRoasCoverage.roasPrimarySource, 'af_cohort');
+  assert.equal(zeroAfRoasCoverage.roasWarningCode, 'none');
 
   assert.equal(resolveKeywordEngineBackfillDays(false, 30, 3), 30);
   assert.equal(resolveKeywordEngineBackfillDays(true, 30, 3), 3);
@@ -873,8 +923,9 @@ async function main(): Promise<void> {
         raw_event_count: 4,
         purchase_count: 2,
         revenue_d7: 80,
-        d7_roas: 1.7,
-        source_complete: true
+        af_cohort_roas: 1.7,
+        revenue_source_complete: true,
+        af_cohort_roas_complete: true
       }
     ],
     123,
@@ -886,7 +937,7 @@ async function main(): Promise<void> {
   assert.equal(keywordValueRows[0].revenue_d7, 80);
   assert.equal(keywordValueRows[0].revenue_source_missing, 0);
   assert.equal(keywordValueRows[0].cpp, 25);
-  assert.equal(keywordValueRows[0].d7_roas, 1.7);
+  assert.equal(keywordValueRows[0].d7_roas, 1.6);
   assert.equal(keywordValueRows[0].ctr, 0.1);
 
   const keywordValueRowsWithoutSource = buildKeywordValueRows(
@@ -937,8 +988,9 @@ async function main(): Promise<void> {
         raw_event_count: 5,
         purchase_count: 3,
         revenue_d7: 90,
-        d7_roas: 0,
-        source_complete: false
+        af_cohort_roas: 0,
+        revenue_source_complete: false,
+        af_cohort_roas_complete: false
       }
     ],
     [
@@ -952,8 +1004,9 @@ async function main(): Promise<void> {
         raw_event_count: 4,
         purchase_count: 0,
         revenue_d7: 0,
-        d7_roas: 1.8,
-        source_complete: true
+        af_cohort_roas: 1.8,
+        revenue_source_complete: false,
+        af_cohort_roas_complete: true
       }
     ]
   ]);
@@ -961,8 +1014,9 @@ async function main(): Promise<void> {
   assert.equal(mergedValueRevenueRows.length, 1);
   assert.equal(mergedExactCountry?.purchase_count, 3);
   assert.equal(mergedExactCountry?.revenue_d7, 90);
-  assert.equal(mergedExactCountry?.d7_roas, 1.8);
-  assert.equal(mergedExactCountry?.source_complete, true);
+  assert.equal(mergedExactCountry?.af_cohort_roas, 1.8);
+  assert.equal(mergedExactCountry?.revenue_source_complete, false);
+  assert.equal(mergedExactCountry?.af_cohort_roas_complete, true);
 
   const keywordValueRowsUnknownCountry = buildKeywordValueRows(
     'demo',
@@ -987,10 +1041,10 @@ async function main(): Promise<void> {
     new Map()
   );
   assert.equal(keywordValueRowsUnknownCountry.length, 1);
-  assert.equal(keywordValueRowsUnknownCountry[0].revenue_source_missing, 0);
+  assert.equal(keywordValueRowsUnknownCountry[0].revenue_source_missing, 1);
   assert.equal(keywordValueRowsUnknownCountry[0].purchase_count, 3);
   assert.equal(keywordValueRowsUnknownCountry[0].revenue_d7, 90);
-  assert.equal(keywordValueRowsUnknownCountry[0].d7_roas, 1.8);
+  assert.equal(keywordValueRowsUnknownCountry[0].d7_roas, 0);
 
   const keywordValueRowsMixedCountry = buildKeywordValueRows(
     'demo',
@@ -1352,7 +1406,7 @@ async function main(): Promise<void> {
         return {
           title: '成熟窗口 ROAS',
           summary_markdown:
-            '### 成熟窗口 ROAS\n- 报告日期：2026-04-08\n- 时间窗口：2026-04-01 至 2026-04-07\n- 当前 ROAS：1.23x',
+            '### 成熟窗口 ROAS\n- 报告日期：2026-04-08\n- 时间窗口：2026-04-01 至 2026-04-07\n- 当前 ROAS：123.00%',
           structured: {
             reportDate: '2026-04-08',
             summary: {
@@ -1401,7 +1455,7 @@ async function main(): Promise<void> {
           };
         }
         return {
-          content: '结论：按 2026-04-08 报告日期、成熟窗口 2026-04-01 至 2026-04-07，ROAS 为 1.23x。',
+          content: '结论：按 2026-04-08 报告日期、成熟窗口 2026-04-01 至 2026-04-07，ROAS 为 123.00%。',
           toolCalls: [],
           usage: null,
           raw: {},
@@ -1449,7 +1503,7 @@ async function main(): Promise<void> {
         return {
           title: '成熟窗口 ROAS',
           summary_markdown:
-            '### 成熟窗口 ROAS\n- 报告日期：2026-04-08\n- 时间窗口：2026-04-01 至 2026-04-07\n- 当前 ROAS：1.11x',
+            '### 成熟窗口 ROAS\n- 报告日期：2026-04-08\n- 时间窗口：2026-04-01 至 2026-04-07\n- 当前 ROAS：111.00%',
           structured: {},
           row_count: 1,
           truncated: false,
@@ -1486,7 +1540,7 @@ async function main(): Promise<void> {
           };
         }
         return {
-          content: '结论：按 ASA 简报口径，昨天的成熟窗口 ROAS 为 1.11x。',
+          content: '结论：按 ASA 简报口径，昨天的成熟窗口 ROAS 为 111.00%。',
           toolCalls: [],
           usage: null,
           raw: {},
@@ -2503,6 +2557,43 @@ async function main(): Promise<void> {
   assert.match(uiAppScript, /function toSqlDate\(date\)\s*\{\s*return toLocalDate\(date\);\s*\}/);
   assert.doesNotMatch(uiAppScript, /function toSqlDateTime\(date\)\s*\{\s*return date\.toISOString\(\)/);
   assert.doesNotMatch(uiAppScript, /function toSqlDate\(date\)\s*\{\s*return date\.toISOString\(\)/);
+  assert.match(uiAppScript, /function buildAsaTrendMetricDisplaySource\(source = \{\}\)\s*\{[\s\S]*af_cohort_roas_missing/);
+  assert.match(uiAppScript, /function resolveAsaTrendRoasStatus\(source = \{\}\)\s*\{\s*return buildAsaTrendMetricDisplaySource\(source\)\.roasStatus;/);
+  assert.match(uiAppScript, /function resolveAsaTrendCppStatus\(source = \{\}\)/);
+  assert.match(uiAppScript, /const trendMetric = buildAsaTrendMetricDisplaySource\(item\);[\s\S]*trendMetric\.d7Roas/);
+
+  const bitableExportScript = readFileSync('packages/shared/utils/bitableExport.ts', 'utf8');
+  assert.match(bitableExportScript, /function formatRoasPercent\(value: unknown\): string/);
+  assert.match(bitableExportScript, /目标 ROAS \$\{formatRoasPercent\(targetRoas\)\}/);
+  assert.match(bitableExportScript, /成熟窗口 ROAS \$\{formatRoasPercent\(currentRoas\)\}/);
+  assert.match(bitableExportScript, /ROAS \$\{formatRoasPercent\(row\.current_d7_roas\)\}/);
+
+  const asaKeywordsScript = readFileSync('packages/shared/utils/asaKeywords.ts', 'utf8');
+  assert.match(asaKeywordsScript, /revenue_source_complete: kpi === 'revenue'/);
+  assert.match(asaKeywordsScript, /af_cohort_roas: kpi === 'roas' \? normalizeAfCohortRoasRate/);
+  assert.match(asaKeywordsScript, /if\(covered_roas_cost_sum > 0, covered_revenue_d7_sum \/ covered_roas_cost_sum, 0\) AS d7_roas/);
+  assert.match(asaKeywordsScript, /return eligibleRows\.reduce\(\(sum, row\) => sum \+ Number\(row\.revenue_d7 \|\| 0\), 0\) \/ totalCost;/);
+
+  const dailyBriefScript = readFileSync('packages/shared/utils/dailyBrief.ts', 'utf8');
+  assert.match(dailyBriefScript, /function formatRoasPercent\(value: number \| null \| undefined\): string/);
+  assert.match(dailyBriefScript, /成熟窗口 ROAS \$\{formatRoasPercent\(row\.current_roas\)\} ｜ 目标 \$\{formatRoasPercent\(row\.target_roas\)\}/);
+
+  const roasSummaryToolScript = readFileSync('packages/shared/utils/roasSummaryTool.ts', 'utf8');
+  assert.match(roasSummaryToolScript, /return value != null && Number\.isFinite\(value\) \? `\$\{\(Math\.max\(0, value\) \* 100\)\.toFixed\(2\)\}%` : '—';/);
+
+  const aiContextPacksScript = readFileSync('packages/shared/utils/aiContextPacks.ts', 'utf8');
+  assert.match(aiContextPacksScript, /function formatOptionalRoasPercent\(value: unknown\): string/);
+  assert.match(aiContextPacksScript, /D7 ROAS \$\{formatOptionalRoasPercent\(summary\.avg_roas\)\}/);
+  assert.doesNotMatch(aiContextPacksScript, /avg\(current_d7_roas\)/);
+  assert.doesNotMatch(aiContextPacksScript, /avg_roas:\s*'0\.00'/);
+  assert.doesNotMatch(aiContextPacksScript, /formatRoasPercent\(summary\.avg_roas \|\| 0\)/);
+
+  const aiChatScript = readFileSync('packages/shared/utils/aiChat.ts', 'utf8');
+  assert.match(aiChatScript, /function formatOptionalRoasPercent\(value: unknown\): string/);
+  assert.match(aiChatScript, /D7 ROAS \$\{formatOptionalRoasPercent\(summary\.avg_roas\)\}/);
+  assert.doesNotMatch(aiChatScript, /avg\(current_d7_roas\)/);
+  assert.doesNotMatch(aiChatScript, /avg_roas:\s*'0\.00'/);
+  assert.doesNotMatch(aiChatScript, /formatRoasPercent\(summary\.avg_roas \|\| 0\)/);
 
   const mockedPolicyRouter = createRecommendationPoliciesRouter({
     getAppByKey: async () =>

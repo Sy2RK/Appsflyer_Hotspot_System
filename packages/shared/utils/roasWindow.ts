@@ -1,4 +1,9 @@
-import type { RecommendationPolicyRuleJson, RoasDataStatus } from '../types/models.js';
+import type {
+  RecommendationPolicyRuleJson,
+  RoasDataStatus,
+  RoasPrimarySource,
+  RoasWarningCode
+} from '../types/models.js';
 import { shiftDateString } from './businessDate.js';
 import { env } from '../config/env.js';
 
@@ -14,6 +19,9 @@ export interface MatureRoasWindow {
   to: string;
 }
 
+const ROAS_DEVIATION_RATIO_THRESHOLD = 0.2;
+const ROAS_DEVIATION_ABSOLUTE_THRESHOLD = 0.15;
+
 export function resolveRoasCoverageRatio(input: { coveredCost?: number | null; missingCost?: number | null }): number {
   const coveredCost = Math.max(0, Number(input.coveredCost || 0));
   const missingCost = Math.max(0, Number(input.missingCost || 0));
@@ -22,6 +30,88 @@ export function resolveRoasCoverageRatio(input: { coveredCost?: number | null; m
     return 0;
   }
   return coveredCost / totalCost;
+}
+
+export function normalizeAfCohortRoasRate(value: number | null | undefined): number {
+  const raw = Number(value || 0);
+  if (!Number.isFinite(raw) || raw < 0) {
+    return 0;
+  }
+  return raw / 100;
+}
+
+function hasRoasValue(value: number | null | undefined): boolean {
+  return value != null && Number.isFinite(Number(value)) && Number(value) >= 0;
+}
+
+export function calculateRoasDeviationRatio(
+  afCohortRoas: number | null | undefined,
+  localDerivedRoas: number | null | undefined
+): number | null {
+  const af = Number(afCohortRoas);
+  const local = Number(localDerivedRoas);
+  if (!hasRoasValue(afCohortRoas) || !hasRoasValue(localDerivedRoas)) {
+    return null;
+  }
+  const denominator = Math.max(Math.abs(af), Math.abs(local), 0.01);
+  return Math.abs(af - local) / denominator;
+}
+
+export function hasRoasDeviationMismatch(
+  afCohortRoas: number | null | undefined,
+  localDerivedRoas: number | null | undefined
+): boolean {
+  const af = Number(afCohortRoas);
+  const local = Number(localDerivedRoas);
+  if (!hasRoasValue(afCohortRoas) || !hasRoasValue(localDerivedRoas)) {
+    return false;
+  }
+  const deviationRatio = calculateRoasDeviationRatio(af, local);
+  const absoluteDiff = Math.abs(af - local);
+  return Boolean(
+    (deviationRatio != null && deviationRatio > ROAS_DEVIATION_RATIO_THRESHOLD) ||
+      absoluteDiff > ROAS_DEVIATION_ABSOLUTE_THRESHOLD
+  );
+}
+
+export function resolveRoasPrimarySource(input: {
+  afCohortRoas?: number | null;
+  localDerivedRoas?: number | null;
+}): RoasPrimarySource {
+  if (hasRoasValue(input.afCohortRoas)) {
+    return 'af_cohort';
+  }
+  return 'local_fallback';
+}
+
+export function resolveRoasWarningCode(input: {
+  afCohortRoas?: number | null;
+  localDerivedRoas?: number | null;
+  forceGrainUnavailable?: boolean;
+}): RoasWarningCode {
+  const hasAf = hasRoasValue(input.afCohortRoas);
+  const hasLocal = hasRoasValue(input.localDerivedRoas);
+
+  if (input.forceGrainUnavailable && hasLocal) {
+    return 'af_grain_unavailable';
+  }
+  if (!hasAf && hasLocal) {
+    return 'af_missing';
+  }
+  if (hasAf && hasLocal && hasRoasDeviationMismatch(input.afCohortRoas, input.localDerivedRoas)) {
+    return 'af_vs_local_mismatch';
+  }
+  return 'none';
+}
+
+export function shouldHoldForRoasProtection(input: {
+  primarySource: RoasPrimarySource;
+  warningCode: RoasWarningCode;
+}): boolean {
+  if (input.primarySource !== 'af_cohort') {
+    return true;
+  }
+  return input.warningCode === 'af_vs_local_mismatch';
 }
 
 export function isRoasDataUsableStatus(status: RoasDataStatus | null | undefined): boolean {

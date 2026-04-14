@@ -10,6 +10,7 @@ import { extractKeywordFromCampaign, evaluateKeywordLifecycle } from './keyword.
 import type { AppConfigRecord, KeywordExtractRuleRecord, KeywordLifecycleStateRow } from '../types/models.js';
 import { env } from '../config/env.js';
 import { getDateStringInTimezone, getPreviousDateString, shiftDateString } from './businessDate.js';
+import { normalizeAfCohortRoasRate } from './roasWindow.js';
 
 export interface KeywordEngineLogger {
   info: (message: string, context?: Record<string, unknown>) => void;
@@ -76,8 +77,9 @@ interface KeywordValueRevenueAggRow {
   raw_event_count: number;
   purchase_count: number;
   revenue_d7: number;
-  d7_roas: number;
-  source_complete: boolean;
+  af_cohort_roas: number;
+  revenue_source_complete: boolean;
+  af_cohort_roas_complete: boolean;
 }
 
 interface DateWindow {
@@ -119,6 +121,8 @@ interface KeywordValueFactRow {
   cpi: number;
   cpp: number;
   d7_roas: number;
+  af_cohort_roas: number;
+  af_cohort_roas_missing: number;
   version: number;
 }
 
@@ -155,7 +159,9 @@ async function ensureKeywordValueFactSchema(): Promise<void> {
   if (!ensureKeywordValueFactSchemaPromise) {
     ensureKeywordValueFactSchemaPromise = chExec(
       `ALTER TABLE keyword_value_daily_metrics
-        ADD COLUMN IF NOT EXISTS revenue_source_missing UInt8 DEFAULT 0`
+        ADD COLUMN IF NOT EXISTS revenue_source_missing UInt8 DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS af_cohort_roas Float64 DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS af_cohort_roas_missing UInt8 DEFAULT 1`
     ).catch((error) => {
       ensureKeywordValueFactSchemaPromise = null;
       throw error;
@@ -378,8 +384,10 @@ function accumulateKeywordValueRevenueRow(
     existing.raw_event_count += row.raw_event_count;
     existing.purchase_count += row.purchase_count;
     existing.revenue_d7 += row.revenue_d7;
-    existing.d7_roas = row.source_complete && row.d7_roas > 0 ? row.d7_roas : existing.d7_roas;
-    existing.source_complete = existing.source_complete || row.source_complete;
+    existing.af_cohort_roas =
+      row.af_cohort_roas_complete ? row.af_cohort_roas : existing.af_cohort_roas;
+    existing.revenue_source_complete = existing.revenue_source_complete || row.revenue_source_complete;
+    existing.af_cohort_roas_complete = existing.af_cohort_roas_complete || row.af_cohort_roas_complete;
     return;
   }
   aggregate.set(key, { ...row });
@@ -408,8 +416,10 @@ function accumulateKeywordValueRevenueGroupRow(
     existing.raw_event_count += row.raw_event_count;
     existing.purchase_count += row.purchase_count;
     existing.revenue_d7 += row.revenue_d7;
-    existing.d7_roas = row.source_complete && row.d7_roas > 0 ? row.d7_roas : existing.d7_roas;
-    existing.source_complete = existing.source_complete || row.source_complete;
+    existing.af_cohort_roas =
+      row.af_cohort_roas_complete ? row.af_cohort_roas : existing.af_cohort_roas;
+    existing.revenue_source_complete = existing.revenue_source_complete || row.revenue_source_complete;
+    existing.af_cohort_roas_complete = existing.af_cohort_roas_complete || row.af_cohort_roas_complete;
     return;
   }
   aggregate.set(key, { ...row, country: 'unknown' });
@@ -424,8 +434,10 @@ export function mergeKeywordValueRevenueRows(rowsList: KeywordValueRevenueAggRow
         existing.raw_event_count += row.raw_event_count;
         existing.purchase_count += row.purchase_count;
         existing.revenue_d7 += row.revenue_d7;
-        existing.d7_roas = row.source_complete && row.d7_roas > 0 ? row.d7_roas : existing.d7_roas;
-        existing.source_complete = existing.source_complete || row.source_complete;
+        existing.af_cohort_roas =
+          row.af_cohort_roas_complete ? row.af_cohort_roas : existing.af_cohort_roas;
+        existing.revenue_source_complete = existing.revenue_source_complete || row.revenue_source_complete;
+        existing.af_cohort_roas_complete = existing.af_cohort_roas_complete || row.af_cohort_roas_complete;
       } else {
         merged.set(key, { ...row });
       }
@@ -505,8 +517,12 @@ function parseKeywordValueCohortRows(
     raw_event_count: kpi === 'revenue' ? toNumber(row.revenue_count_day_7 || '0') : 0,
     purchase_count: kpi === 'revenue' ? toNumber(row.revenue_count_day_7 || '0') : 0,
     revenue_d7: kpi === 'revenue' ? toNumber(row.revenue_sum_day_7 || '0') : 0,
-    d7_roas: kpi === 'roas' ? toNumber(row.roas_rate_day_7 || '0') : 0,
-    source_complete: kpi === 'roas'
+    af_cohort_roas: kpi === 'roas' ? normalizeAfCohortRoasRate(toNumber(row.roas_rate_day_7 || '0')) : 0,
+    // Treat revenue rows as the authoritative sign that D7 value data is available.
+    // AppsFlyer roas_rate_day_7 can diverge in unit/granularity from revenue_sum_day_7,
+    // so we no longer mark a row "complete" based on the roas-only payload.
+    revenue_source_complete: kpi === 'revenue',
+    af_cohort_roas_complete: kpi === 'roas'
   }));
 }
 
@@ -785,9 +801,11 @@ export function buildKeywordValueRows(
       normalizeSourceDimension(row.country) === 'unknown' && !hasPreciseCountry
         ? revenueAllCountriesMap.get(sourceGroupKey) ?? exactRevenue
         : exactRevenue;
-    const revenueSourceMissing = revenue?.source_complete ? 0 : 1;
+    const revenueSourceMissing = revenue?.revenue_source_complete ? 0 : 1;
+    const afCohortRoasMissing = revenue?.af_cohort_roas_complete ? 0 : 1;
     const purchaseCount = revenue ? revenue.purchase_count : 0;
     const revenueD7 = revenue ? revenue.revenue_d7 : 0;
+    const afCohortRoas = afCohortRoasMissing === 0 ? Number(revenue?.af_cohort_roas || 0) : 0;
     return [
       {
         install_date: row.install_date,
@@ -807,7 +825,10 @@ export function buildKeywordValueRows(
         cvr: row.clicks > 0 ? row.installs / row.clicks : 0,
         cpi: row.installs > 0 ? row.total_cost / row.installs : 0,
         cpp: purchaseCount > 0 ? row.total_cost / purchaseCount : 0,
-        d7_roas: revenue?.source_complete ? revenue.d7_roas : 0,
+        // Keep the local revenue / cost ratio as the shadow validation value.
+        d7_roas: revenueSourceMissing === 0 && row.total_cost > 0 ? revenueD7 / row.total_cost : 0,
+        af_cohort_roas: afCohortRoas,
+        af_cohort_roas_missing: afCohortRoasMissing,
         version
       }
     ];

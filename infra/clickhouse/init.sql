@@ -156,6 +156,8 @@ CREATE TABLE IF NOT EXISTS hotspot.keyword_value_daily_metrics (
   cpi Float64,
   cpp Float64,
   d7_roas Float64,
+  af_cohort_roas Float64 DEFAULT 0,
+  af_cohort_roas_missing UInt8 DEFAULT 1,
   version UInt64
 )
 ENGINE = ReplacingMergeTree(version)
@@ -163,6 +165,8 @@ PARTITION BY toYYYYMM(install_date)
 ORDER BY (app_key, platform, install_date, media_source, country, campaign, keyword, match_type);
 
 ALTER TABLE hotspot.keyword_value_daily_metrics ADD COLUMN IF NOT EXISTS revenue_source_missing UInt8 DEFAULT 0;
+ALTER TABLE hotspot.keyword_value_daily_metrics ADD COLUMN IF NOT EXISTS af_cohort_roas Float64 DEFAULT 0;
+ALTER TABLE hotspot.keyword_value_daily_metrics ADD COLUMN IF NOT EXISTS af_cohort_roas_missing UInt8 DEFAULT 1;
 
 CREATE TABLE IF NOT EXISTS hotspot.asa_raw_installs (
   install_date Date,
@@ -244,6 +248,8 @@ CREATE TABLE IF NOT EXISTS hotspot.asa_keyword_daily_metrics_v2 (
   average_ecpi Float64,
   cpp Float64,
   d7_roas Float64,
+  af_cohort_roas Float64 DEFAULT 0,
+  af_cohort_roas_missing UInt8 DEFAULT 1,
   roas_source_missing UInt8 DEFAULT 0,
   snapshot_id UInt64 DEFAULT 0,
   version UInt64
@@ -285,5 +291,7 @@ ORDER BY (app_key, platform, date, snapshot_id);
 ALTER TABLE hotspot.asa_raw_installs ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;
 ALTER TABLE hotspot.asa_raw_in_app_events ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;
 ALTER TABLE hotspot.asa_keyword_daily_metrics_v2 ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;
+ALTER TABLE hotspot.asa_keyword_daily_metrics_v2 ADD COLUMN IF NOT EXISTS af_cohort_roas Float64 DEFAULT 0;
+ALTER TABLE hotspot.asa_keyword_daily_metrics_v2 ADD COLUMN IF NOT EXISTS af_cohort_roas_missing UInt8 DEFAULT 1;
 ALTER TABLE hotspot.asa_keyword_daily_metrics_v2 ADD COLUMN IF NOT EXISTS roas_source_missing UInt8 DEFAULT 0;
 ALTER TABLE hotspot.asa_keyword_country_daily_metrics ADD COLUMN IF NOT EXISTS snapshot_id UInt64 DEFAULT 0;

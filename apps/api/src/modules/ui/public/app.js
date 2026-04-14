@@ -6332,23 +6332,24 @@ function openBudgetDetail(row) {
   el.budgetDetailTier.textContent = volumeTierLabel(row.volume_tier);
   el.budgetDetailEcpi.textContent = toFixed2(row.current_ecpi);
   el.budgetDetailTargetEcpi.textContent = toFixed2(row.target_ecpi);
+  const budgetRoasSourceMeta = buildRoasSourceMetaText(row.roas_primary_source, row.roas_warning_code);
   el.budgetDetailCurrentRoas.textContent =
     row.roas_data_status === 'pending'
-      ? '待补齐（源数据缺失）'
+      ? `待补齐（源数据缺失）｜${budgetRoasSourceMeta}`
       : row.roas_data_status === 'partial'
         ? row.current_roas == null
-          ? '覆盖率达阈值（按已覆盖成本计算）'
-          : `${toFixed2(row.current_roas)}（按已覆盖成本计算）`
+          ? `覆盖率达阈值（按已覆盖成本计算）｜${budgetRoasSourceMeta}`
+          : `${formatRoasPercent(row.current_roas)}（按已覆盖成本计算）｜${budgetRoasSourceMeta}`
       : row.roas_data_status === 'partial_low'
         ? row.current_roas == null
-          ? '覆盖率偏低（仅供参考）'
-          : `${toFixed2(row.current_roas)}（覆盖率偏低，仅供参考）`
+          ? `覆盖率偏低（仅供参考）｜${budgetRoasSourceMeta}`
+          : `${formatRoasPercent(row.current_roas)}（覆盖率偏低，仅供参考）｜${budgetRoasSourceMeta}`
       : row.roas_data_status === 'unavailable'
-        ? '暂无成熟数据'
+        ? `暂无成熟数据｜${budgetRoasSourceMeta}`
         : row.current_roas == null
           ? '-'
-          : toFixed2(row.current_roas);
-  el.budgetDetailTargetRoas.textContent = row.target_roas == null ? '-' : toFixed2(row.target_roas);
+          : `${formatRoasPercent(row.current_roas)}｜${budgetRoasSourceMeta}`;
+  el.budgetDetailTargetRoas.textContent = row.target_roas == null ? '-' : formatRoasPercent(row.target_roas);
   el.budgetDetailBudgetAction.textContent = actionLabel(row.action);
   el.budgetDetailExecutionActions.textContent = executionActionSummary || '-';
   el.budgetDetailScenarioTags.textContent = scenarioTagSummary || '-';
@@ -6540,6 +6541,30 @@ function normalizeRoasCoverageRatio(value, roasDataStatus) {
   return normalizeRoasDataStatus(roasDataStatus) === 'complete' ? 1 : 0;
 }
 
+function formatRoasPrimarySourceLabel(source) {
+  return String(source || '') === 'af_cohort' ? 'AF Cohort 主口径' : '本地回退口径';
+}
+
+function formatRoasWarningLabel(code) {
+  const value = String(code || '').trim();
+  if (value === 'af_missing') {
+    return 'AF 缺失，当前为本地派生';
+  }
+  if (value === 'af_vs_local_mismatch') {
+    return 'AF 与本地派生偏差较大';
+  }
+  if (value === 'af_grain_unavailable') {
+    return '当前粒度无 AF 官方 ROAS';
+  }
+  return '';
+}
+
+function buildRoasSourceMetaText(primarySource, warningCode) {
+  const sourceLabel = formatRoasPrimarySourceLabel(primarySource);
+  const warningLabel = formatRoasWarningLabel(warningCode);
+  return warningLabel ? `${sourceLabel} · ${warningLabel}` : sourceLabel;
+}
+
 function formatAsaCoverageMeta(roasDataStatus, coverageRatio) {
   const status = normalizeRoasDataStatus(roasDataStatus);
   const ratio = normalizeRoasCoverageRatio(coverageRatio, roasDataStatus);
@@ -6583,15 +6608,72 @@ function buildAsaMetricStackHtml(metaText, valueText) {
 
 function buildAsaMetricDisplaySource(source = {}) {
   const roasDataStatus = normalizeRoasDataStatus(source.roas_data_status);
+  const explicitPrimarySource = String(source.roas_primary_source || '').trim();
+  const explicitWarningCode = String(source.roas_warning_code || '').trim();
+  const afCohortMissing = Number(source.af_cohort_roas_missing || 0) === 1;
+  const localMissing = Number(source.roas_source_missing || 0) === 1;
+  const hasAfCohortRoas = source.af_cohort_roas != null && !afCohortMissing && Number.isFinite(Number(source.af_cohort_roas));
+  const hasLocalDerivedRoas =
+    (source.local_derived_roas ?? source.d7_roas ?? source.current_d7_roas) != null &&
+    !localMissing &&
+    Number.isFinite(Number(source.local_derived_roas ?? source.d7_roas ?? source.current_d7_roas));
+  const roasPrimarySource =
+    explicitPrimarySource || (hasAfCohortRoas ? 'af_cohort' : 'local_fallback');
+  const roasWarningCode =
+    explicitWarningCode || (!hasAfCohortRoas && hasLocalDerivedRoas ? 'af_missing' : 'none');
+  const afCohortRoas = hasAfCohortRoas ? Number(source.af_cohort_roas) : 0;
+  const localDerivedRoas = hasLocalDerivedRoas
+    ? Number(source.local_derived_roas ?? source.d7_roas ?? source.current_d7_roas)
+    : 0;
+  const d7Roas =
+    roasPrimarySource === 'af_cohort'
+      ? (hasAfCohortRoas ? afCohortRoas : Number((source.d7_roas ?? source.current_d7_roas) || 0))
+      : localDerivedRoas;
   return {
     roasDataStatus,
     roasDisplayable: isAsaRoasDisplayableStatus(roasDataStatus),
     roasCoverageRatio: normalizeRoasCoverageRatio(source.roas_coverage_ratio, roasDataStatus),
+    roasPrimarySource,
+    roasWarningCode,
     totalCost: Number((source.total_cost ?? source.total_cost_7d) || 0),
     purchaseCount: Number((source.purchase_count ?? source.purchase_count_7d) || 0),
     revenueD7: Number((source.revenue_d7 ?? source.revenue_d7_7d) || 0),
     cpp: Number((source.cpp ?? source.current_cpp) || 0),
-    d7Roas: Number((source.d7_roas ?? source.current_d7_roas) || 0)
+    d7Roas
+  };
+}
+
+function buildAsaTrendMetricDisplaySource(source = {}) {
+  const explicitPrimarySource = String(source.roas_primary_source || '').trim();
+  const explicitWarningCode = String(source.roas_warning_code || '').trim();
+  const afCohortMissing = Number(source.af_cohort_roas_missing || 0) === 1;
+  const localMissing = Number(source.roas_source_missing || 0) === 1;
+  const totalCost = Number(source.total_cost || 0);
+  const purchaseCount = Number(source.purchase_count || 0);
+  const revenueD7 = Number(source.revenue_d7 || 0);
+  const hasAfCohortRoas = source.af_cohort_roas != null && !afCohortMissing && Number.isFinite(Number(source.af_cohort_roas));
+  const hasLocalDerivedRoas = source.d7_roas != null && !localMissing && Number.isFinite(Number(source.d7_roas));
+  const roasPrimarySource = explicitPrimarySource || (hasAfCohortRoas ? 'af_cohort' : 'local_fallback');
+  const roasWarningCode =
+    explicitWarningCode || (!hasAfCohortRoas && hasLocalDerivedRoas ? 'af_missing' : 'none');
+  const d7Roas =
+    roasPrimarySource === 'af_cohort'
+      ? (hasAfCohortRoas ? Number(source.af_cohort_roas) : hasLocalDerivedRoas ? Number(source.d7_roas) : 0)
+      : hasLocalDerivedRoas
+        ? Number(source.d7_roas)
+        : 0;
+  const roasStatus =
+    totalCost <= 0 ? 'unavailable' : hasAfCohortRoas || hasLocalDerivedRoas ? 'complete' : 'pending';
+  const cppStatus = totalCost <= 0 ? 'unavailable' : localMissing ? 'pending' : 'complete';
+  return {
+    roasPrimarySource,
+    roasWarningCode,
+    totalCost,
+    purchaseCount,
+    revenueD7,
+    d7Roas,
+    roasStatus,
+    cppStatus
   };
 }
 
@@ -6601,6 +6683,8 @@ function buildAsaCppMetricTitle(source = {}) {
   if (metric.roasDisplayable && metric.totalCost > 0 && metric.purchaseCount <= 0) {
     title = title ? `${title}；覆盖窗口内无购买` : '覆盖窗口内无购买';
   }
+  const sourceMeta = buildRoasSourceMetaText(metric.roasPrimarySource, metric.roasWarningCode);
+  title = title ? `${title}；${sourceMeta}` : sourceMeta;
   return title;
 }
 
@@ -6610,6 +6694,8 @@ function buildAsaD7RoasMetricTitle(source = {}) {
   if (metric.roasDisplayable && metric.totalCost > 0 && metric.revenueD7 <= 0) {
     title = title ? `${title}；覆盖窗口内未观察到 D7 收入` : '覆盖窗口内未观察到 D7 收入';
   }
+  const sourceMeta = buildRoasSourceMetaText(metric.roasPrimarySource, metric.roasWarningCode);
+  title = title ? `${title}；${sourceMeta}` : sourceMeta;
   return title;
 }
 
@@ -6623,13 +6709,19 @@ function buildAsaCppMetricStackHtml(source = {}) {
         : metric.totalCost > 0
           ? '—'
           : '-';
-  return buildAsaMetricStackHtml(formatAsaCoverageMeta(metric.roasDataStatus, metric.roasCoverageRatio), valueText);
+  return buildAsaMetricStackHtml(
+    `${formatAsaCoverageMeta(metric.roasDataStatus, metric.roasCoverageRatio)} · ${formatRoasPrimarySourceLabel(metric.roasPrimarySource)}`,
+    valueText
+  );
 }
 
 function buildAsaD7RoasMetricStackHtml(source = {}) {
   const metric = buildAsaMetricDisplaySource(source);
-  const valueText = !metric.roasDisplayable ? '—' : metric.totalCost > 0 ? `${toFixed2(metric.d7Roas)}x` : '-';
-  return buildAsaMetricStackHtml(formatAsaCoverageMeta(metric.roasDataStatus, metric.roasCoverageRatio), valueText);
+  const valueText = !metric.roasDisplayable ? '—' : metric.totalCost > 0 ? formatRoasPercent(metric.d7Roas) : '-';
+  return buildAsaMetricStackHtml(
+    `${formatAsaCoverageMeta(metric.roasDataStatus, metric.roasCoverageRatio)} · ${formatRoasPrimarySourceLabel(metric.roasPrimarySource)}`,
+    valueText
+  );
 }
 
 function formatAsaEcpiDisplay(value, totalCost, installs, options = {}) {
@@ -6638,6 +6730,10 @@ function formatAsaEcpiDisplay(value, totalCost, installs, options = {}) {
     return '—';
   }
   return withCurrency ? `$${toFixed2(value || 0)}` : `${toFixed2(value || 0)}`;
+}
+
+function formatRoasPercent(value) {
+  return `${toFixed2((Number(value || 0) * 100))}%`;
 }
 
 function formatAsaEcpiDisplayWithReason(value, totalCost, installs, options = {}) {
@@ -6674,42 +6770,50 @@ function formatAsaCppDisplay(value, totalCost, purchaseCount, roasDataStatus) {
   return `$${toFixed2(value || 0)}`;
 }
 
-function formatAsaD7RoasDisplay(value, totalCost, revenueD7, roasDataStatus) {
+function formatAsaD7RoasDisplay(value, totalCost, revenueD7, roasDataStatus, source = {}) {
   const status = normalizeRoasDataStatus(roasDataStatus);
+  const sourceText = buildRoasSourceMetaText(
+    source.roas_primary_source ?? source.roasPrimarySource,
+    source.roas_warning_code ?? source.roasWarningCode
+  );
   if (status === 'pending') {
-    return '待补齐（源数据缺失）';
+    return `待补齐（源数据缺失）${sourceText ? `｜${sourceText}` : ''}`;
   }
   if (status === 'partial') {
     if (Number(totalCost || 0) <= 0) {
       return '-';
     }
-    return `${toFixed2(value || 0)}x（按已覆盖成本计算）`;
+    return `${formatRoasPercent(value)}（按已覆盖成本计算）${sourceText ? `｜${sourceText}` : ''}`;
   }
   if (status === 'partial_low') {
     if (Number(totalCost || 0) <= 0) {
       return '-';
     }
-    return `${toFixed2(value || 0)}x（覆盖率偏低，仅供参考）`;
+    return `${formatRoasPercent(value)}（覆盖率偏低，仅供参考）${sourceText ? `｜${sourceText}` : ''}`;
   }
   if (status === 'unavailable') {
-    return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
+    return Number(totalCost || 0) > 0 ? `暂无成熟数据${sourceText ? `｜${sourceText}` : ''}` : '-';
   }
   if (Number(totalCost || 0) <= 0) {
     return '-';
   }
-  return `${toFixed2(value || 0)}x`;
+  return `${formatRoasPercent(value)}${sourceText ? `｜${sourceText}` : ''}`;
 }
 
-function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7, roasDataStatus) {
+function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7, roasDataStatus, source = {}) {
   const status = normalizeRoasDataStatus(roasDataStatus);
+  const sourceText = buildRoasSourceMetaText(
+    source.roas_primary_source ?? source.roasPrimarySource,
+    source.roas_warning_code ?? source.roasWarningCode
+  );
   if (status === 'pending') {
-    return '待补齐（源数据缺失）';
+    return `待补齐（源数据缺失）${sourceText ? `｜${sourceText}` : ''}`;
   }
   if (status === 'partial') {
     if (Number(totalCost || 0) <= 0) {
       return '-';
     }
-    const base = `${toFixed2(value || 0)}x（按已覆盖成本计算）`;
+    const base = `${formatRoasPercent(value)}（按已覆盖成本计算）${sourceText ? `｜${sourceText}` : ''}`;
     return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
       ? `${base}（成熟窗口未观察到D7收入）`
       : base;
@@ -6718,19 +6822,27 @@ function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7, roasDataS
     if (Number(totalCost || 0) <= 0) {
       return '-';
     }
-    const base = `${toFixed2(value || 0)}x（覆盖率偏低，仅供参考）`;
+    const base = `${formatRoasPercent(value)}（覆盖率偏低，仅供参考）${sourceText ? `｜${sourceText}` : ''}`;
     return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
       ? `${base}（成熟窗口未观察到D7收入）`
       : base;
   }
   if (status === 'unavailable') {
-    return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
+    return Number(totalCost || 0) > 0 ? `暂无成熟数据${sourceText ? `｜${sourceText}` : ''}` : '-';
   }
   if (Number(totalCost || 0) <= 0) {
     return '-';
   }
-  const base = `${toFixed2(value || 0)}x`;
+  const base = `${formatRoasPercent(value)}${sourceText ? `｜${sourceText}` : ''}`;
   return asaHasCostWithoutD7Revenue(totalCost, revenueD7) ? `${base}（成熟窗口未观察到D7收入）` : base;
+}
+
+function resolveAsaTrendRoasStatus(source = {}) {
+  return buildAsaTrendMetricDisplaySource(source).roasStatus;
+}
+
+function resolveAsaTrendCppStatus(source = {}) {
+  return buildAsaTrendMetricDisplaySource(source).cppStatus;
 }
 
 function asaRecommendationBadgeClass(action) {
@@ -6868,28 +6980,32 @@ async function openAsaKeywordDetail(row) {
   });
   const body = await api(`/api/asa-keywords/${encodeURIComponent(row.keyword)}/trend?${params.toString()}`);
   const trendRows = Array.isArray(body.data) ? body.data : [];
-  const chartRows = trendRows.map((item) => ({
-    label: item.date,
-    value: Number(item.installs || 0),
-    tooltipLines: [
-      `日期：${item.date}`,
-      `安装量：${toFixed2(item.installs)}`,
-      `成本：$${toFixed2(item.total_cost)}`,
-      `购买次数：${toFixed2(item.purchase_count)}`,
-      `eCPI：${formatAsaEcpiDisplayWithReason(item.ecpi, item.total_cost, item.installs)}`,
-      `官方 eCPI：$${toFixed2(item.average_ecpi || 0)}`,
-      `CPP：${formatAsaCppDisplay(item.cpp, item.total_cost, item.purchase_count, item.roas_source_missing === 1 ? 'pending' : 'complete')}`,
-      `D7 ROAS：${formatAsaD7RoasDisplayWithReason(item.d7_roas, item.total_cost, item.revenue_d7, item.roas_source_missing === 1 ? 'pending' : 'complete')}`
-    ]
-  }));
+  const chartRows = trendRows.map((item) => {
+    const trendMetric = buildAsaTrendMetricDisplaySource(item);
+    return {
+      label: item.date,
+      value: Number(item.installs || 0),
+      tooltipLines: [
+        `日期：${item.date}`,
+        `安装量：${toFixed2(item.installs)}`,
+        `成本：$${toFixed2(item.total_cost)}`,
+        `购买次数：${toFixed2(item.purchase_count)}`,
+        `eCPI：${formatAsaEcpiDisplayWithReason(item.ecpi, item.total_cost, item.installs)}`,
+        `官方 eCPI：$${toFixed2(item.average_ecpi || 0)}`,
+        `CPP：${formatAsaCppDisplay(item.cpp, item.total_cost, item.purchase_count, trendMetric.cppStatus)}`,
+        `D7 ROAS：${formatAsaD7RoasDisplayWithReason(trendMetric.d7Roas, item.total_cost, item.revenue_d7, trendMetric.roasStatus, trendMetric)}`
+      ]
+    };
+  });
   drawLineChart(el.asaKeywordTrendCanvas, chartRows);
   const llmSummary = safeJsonParse(row.llm_summary, {});
   const actionItems = Array.isArray(llmSummary.action_items) ? llmSummary.action_items : [];
   el.asaKeywordDrawerMeta.textContent =
     `产品视图 ${productViewName(row.app_key, row.platform || 'unknown')} · 应用标识 ${row.app_key} · 平台 ${platformLabel(row.platform || 'unknown')} · 关键词 ${row.keyword} · 广告系列 ${row.campaign} · 广告组 ${row.adset || '-'} · 当前阶段 ${asaStageLabel(row.current_stage)} · 建议指标 ${asaPrimaryMetricLabel(row.primary_metric)}`;
   const last = trendRows.at(-1);
+  const lastTrendMetric = buildAsaTrendMetricDisplaySource(last || {});
   el.asaKeywordTrendLegend.textContent =
-    `数据点 ${trendRows.length} · 最新安装量 ${toFixed2(last?.installs)} · 最新 eCPI ${formatAsaEcpiDisplayWithReason(last?.ecpi, last?.total_cost, last?.installs)} · 参考 eCPI $${toFixed2(last?.average_ecpi || 0)} · 最新 D7 ROAS ${formatAsaD7RoasDisplayWithReason(last?.d7_roas, last?.total_cost, last?.revenue_d7, last?.roas_source_missing === 1 ? 'pending' : 'complete')}`;
+    `数据点 ${trendRows.length} · 最新安装量 ${toFixed2(last?.installs)} · 最新 eCPI ${formatAsaEcpiDisplayWithReason(last?.ecpi, last?.total_cost, last?.installs)} · 参考 eCPI $${toFixed2(last?.average_ecpi || 0)} · 最新 D7 ROAS ${formatAsaD7RoasDisplayWithReason(lastTrendMetric.d7Roas, last?.total_cost, last?.revenue_d7, lastTrendMetric.roasStatus, lastTrendMetric)}`;
   el.asaKeywordActionItems.innerHTML = actionItems.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('');
   el.asaKeywordTrendRaw.textContent = JSON.stringify(
     {
@@ -6952,7 +7068,7 @@ function asaBriefSummaryItems(report) {
     { label: '成本', value: `$${toFixed2(summary.total_cost || 0)}` },
     { label: '每次安装成本（eCPI）', value: formatAsaEcpiDisplay(summary.ecpi || 0, summary.total_cost || 0, summary.installs || 0) },
     { label: cppLabel, value: formatAsaCppDisplay(summary.cpp || 0, summary.total_cost || 0, summary.purchase_count || 0, summary.roas_data_status) },
-    { label: roasLabel, value: formatAsaD7RoasDisplay(summary.d7_roas || 0, summary.total_cost || 0, summary.revenue_d7 || 0, summary.roas_data_status) }
+    { label: roasLabel, value: formatAsaD7RoasDisplay(summary.d7_roas || 0, summary.total_cost || 0, summary.revenue_d7 || 0, summary.roas_data_status, summary) }
   ];
 }
 
@@ -6998,7 +7114,7 @@ function renderAsaBriefModal(payload, mode) {
               <p>广告组：${escapeHtml(row.adset || '-')}</p>
               <p>${escapeHtml(
                 row.primary_metric === 'd7_roas_cpp'
-                  ? `D7 ROAS ${formatAsaD7RoasDisplayWithReason(row.current_d7_roas, row.total_cost_7d, row.revenue_d7_7d, row.roas_data_status)} / 目标 ${toFixed2(row.target_d7_roas)}x ｜ CPP ${formatAsaCppDisplay(row.current_cpp, row.total_cost_7d, row.purchase_count_7d, row.roas_data_status)} / 目标 ${row.target_cpp > 0 ? `$${toFixed2(row.target_cpp)}` : '-'}`
+                  ? `D7 ROAS ${formatAsaD7RoasDisplayWithReason(row.current_d7_roas, row.total_cost_7d, row.revenue_d7_7d, row.roas_data_status, row)} / 目标 ${formatRoasPercent(row.target_d7_roas)} ｜ CPP ${formatAsaCppDisplay(row.current_cpp, row.total_cost_7d, row.purchase_count_7d, row.roas_data_status)} / 目标 ${row.target_cpp > 0 ? `$${toFixed2(row.target_cpp)}` : '-'}`
                   : `当前 eCPI ${formatAsaEcpiDisplayWithReason(row.current_ecpi, row.total_cost_7d, row.installs_7d)} / 目标 $${toFixed2(row.target_ecpi)}`
               )}</p>
               <p>${escapeHtml(String(llmSummary.summary_cn || row.reason_code || '暂无补充说明'))}</p>

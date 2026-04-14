@@ -202,6 +202,8 @@ export type BudgetExecutionActionCode =
   | 'scale_gradually';
 export type BudgetExecutionActionSource = 'scenario' | 'policy';
 export type RoasDataStatus = 'complete' | 'partial' | 'partial_low' | 'pending' | 'unavailable';
+export type RoasPrimarySource = 'af_cohort' | 'local_fallback';
+export type RoasWarningCode = 'none' | 'af_missing' | 'af_vs_local_mismatch' | 'af_grain_unavailable';
 
 export interface RecommendationThresholdTargets {
   ecpi_max?: number;
@@ -313,6 +315,11 @@ export interface BudgetRecommendationRow {
   primary_metric: 'ecpi' | 'roas';
   metric_mode: 'active' | 'roas_pending_revenue';
   current_roas: number | null;
+  af_cohort_roas: number | null;
+  local_derived_roas: number | null;
+  roas_primary_source: RoasPrimarySource;
+  roas_warning_code: RoasWarningCode;
+  roas_deviation_ratio: number | null;
   target_roas: number | null;
   roas_window_from: string | null;
   roas_window_to: string | null;
@@ -405,6 +412,8 @@ export interface AsaKeywordDailyMetricRow {
   average_ecpi: number;
   cpp: number;
   d7_roas: number;
+  af_cohort_roas: number;
+  af_cohort_roas_missing: number;
   roas_source_missing: number;
   version: number;
 }
@@ -423,6 +432,11 @@ export interface AsaKeywordStateRow {
   current_ecpi: number;
   current_cpp: number;
   current_d7_roas: number;
+  af_cohort_roas: number | null;
+  local_derived_roas: number | null;
+  roas_primary_source: RoasPrimarySource;
+  roas_warning_code: RoasWarningCode;
+  roas_deviation_ratio: number | null;
   roas_window_from: string | null;
   roas_window_to: string | null;
   roas_data_status: RoasDataStatus;
@@ -457,6 +471,11 @@ export interface AsaKeywordRecommendationRow {
   current_ecpi: number;
   current_cpp: number;
   current_d7_roas: number;
+  af_cohort_roas: number | null;
+  local_derived_roas: number | null;
+  roas_primary_source: RoasPrimarySource;
+  roas_warning_code: RoasWarningCode;
+  roas_deviation_ratio: number | null;
   roas_window_from: string | null;
   roas_window_to: string | null;
   roas_data_status: RoasDataStatus;

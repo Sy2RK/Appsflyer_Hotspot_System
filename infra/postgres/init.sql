@@ -150,6 +150,11 @@ CREATE TABLE IF NOT EXISTS budget_recommendations (
   primary_metric TEXT NOT NULL DEFAULT 'ecpi' CHECK (primary_metric IN ('ecpi', 'roas')),
   metric_mode TEXT NOT NULL DEFAULT 'active' CHECK (metric_mode IN ('active', 'roas_pending_revenue')),
   current_roas DOUBLE PRECISION,
+  af_cohort_roas DOUBLE PRECISION,
+  local_derived_roas DOUBLE PRECISION,
+  roas_primary_source TEXT NOT NULL DEFAULT 'local_fallback',
+  roas_warning_code TEXT NOT NULL DEFAULT 'none',
+  roas_deviation_ratio DOUBLE PRECISION,
   target_roas DOUBLE PRECISION,
   volume_tier TEXT NOT NULL DEFAULT 'low',
   expected_installs_delta DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -171,6 +176,11 @@ ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS target_ecpi DOUBLE P
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS primary_metric TEXT NOT NULL DEFAULT 'ecpi';
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS metric_mode TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS current_roas DOUBLE PRECISION;
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS af_cohort_roas DOUBLE PRECISION;
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS local_derived_roas DOUBLE PRECISION;
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS roas_primary_source TEXT NOT NULL DEFAULT 'local_fallback';
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS roas_warning_code TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS roas_deviation_ratio DOUBLE PRECISION;
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS target_roas DOUBLE PRECISION;
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS roas_window_from DATE;
 ALTER TABLE budget_recommendations ADD COLUMN IF NOT EXISTS roas_window_to DATE;
@@ -508,6 +518,11 @@ CREATE TABLE IF NOT EXISTS asa_keyword_states (
   current_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
   current_cpp DOUBLE PRECISION NOT NULL DEFAULT 0,
   current_d7_roas DOUBLE PRECISION NOT NULL DEFAULT 0,
+  af_cohort_roas DOUBLE PRECISION,
+  local_derived_roas DOUBLE PRECISION,
+  roas_primary_source TEXT NOT NULL DEFAULT 'local_fallback',
+  roas_warning_code TEXT NOT NULL DEFAULT 'none',
+  roas_deviation_ratio DOUBLE PRECISION,
   roas_window_from DATE,
   roas_window_to DATE,
   roas_data_status TEXT NOT NULL DEFAULT 'unavailable',
@@ -528,6 +543,11 @@ ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_window_from DATE;
 ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_window_to DATE;
 ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_data_status TEXT NOT NULL DEFAULT 'unavailable';
 ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_coverage_ratio DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS af_cohort_roas DOUBLE PRECISION;
+ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS local_derived_roas DOUBLE PRECISION;
+ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_primary_source TEXT NOT NULL DEFAULT 'local_fallback';
+ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_warning_code TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_deviation_ratio DOUBLE PRECISION;
 
 ALTER TABLE asa_keyword_states
   ADD COLUMN IF NOT EXISTS adset TEXT NOT NULL DEFAULT 'unknown';
@@ -555,6 +575,11 @@ CREATE TABLE IF NOT EXISTS asa_keyword_recommendations (
   current_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
   current_cpp DOUBLE PRECISION NOT NULL DEFAULT 0,
   current_d7_roas DOUBLE PRECISION NOT NULL DEFAULT 0,
+  af_cohort_roas DOUBLE PRECISION,
+  local_derived_roas DOUBLE PRECISION,
+  roas_primary_source TEXT NOT NULL DEFAULT 'local_fallback',
+  roas_warning_code TEXT NOT NULL DEFAULT 'none',
+  roas_deviation_ratio DOUBLE PRECISION,
   roas_window_from DATE,
   roas_window_to DATE,
   roas_data_status TEXT NOT NULL DEFAULT 'unavailable',

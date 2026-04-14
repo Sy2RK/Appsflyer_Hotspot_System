@@ -163,6 +163,7 @@ docker compose up -d --build
 - AI chat 请求现在会默认附带当前页面上下文，并在回复中返回 `tool_trace / agent_action / clarification_count`
 - `keyword-engine` 的 `D7 ROAS` 链路已切换为 AppsFlyer cohort API 源数据，并为缺口数据打 `revenue_source_missing`
 - 预算建议、ASA 建议、ASA 简报、多维表中的 `D7 ROAS` 已统一为“Cohort API 源数据 + 成熟窗口”口径
+- 所有用户可见的 `ROAS / D7 ROAS` 展示统一为百分比；底层仍以 ratio 存储，例如 `1.5` 显示为 `150.00%`
 - ROAS 缺口会显示 `待补齐 / 部分可采纳 / 暂无成熟数据`，不再把源数据缺失展示成 `0.00`
 - ASA keyword 成本切换到 AppsFlyer Master API
 - Feishu 多维表格按日期留档、反馈回读与 `七天后数据` 自动补列

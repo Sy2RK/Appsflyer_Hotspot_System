@@ -31,10 +31,15 @@ import { getTzParts } from './schedule.js';
 import { buildPreviousDateList, shiftDateString } from './businessDate.js';
 import {
   buildMatureRoasWindow,
+  calculateRoasDeviationRatio,
   isRoasDataDisplayableStatus,
   isRoasDataUsableStatus,
+  normalizeAfCohortRoasRate,
+  resolveRoasPrimarySource,
   resolveRoasCoverageRatio,
-  resolveRoasDataStatus
+  resolveRoasDataStatus,
+  resolveRoasWarningCode,
+  shouldHoldForRoasProtection
 } from './roasWindow.js';
 import {
   buildRecommendationPolicyKey,
@@ -57,7 +62,9 @@ import type {
   AsaKeywordStateRow,
   ProductStage,
   RecommendationPolicyRuleJson,
-  RoasDataStatus
+  RoasDataStatus,
+  RoasPrimarySource,
+  RoasWarningCode
 } from '../types/models.js';
 
 interface LoggerLike {
@@ -135,6 +142,8 @@ interface AsaKeywordDailyMetricInsertRow {
   average_ecpi: number;
   cpp: number;
   d7_roas: number;
+  af_cohort_roas: number;
+  af_cohort_roas_missing: number;
   roas_source_missing: number;
   snapshot_id: number;
   version: number;
@@ -149,8 +158,9 @@ interface AsaCohortMetricRow {
   adset: string;
   purchase_count: number;
   revenue_d7: number;
-  d7_roas: number;
-  source_complete: boolean;
+  af_cohort_roas: number;
+  revenue_source_complete: boolean;
+  af_cohort_roas_complete: boolean;
 }
 
 interface AsaKeywordCountryMetricInsertRow {
@@ -181,8 +191,9 @@ interface AsaKeywordAccumulator {
   purchase_count: number;
   revenue_d0: number;
   revenue_d7: number;
-  d7_roas: number;
-  roas_source_complete: boolean;
+  af_cohort_roas: number;
+  revenue_source_complete: boolean;
+  af_cohort_roas_complete: boolean;
   average_ecpi: number;
 }
 
@@ -203,6 +214,11 @@ export interface AsaKeywordSummary {
   ecpi: number;
   cpp: number;
   d7_roas: number;
+  af_cohort_roas: number | null;
+  local_derived_roas: number | null;
+  roas_primary_source: RoasPrimarySource;
+  roas_warning_code: RoasWarningCode;
+  roas_deviation_ratio: number | null;
   roas_data_status: RoasDataStatus;
   roas_window_from: string | null;
   roas_window_to: string | null;
@@ -331,11 +347,13 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
         keyword_count,
         installs_sum AS installs,
         total_cost_sum AS total_cost,
+        af_roas_cost_sum,
+        af_weighted_roas_sum,
         covered_purchase_count_sum AS purchase_count,
         covered_revenue_d7_sum AS revenue_d7,
         if(installs_sum > 0, total_cost_sum / installs_sum, 0) AS ecpi,
         if(covered_purchase_count_sum > 0, covered_roas_cost_sum / covered_purchase_count_sum, 0) AS cpp,
-        if(covered_roas_cost_sum > 0, covered_weighted_roas_cost_sum / covered_roas_cost_sum, 0) AS d7_roas,
+        if(covered_roas_cost_sum > 0, covered_revenue_d7_sum / covered_roas_cost_sum, 0) AS d7_roas,
         spend_row_count,
         covered_roas_cost_sum,
         missing_roas_cost_sum
@@ -344,11 +362,12 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
           countDistinct(keyword, campaign, adset, platform, app_key) AS keyword_count,
           sum(installs) AS installs_sum,
           sum(total_cost) AS total_cost_sum,
+          sumIf(total_cost, total_cost > 0 AND af_cohort_roas_missing != 1) AS af_roas_cost_sum,
+          sumIf(total_cost * af_cohort_roas, total_cost > 0 AND af_cohort_roas_missing != 1) AS af_weighted_roas_sum,
           sumIf(total_cost, total_cost > 0 AND roas_source_missing != 1) AS covered_roas_cost_sum,
           sumIf(total_cost, total_cost > 0 AND roas_source_missing = 1) AS missing_roas_cost_sum,
           sumIf(purchase_count, total_cost > 0 AND roas_source_missing != 1) AS covered_purchase_count_sum,
           sumIf(revenue_d7, total_cost > 0 AND roas_source_missing != 1) AS covered_revenue_d7_sum,
-          sumIf(d7_roas * total_cost, total_cost > 0 AND roas_source_missing != 1) AS covered_weighted_roas_cost_sum,
           countIf(total_cost > 0) AS spend_row_count,
           countIf(total_cost > 0 AND roas_source_missing = 1) AS missing_roas_row_count
         FROM (
@@ -366,6 +385,8 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
   );
   const rawSummary = summaryRows[0] as (AsaKeywordSummary & {
     spend_row_count?: number;
+    af_roas_cost_sum?: number;
+    af_weighted_roas_sum?: number;
     covered_roas_cost_sum?: number;
     missing_roas_cost_sum?: number;
   }) | undefined;
@@ -378,6 +399,11 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
       ecpi: 0,
       cpp: 0,
       d7_roas: 0,
+      af_cohort_roas: null,
+      local_derived_roas: null,
+      roas_primary_source: 'local_fallback',
+      roas_warning_code: 'none',
+      roas_deviation_ratio: null,
       roas_data_status: 'unavailable',
       roas_window_from: filter.from ?? null,
       roas_window_to: filter.to ?? null,
@@ -396,6 +422,17 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
     coveredCost: Number(rawSummary.covered_roas_cost_sum || 0),
     missingCost: Number(rawSummary.missing_roas_cost_sum || 0)
   });
+  const afCost = Number(rawSummary.af_roas_cost_sum || 0);
+  const afWeightedRoas = Number(rawSummary.af_weighted_roas_sum || 0);
+  const afCohortRoas = afCost > 0 ? afWeightedRoas / afCost : null;
+  const localDerivedRoas =
+    Number(rawSummary.covered_roas_cost_sum || 0) > 0
+      ? Number(rawSummary.revenue_d7 || 0) / Number(rawSummary.covered_roas_cost_sum || 0)
+      : null;
+  const roasPrimarySource = resolveRoasPrimarySource({ afCohortRoas, localDerivedRoas });
+  const roasWarningCode = resolveRoasWarningCode({ afCohortRoas, localDerivedRoas });
+  const roasDeviationRatio = calculateRoasDeviationRatio(afCohortRoas, localDerivedRoas);
+  const currentRoas = roasPrimarySource === 'af_cohort' ? afCohortRoas : localDerivedRoas;
   return {
     keyword_count: Number(rawSummary.keyword_count || 0),
     installs: Number(rawSummary.installs || 0),
@@ -404,7 +441,15 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
     revenue_d7: isRoasDataDisplayableStatus(roasDataStatus) ? Number(rawSummary.revenue_d7 || 0) : 0,
     ecpi: Number(rawSummary.ecpi || 0),
     cpp: isRoasDataDisplayableStatus(roasDataStatus) ? Number(rawSummary.cpp || 0) : 0,
-    d7_roas: isRoasDataDisplayableStatus(roasDataStatus) ? Number(rawSummary.d7_roas || 0) : 0,
+    d7_roas:
+      currentRoas != null && (roasPrimarySource === 'af_cohort' || isRoasDataDisplayableStatus(roasDataStatus))
+        ? currentRoas
+        : 0,
+    af_cohort_roas: afCohortRoas,
+    local_derived_roas: localDerivedRoas,
+    roas_primary_source: roasPrimarySource,
+    roas_warning_code: roasWarningCode,
+    roas_deviation_ratio: roasDeviationRatio,
     roas_data_status: roasDataStatus,
     roas_window_from: filter.from ?? null,
     roas_window_to: filter.to ?? null,
@@ -441,7 +486,9 @@ async function ensureAsaKeywordMetricsSchema(): Promise<void> {
   if (!ensureAsaKeywordMetricsSchemaPromise) {
     ensureAsaKeywordMetricsSchemaPromise = chExec(
       `ALTER TABLE ${ASA_KEYWORD_METRICS_TABLE}
-        ADD COLUMN IF NOT EXISTS roas_source_missing UInt8 DEFAULT 0`
+        ADD COLUMN IF NOT EXISTS roas_source_missing UInt8 DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS af_cohort_roas Float64 DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS af_cohort_roas_missing UInt8 DEFAULT 1`
     ).catch((error) => {
       ensureAsaKeywordMetricsSchemaPromise = null;
       throw error;
@@ -504,8 +551,9 @@ function parseAsaCohortMetricRows(
       adset: String(row.af_adset || row.adset || 'unknown').trim() || 'unknown',
       purchase_count: kpi === 'revenue' ? toNumber(row.revenue_count_day_7) : 0,
       revenue_d7: kpi === 'revenue' ? toNumber(row.revenue_sum_day_7) : 0,
-      d7_roas: kpi === 'roas' ? toNumber(row.roas_rate_day_7) : 0,
-      source_complete: kpi === 'roas'
+      af_cohort_roas: kpi === 'roas' ? normalizeAfCohortRoasRate(toNumber(row.roas_rate_day_7)) : 0,
+      revenue_source_complete: kpi === 'revenue',
+      af_cohort_roas_complete: kpi === 'roas'
     }))
     .filter((row) => row.date.length > 0 && row.keyword.length > 0);
 }
@@ -519,8 +567,10 @@ function mergeAsaCohortMetricRows(rowsList: AsaCohortMetricRow[][]): AsaCohortMe
       if (existing) {
         existing.purchase_count += row.purchase_count;
         existing.revenue_d7 += row.revenue_d7;
-        existing.d7_roas = row.source_complete && row.d7_roas > 0 ? row.d7_roas : existing.d7_roas;
-        existing.source_complete = existing.source_complete || row.source_complete;
+        existing.af_cohort_roas =
+          row.af_cohort_roas_complete ? row.af_cohort_roas : existing.af_cohort_roas;
+        existing.revenue_source_complete = existing.revenue_source_complete || row.revenue_source_complete;
+        existing.af_cohort_roas_complete = existing.af_cohort_roas_complete || row.af_cohort_roas_complete;
       } else {
         merged.set(key, { ...row });
       }
@@ -1200,6 +1250,8 @@ async function queryAsaMetricWindow(from: string, to: string): Promise<AsaKeywor
         m.average_ecpi AS average_ecpi,
         m.cpp AS cpp,
         m.d7_roas AS d7_roas,
+        m.af_cohort_roas AS af_cohort_roas,
+        m.af_cohort_roas_missing AS af_cohort_roas_missing,
         m.roas_source_missing AS roas_source_missing,
         m.snapshot_id AS snapshot_id,
         m.version AS version
@@ -1256,8 +1308,10 @@ function average(values: number[]): number {
   return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
 }
 
-function weightedAsaRoas(rows: Array<Pick<AsaKeywordDailyMetricInsertRow, 'total_cost' | 'd7_roas'>>): number {
-  const eligibleRows = rows.filter((row) => Number(row.total_cost || 0) > 0 && Number.isFinite(Number(row.d7_roas || 0)));
+function weightedAsaRoas(rows: Array<Pick<AsaKeywordDailyMetricInsertRow, 'total_cost' | 'revenue_d7'>>): number {
+  const eligibleRows = rows.filter(
+    (row) => Number(row.total_cost || 0) > 0 && Number.isFinite(Number(row.revenue_d7 || 0))
+  );
   if (eligibleRows.length === 0) {
     return 0;
   }
@@ -1265,8 +1319,31 @@ function weightedAsaRoas(rows: Array<Pick<AsaKeywordDailyMetricInsertRow, 'total
   if (totalCost <= 0) {
     return 0;
   }
+  return eligibleRows.reduce((sum, row) => sum + Number(row.revenue_d7 || 0), 0) / totalCost;
+}
+
+function weightedAsaAfCohortRoas(
+  rows: Array<Pick<AsaKeywordDailyMetricInsertRow, 'total_cost' | 'af_cohort_roas' | 'af_cohort_roas_missing'>>
+): number | null {
+  const eligibleRows = rows.filter(
+    (row) =>
+      Number(row.total_cost || 0) > 0 &&
+      Number(row.af_cohort_roas_missing || 0) !== 1 &&
+      row.af_cohort_roas != null &&
+      Number.isFinite(Number(row.af_cohort_roas))
+  );
+  if (eligibleRows.length === 0) {
+    return null;
+  }
+  const totalCost = eligibleRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
+  if (totalCost <= 0) {
+    return null;
+  }
   return (
-    eligibleRows.reduce((sum, row) => sum + Number(row.d7_roas || 0) * Number(row.total_cost || 0), 0) / totalCost
+    eligibleRows.reduce(
+      (sum, row) => sum + Number(row.total_cost || 0) * Number(row.af_cohort_roas || 0),
+      0
+    ) / totalCost
   );
 }
 
@@ -1413,7 +1490,7 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       const roas = Number(row.d7_roas || 0);
       if (ecpi > 0) peerStats.ecpi.push(ecpi);
       if (cpp > 0) peerStats.cpp.push(cpp);
-      if (roas > 0) peerStats.roas.push(roas);
+      if (Number.isFinite(roas) && roas >= 0) peerStats.roas.push(roas);
       peerStatsByDate.set(peerKey, peerStats);
     }
   }
@@ -1465,6 +1542,11 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     currentEcpi: number;
     currentCpp: number;
     currentD7Roas: number;
+    afCohortRoas: number | null;
+    localDerivedRoas: number | null;
+    roasPrimarySource: RoasPrimarySource;
+    roasWarningCode: RoasWarningCode;
+    roasDeviationRatio: number | null;
     roasWindow: { from: string; to: string };
     roasDataStatus: RoasDataStatus;
     targetEcpi: number;
@@ -1503,13 +1585,13 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     const contextRows = rows.filter((row) => row.date >= contextWindow.from && row.date <= contextWindow.to);
     const effectiveDecisionRows = decisionRows.length > 0 ? decisionRows : rows.slice(-7);
     const effectiveRoasRows = roasRows.length > 0 ? roasRows : [];
-    const coveredRoasRows = effectiveRoasRows.filter(
+    const localCoveredRoasRows = effectiveRoasRows.filter(
       (row) => !(Number(row.total_cost || 0) > 0 && Number(row.roas_source_missing || 0) === 1)
     );
     const installs7d = effectiveDecisionRows.reduce((sum, row) => sum + Number(row.installs || 0), 0);
     const totalCost7d = effectiveDecisionRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
     const roasHasSpend = effectiveRoasRows.some((row) => Number(row.total_cost || 0) > 0);
-    const coveredRoasCost = coveredRoasRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
+    const coveredRoasCost = localCoveredRoasRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
     const missingRoasCost = effectiveRoasRows
       .filter((row) => Number(row.total_cost || 0) > 0 && Number(row.roas_source_missing || 0) === 1)
       .reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
@@ -1525,11 +1607,11 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     });
     const purchaseCount7d =
       isRoasDataDisplayableStatus(roasDataStatus)
-        ? coveredRoasRows.reduce((sum, row) => sum + Number(row.purchase_count || 0), 0)
+        ? localCoveredRoasRows.reduce((sum, row) => sum + Number(row.purchase_count || 0), 0)
         : 0;
     const revenueD7Window =
       isRoasDataDisplayableStatus(roasDataStatus)
-        ? coveredRoasRows.reduce((sum, row) => sum + Number(row.revenue_d7 || 0), 0)
+        ? localCoveredRoasRows.reduce((sum, row) => sum + Number(row.revenue_d7 || 0), 0)
         : 0;
     const currentEcpi = installs7d > 0 ? totalCost7d / installs7d : Number(current.ecpi || 0);
     const matureRoasCost =
@@ -1537,7 +1619,21 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
         ? coveredRoasCost
         : 0;
     const currentCpp = purchaseCount7d > 0 ? matureRoasCost / purchaseCount7d : 0;
-    const currentD7Roas = isRoasDataDisplayableStatus(roasDataStatus) ? weightedAsaRoas(coveredRoasRows) : 0;
+    const localDerivedRoas = isRoasDataDisplayableStatus(roasDataStatus) ? weightedAsaRoas(localCoveredRoasRows) : null;
+    const afCohortRoas = weightedAsaAfCohortRoas(effectiveRoasRows);
+    const roasPrimarySource = resolveRoasPrimarySource({
+      afCohortRoas,
+      localDerivedRoas
+    });
+    const roasWarningCode = resolveRoasWarningCode({
+      afCohortRoas,
+      localDerivedRoas
+    });
+    const roasDeviationRatio = calculateRoasDeviationRatio(afCohortRoas, localDerivedRoas);
+    const currentD7Roas =
+      roasPrimarySource === 'af_cohort'
+        ? Number(afCohortRoas || 0)
+        : Number(localDerivedRoas || 0);
 
     const peerStats = peerStatsByDate.get(`${current.app_key}|${current.platform}|${current.date}`) ?? {
       ecpi: [],
@@ -1572,9 +1668,19 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
             .filter((row) => Number(row.total_cost || 0) > 0 && Number(row.roas_source_missing || 0) === 1)
             .reduce((sum, row) => sum + Number(row.total_cost || 0), 0)
         });
-        return isRoasDataUsableStatus(peerStatus) ? weightedAsaRoas(peerCoveredRows) : null;
+        const peerLocalDerivedRoas = isRoasDataDisplayableStatus(peerStatus) ? weightedAsaRoas(peerCoveredRows) : null;
+        const peerAfCohortRoas = weightedAsaAfCohortRoas(peerWindowRows);
+        const peerPrimarySource = resolveRoasPrimarySource({
+          afCohortRoas: peerAfCohortRoas,
+          localDerivedRoas: peerLocalDerivedRoas
+        });
+        const peerWarningCode = resolveRoasWarningCode({
+          afCohortRoas: peerAfCohortRoas,
+          localDerivedRoas: peerLocalDerivedRoas
+        });
+        return peerPrimarySource === 'af_cohort' && peerWarningCode === 'none' ? peerAfCohortRoas : null;
       })
-      .filter((value) => value != null && Number.isFinite(value) && value > 0) as number[];
+      .filter((value) => value != null && Number.isFinite(value) && value >= 0) as number[];
     const thresholdTargets = resolveRecommendationTarget(policy, { mediaSource: 'Apple Search Ads' });
     let targetEcpi = Math.max(
       0.01,
@@ -1623,6 +1729,10 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     const effectiveTargetEcpi = relativeDecision?.targetEcpi ?? targetEcpi;
     const effectiveTargetD7Roas = relativeDecision?.targetD7Roas ?? targetD7Roas;
     const usesRoasPrimaryMetric = isAsaRoasPrimaryMetric(policy, effectiveTargetD7Roas);
+    const roasProtected = shouldHoldForRoasProtection({
+      primarySource: roasPrimarySource,
+      warningCode: roasWarningCode
+    });
 
     await upsertAsaKeywordState({
       app_key: current.app_key,
@@ -1637,6 +1747,11 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       current_ecpi: currentEcpi,
       current_cpp: currentCpp,
       current_d7_roas: currentD7Roas,
+      af_cohort_roas: afCohortRoas,
+      local_derived_roas: localDerivedRoas,
+      roas_primary_source: roasPrimarySource,
+      roas_warning_code: roasWarningCode,
+      roas_deviation_ratio: roasDeviationRatio,
       roas_window_from: roasWindow.from,
       roas_window_to: roasWindow.to,
       roas_data_status: roasDataStatus,
@@ -1654,32 +1769,38 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     const action =
       usesRoasPrimaryMetric && !isRoasDataUsableStatus(roasDataStatus)
         ? 'hold'
+        : roasProtected
+          ? 'hold'
         : relativeDecision
-        ? relativeDecision.action
-        : 
-      stage === 'stable'
-        ? currentD7Roas < effectiveTargetD7Roas * 0.85 || (currentCpp > 0 && currentCpp > (thresholdTargets.cpp_pause_threshold ?? targetCpp * 1.15))
-          ? 'decrease'
-          : currentD7Roas >= (thresholdTargets.roas_good ?? effectiveTargetD7Roas) && (currentCpp === 0 || currentCpp <= targetCpp)
-            ? 'increase'
-            : 'hold'
-        : countryBreaches.length > 0 || currentEcpi > targetEcpi * 1.15
-          ? 'decrease'
-          : currentEcpi <= targetEcpi * 0.9
-            ? 'increase'
-            : 'hold';
+          ? relativeDecision.action
+          : stage === 'stable'
+            ? currentD7Roas < effectiveTargetD7Roas * 0.85 ||
+              (currentCpp > 0 && currentCpp > (thresholdTargets.cpp_pause_threshold ?? targetCpp * 1.15))
+              ? 'decrease'
+              : currentD7Roas >= (thresholdTargets.roas_good ?? effectiveTargetD7Roas) && (currentCpp === 0 || currentCpp <= targetCpp)
+                ? 'increase'
+                : 'hold'
+            : countryBreaches.length > 0 || currentEcpi > targetEcpi * 1.15
+              ? 'decrease'
+              : currentEcpi <= targetEcpi * 0.9
+                ? 'increase'
+                : 'hold';
 
     const reasonCode =
       usesRoasPrimaryMetric && !isRoasDataUsableStatus(roasDataStatus)
         ? roasDataStatus === 'unavailable'
           ? 'roas_window_unavailable'
           : 'roas_pending_revenue'
+        : roasProtected
+          ? roasPrimarySource !== 'af_cohort'
+            ? 'af_roas_fallback_hold'
+            : 'af_roas_mismatch_hold'
         : relativeDecision?.reasonCode ??
-      stage === 'stable'
-        ? 'stable_dual_metric'
-        : countryBreaches.length > 0
-          ? 'policy_country_ecpi_breach'
-          : 'rising_ecpi';
+          stage === 'stable'
+            ? 'stable_dual_metric'
+            : countryBreaches.length > 0
+              ? 'policy_country_ecpi_breach'
+              : 'rising_ecpi';
     const llmResult = recommendationSummary(action, stage, currentEcpi, currentCpp, currentD7Roas, {
       actionItems: scenarioEvaluation.actionItems,
       scenarioTags: scenarioEvaluation.scenarioTags
@@ -1702,6 +1823,11 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       current_ecpi: currentEcpi,
       current_cpp: currentCpp,
       current_d7_roas: currentD7Roas,
+      af_cohort_roas: afCohortRoas,
+      local_derived_roas: localDerivedRoas,
+      roas_primary_source: roasPrimarySource,
+      roas_warning_code: roasWarningCode,
+      roas_deviation_ratio: roasDeviationRatio,
       roas_window_from: roasWindow.from,
       roas_window_to: roasWindow.to,
       roas_data_status: roasDataStatus,
@@ -1723,6 +1849,11 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       currentEcpi,
       currentCpp,
       currentD7Roas,
+      afCohortRoas,
+      localDerivedRoas,
+      roasPrimarySource,
+      roasWarningCode,
+      roasDeviationRatio,
       roasWindow,
       roasDataStatus,
       targetEcpi: effectiveTargetEcpi,
@@ -1792,6 +1923,11 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
         current_cpp: item.currentCpp,
         target_cpp: item.targetCpp,
         current_roas: item.currentD7Roas,
+        af_cohort_roas: item.afCohortRoas,
+        local_derived_roas: item.localDerivedRoas,
+        roas_primary_source: item.roasPrimarySource,
+        roas_warning_code: item.roasWarningCode,
+        roas_deviation_ratio: item.roasDeviationRatio,
         target_roas: item.targetD7Roas,
         roas_data_status: item.roasDataStatus,
         roas_window_from: item.roasWindow.from,
@@ -1830,6 +1966,11 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       current_ecpi: item.currentEcpi,
       current_cpp: item.currentCpp,
       current_d7_roas: item.currentD7Roas,
+      af_cohort_roas: item.afCohortRoas,
+      local_derived_roas: item.localDerivedRoas,
+      roas_primary_source: item.roasPrimarySource,
+      roas_warning_code: item.roasWarningCode,
+      roas_deviation_ratio: item.roasDeviationRatio,
       roas_window_from: item.roasWindow.from,
       roas_window_to: item.roasWindow.to,
       roas_data_status: item.roasDataStatus,
@@ -1880,8 +2021,9 @@ function aggregateDailyMetrics(
       purchase_count: 0,
       revenue_d0: 0,
       revenue_d7: 0,
-      d7_roas: 0,
-      roas_source_complete: false,
+      af_cohort_roas: 0,
+      revenue_source_complete: false,
+      af_cohort_roas_complete: false,
       average_ecpi: 0
     };
     aggregate.set(key, created);
@@ -1904,8 +2046,10 @@ function aggregateDailyMetrics(
     const current = ensureAccumulator(row.date, row.app_key, row.platform, row.keyword, row.campaign, row.adset);
     current.purchase_count += Number(row.purchase_count || 0);
     current.revenue_d7 += Number(row.revenue_d7 || 0);
-    current.d7_roas = row.source_complete ? Number(row.d7_roas || 0) : current.d7_roas;
-    current.roas_source_complete = current.roas_source_complete || row.source_complete;
+    current.af_cohort_roas =
+      row.af_cohort_roas_complete ? row.af_cohort_roas : current.af_cohort_roas;
+    current.revenue_source_complete = current.revenue_source_complete || row.revenue_source_complete;
+    current.af_cohort_roas_complete = current.af_cohort_roas_complete || row.af_cohort_roas_complete;
   }
 
   for (const row of eventRows) {
@@ -1922,6 +2066,7 @@ function aggregateDailyMetrics(
 
   return Array.from(aggregate.values()).map((row) => {
     const installs = row.master_installs > 0 ? row.master_installs : row.raw_installs;
+    const localDerivedRoas = row.revenue_source_complete && row.total_cost > 0 ? row.revenue_d7 / row.total_cost : 0;
     return {
       date: row.date,
       app_key: row.app_key,
@@ -1937,8 +2082,10 @@ function aggregateDailyMetrics(
       ecpi: installs > 0 ? row.total_cost / installs : 0,
       average_ecpi: row.average_ecpi,
       cpp: row.purchase_count > 0 ? row.total_cost / row.purchase_count : 0,
-      d7_roas: row.roas_source_complete ? row.d7_roas : 0,
-      roas_source_missing: row.total_cost > 0 && !row.roas_source_complete ? 1 : 0,
+      d7_roas: localDerivedRoas,
+      af_cohort_roas: row.af_cohort_roas_complete ? row.af_cohort_roas : 0,
+      af_cohort_roas_missing: row.total_cost > 0 && !row.af_cohort_roas_complete ? 1 : 0,
+      roas_source_missing: row.total_cost > 0 && !row.revenue_source_complete ? 1 : 0,
       snapshot_id: 0,
       version: Date.now()
     };
@@ -2227,7 +2374,7 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
     ? await pgQuery<AsaKeywordRecommendationRow>(
         `SELECT DISTINCT ON (app_key, platform, keyword, campaign, adset)
             id, app_key, platform, keyword, campaign, adset, date, action, change_ratio, primary_metric,
-            current_ecpi, current_cpp, current_d7_roas, roas_window_from, roas_window_to, roas_data_status, target_ecpi, target_cpp, target_d7_roas,
+            current_ecpi, current_cpp, current_d7_roas, af_cohort_roas, local_derived_roas, roas_primary_source, roas_warning_code, roas_deviation_ratio, roas_window_from, roas_window_to, roas_data_status, target_ecpi, target_cpp, target_d7_roas,
             reason_code, llm_summary, status, created_at, updated_at
            FROM asa_keyword_recommendations
           ORDER BY app_key, platform, keyword, campaign, adset, date DESC, updated_at DESC, id DESC`
@@ -2250,6 +2397,11 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
     revenue_d7: matureSummary.revenue_d7,
     cpp: matureSummary.cpp,
     d7_roas: matureSummary.d7_roas,
+    af_cohort_roas: matureSummary.af_cohort_roas,
+    local_derived_roas: matureSummary.local_derived_roas,
+    roas_primary_source: matureSummary.roas_primary_source,
+    roas_warning_code: matureSummary.roas_warning_code,
+    roas_deviation_ratio: matureSummary.roas_deviation_ratio,
     roas_data_status: matureSummary.roas_data_status,
     roas_window_from: roasWindow.from,
     roas_window_to: roasWindow.to,
@@ -2306,6 +2458,8 @@ export async function queryAsaKeywordTrend(
         average_ecpi,
         cpp,
         d7_roas,
+        af_cohort_roas,
+        af_cohort_roas_missing,
         roas_source_missing,
         version
       FROM (
@@ -2401,35 +2555,48 @@ function formatAsaSummaryRoas(input: {
   total_cost?: number | null;
   revenue_d7?: number | null;
   d7_roas?: number | null;
+  roas_primary_source?: RoasPrimarySource | null;
+  roas_warning_code?: RoasWarningCode | null;
   roas_data_status?: string | null;
 }): string {
+  const formatAsaRoasPercent = (value: number | null | undefined) => `${(Number(value || 0) * 100).toFixed(2)}%`;
+  const sourceLabel = input.roas_primary_source === 'af_cohort' ? 'AF Cohort 主口径' : '本地回退口径';
+  const warningLabel =
+    input.roas_warning_code === 'af_missing'
+      ? 'AF 缺失，当前为本地派生'
+      : input.roas_warning_code === 'af_vs_local_mismatch'
+        ? 'AF 与本地派生偏差较大'
+        : input.roas_warning_code === 'af_grain_unavailable'
+          ? '当前粒度无 AF 官方 ROAS'
+          : '';
+  const suffix = `｜${sourceLabel}${warningLabel ? `（${warningLabel}）` : ''}`;
   const status = String(input.roas_data_status || 'unavailable');
   if (status === 'pending') {
-    return '待补齐（源数据缺失）';
+    return `待补齐（源数据缺失）${suffix}`;
   }
   if (status === 'partial') {
     if (Number(input.total_cost || 0) <= 0) return '-';
-    const value = `${Number(input.d7_roas || 0).toFixed(2)}`;
+    const value = formatAsaRoasPercent(input.d7_roas);
     return hasCostWithoutD7Revenue(input)
-      ? `${value}（覆盖率达阈值，按已覆盖成本计算；成熟窗口未观察到 D7 收入）`
-      : `${value}（覆盖率达阈值，按已覆盖成本计算）`;
+      ? `${value}（覆盖率达阈值，按已覆盖成本计算；成熟窗口未观察到 D7 收入）${suffix}`
+      : `${value}（覆盖率达阈值，按已覆盖成本计算）${suffix}`;
   }
   if (status === 'partial_low') {
     if (Number(input.total_cost || 0) <= 0) return '-';
-    const value = `${Number(input.d7_roas || 0).toFixed(2)}`;
+    const value = formatAsaRoasPercent(input.d7_roas);
     return hasCostWithoutD7Revenue(input)
-      ? `${value}（覆盖率偏低，仅供参考；成熟窗口未观察到 D7 收入）`
-      : `${value}（覆盖率偏低，仅供参考）`;
+      ? `${value}（覆盖率偏低，仅供参考；成熟窗口未观察到 D7 收入）${suffix}`
+      : `${value}（覆盖率偏低，仅供参考）${suffix}`;
   }
   if (status === 'unavailable') {
-    return Number(input.total_cost || 0) > 0 ? '暂无成熟数据' : '-';
+    return Number(input.total_cost || 0) > 0 ? `暂无成熟数据${suffix}` : '-';
   }
   if (input.total_cost == null) {
-    return `${Number(input.d7_roas || 0).toFixed(2)}`;
+    return `${formatAsaRoasPercent(input.d7_roas)}${suffix}`;
   }
   if (Number(input.total_cost || 0) <= 0) return '-';
-  const value = `${Number(input.d7_roas || 0).toFixed(2)}`;
-  return hasCostWithoutD7Revenue(input) ? `${value}（成熟窗口未观察到 D7 收入）` : value;
+  const value = formatAsaRoasPercent(input.d7_roas);
+  return hasCostWithoutD7Revenue(input) ? `${value}（成熟窗口未观察到 D7 收入）${suffix}` : `${value}${suffix}`;
 }
 
 function metricSummaryLine(
@@ -2437,12 +2604,14 @@ function metricSummaryLine(
   context?: { total_cost?: number | null; installs?: number | null; revenue_d7?: number | null; purchase_count?: number | null }
 ): string {
   return row.primary_metric === 'd7_roas_cpp'
-    ? `D7 ROAS ${formatAsaSummaryRoas({
+      ? `D7 ROAS ${formatAsaSummaryRoas({
         total_cost: context?.total_cost,
         revenue_d7: context?.revenue_d7,
         d7_roas: row.current_d7_roas,
+        roas_primary_source: row.roas_primary_source,
+        roas_warning_code: row.roas_warning_code,
         roas_data_status: row.roas_data_status
-      })} / 目标 ${row.target_d7_roas.toFixed(2)} ｜ CPP ${formatAsaSummaryCpp({
+      })} / 目标 ${(row.target_d7_roas * 100).toFixed(2)}% ｜ CPP ${formatAsaSummaryCpp({
         total_cost: context?.total_cost,
         purchase_count: context?.purchase_count,
         cpp: row.current_cpp,
@@ -2471,8 +2640,8 @@ function buildAsaTodayJudgment(
   }
   if (summary.roas_data_status === 'partial') {
     return actionCount > 0
-      ? `当前成熟窗口的 Cohort 覆盖率已达可采纳阈值，ROAS/CPP 按已覆盖成本计算，先处理 ${actionCount} 条建议操作并继续观察缺口补齐。`
-      : '当前成熟窗口的 Cohort 覆盖率已达可采纳阈值，ROAS/CPP 按已覆盖成本计算，后续继续观察缺口是否补齐。';
+      ? `当前成熟窗口的 Cohort 覆盖率已达可采纳阈值，当前 ROAS 优先以 ${summary.roas_primary_source === 'af_cohort' ? 'AF Cohort' : '本地回退'} 展示，先处理 ${actionCount} 条建议操作并继续观察缺口补齐。`
+      : `当前成熟窗口的 Cohort 覆盖率已达可采纳阈值，当前 ROAS 优先以 ${summary.roas_primary_source === 'af_cohort' ? 'AF Cohort' : '本地回退'} 展示，后续继续观察缺口是否补齐。`;
   }
   if (summary.roas_data_status === 'partial_low') {
     return actionCount > 0
@@ -2577,7 +2746,7 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
     '【核心概览】',
     `- 当前阶段：${stageTitle(currentStage)}`,
     `- 关键词数：${result.summary.keyword_count}`,
-    `- 核心指标：安装 ${result.summary.installs.toFixed(0)} ｜ 成本 $${result.summary.total_cost.toFixed(2)} ｜ eCPI ${formatAsaSummaryEcpi(result.summary)} ｜ CPP（成熟窗口） ${formatAsaSummaryCpp(briefSummary)} ｜ D7 ROAS（成熟窗口） ${formatAsaSummaryRoas(briefSummary)}`,
+    `- 核心指标：近7日安装 ${result.summary.installs.toFixed(0)} ｜ 近7日成本 $${result.summary.total_cost.toFixed(2)} ｜ 近7日 eCPI ${formatAsaSummaryEcpi(result.summary)} ｜ CPP（成熟窗口） ${formatAsaSummaryCpp(briefSummary)} ｜ D7 ROAS（成熟窗口） ${formatAsaSummaryRoas(briefSummary)}`,
     '',
     '【今日判断】',
     `- ${todayJudgment}`,
@@ -2586,14 +2755,16 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
     ...(keywordOverviewRows.length > 0
       ? keywordOverviewRows.map((row) => {
           const appName = resolveProductViewName(appByKey.get(row.app_key), row.platform);
-          return `- ${appName}：关键词 ${row.keyword} ｜ 广告系列 ${row.campaign} ｜ 广告组 ${row.adset} ｜ 安装 ${row.installs_7d.toFixed(0)} ｜ 成本 $${row.total_cost_7d.toFixed(2)} ｜ eCPI ${formatAsaSummaryEcpi({
+          return `- ${appName}：关键词 ${row.keyword} ｜ 广告系列 ${row.campaign} ｜ 广告组 ${row.adset} ｜ 近7日安装 ${row.installs_7d.toFixed(0)} ｜ 近7日成本 $${row.total_cost_7d.toFixed(2)} ｜ 近7日 eCPI ${formatAsaSummaryEcpi({
             total_cost: row.total_cost_7d,
             installs: row.installs_7d,
             ecpi: row.current_ecpi
-          })} ｜ D7 ROAS ${formatAsaSummaryRoas({
+          })} ｜ 成熟窗口 D7 ROAS ${formatAsaSummaryRoas({
             total_cost: row.total_cost_7d,
             revenue_d7: row.revenue_d7_7d,
             d7_roas: row.current_d7_roas,
+            roas_primary_source: row.roas_primary_source,
+            roas_warning_code: row.roas_warning_code,
             roas_data_status: row.roas_data_status
           })}`;
         })
@@ -2660,14 +2831,16 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
               ? `📦 **关键词概览**\n${keywordOverviewRows
                   .map((row) => {
                     const appName = resolveProductViewName(appByKey.get(row.app_key), row.platform);
-                    return `- **${appName} / ${row.keyword}**\n  广告系列：${row.campaign}\n  广告组：${row.adset}\n  安装 ${row.installs_7d.toFixed(0)} ｜ 成本 $${row.total_cost_7d.toFixed(2)} ｜ eCPI ${formatAsaSummaryEcpi({
+                    return `- **${appName} / ${row.keyword}**\n  广告系列：${row.campaign}\n  广告组：${row.adset}\n  近7日安装 ${row.installs_7d.toFixed(0)} ｜ 近7日成本 $${row.total_cost_7d.toFixed(2)} ｜ 近7日 eCPI ${formatAsaSummaryEcpi({
                       total_cost: row.total_cost_7d,
                       installs: row.installs_7d,
                       ecpi: row.current_ecpi
-                    })} ｜ D7 ROAS ${formatAsaSummaryRoas({
+                    })} ｜ 成熟窗口 D7 ROAS ${formatAsaSummaryRoas({
                       total_cost: row.total_cost_7d,
                       revenue_d7: row.revenue_d7_7d,
                       d7_roas: row.current_d7_roas,
+                      roas_primary_source: row.roas_primary_source,
+                      roas_warning_code: row.roas_warning_code,
                       roas_data_status: row.roas_data_status
                     })}`;
                   })

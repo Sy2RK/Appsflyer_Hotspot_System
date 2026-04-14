@@ -128,6 +128,10 @@ while IFS= read -r table_name; do
     echo "[restore] skip missing table file: $native_file" >&2
     continue
   fi
+  if [[ ! -s "$native_file" ]]; then
+    echo "[restore] skip empty table file: $native_file" >&2
+    continue
+  fi
   echo "[restore] clickhouse table: $table_name"
   docker exec hotspot-clickhouse clickhouse-client --query "TRUNCATE TABLE hotspot.$table_name"
   docker exec -i hotspot-clickhouse clickhouse-client --query "INSERT INTO hotspot.$table_name FORMAT Native" < "$native_file"

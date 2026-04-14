@@ -71,6 +71,10 @@ function formatUsd(value: number): string {
   return `$${Number(value || 0).toFixed(2)}`;
 }
 
+function formatRoasPercent(value: number): string {
+  return `${(Math.max(0, Number(value || 0)) * 100).toFixed(2)}%`;
+}
+
 export function getSevenDayLaterTodayDateString(now = new Date()): string {
   return getDateStringInTimezone(now, env.timezone);
 }
@@ -120,14 +124,14 @@ function formatAsaSevenDayText(
       : roasDataStatus === 'partial'
         ? totalCost > 0
           ? revenueD7 > 0
-            ? `${d7Roas.toFixed(2)}（覆盖率达阈值，按已覆盖成本计算）`
-            : `${d7Roas.toFixed(2)}（覆盖率达阈值，按已覆盖成本计算；成熟窗口未观察到D7收入）`
+            ? `${formatRoasPercent(d7Roas)}（覆盖率达阈值，按已覆盖成本计算）`
+            : `${formatRoasPercent(d7Roas)}（覆盖率达阈值，按已覆盖成本计算；成熟窗口未观察到D7收入）`
           : '-'
         : roasDataStatus === 'partial_low'
           ? totalCost > 0
             ? revenueD7 > 0
-              ? `${d7Roas.toFixed(2)}（覆盖率偏低，仅供参考）`
-              : `${d7Roas.toFixed(2)}（覆盖率偏低，仅供参考；成熟窗口未观察到D7收入）`
+              ? `${formatRoasPercent(d7Roas)}（覆盖率偏低，仅供参考）`
+              : `${formatRoasPercent(d7Roas)}（覆盖率偏低，仅供参考；成熟窗口未观察到D7收入）`
             : '-'
           : roasDataStatus === 'unavailable'
             ? totalCost > 0
@@ -135,8 +139,8 @@ function formatAsaSevenDayText(
               : '-'
       : totalCost > 0
         ? revenueD7 > 0
-          ? d7Roas.toFixed(2)
-          : `${d7Roas.toFixed(2)}（成熟窗口未观察到D7收入）`
+          ? formatRoasPercent(d7Roas)
+          : `${formatRoasPercent(d7Roas)}（成熟窗口未观察到D7收入）`
         : '-';
   return `D+7 ${targetDate}｜安装 ${installs.toFixed(0)}｜花费 ${formatUsd(totalCost)}｜CPP ${cppText}｜购买 ${purchaseCount.toFixed(0)}｜ROAS ${roasText}`;
 }

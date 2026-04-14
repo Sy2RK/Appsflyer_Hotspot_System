@@ -92,6 +92,10 @@ function toNumberOrUndefined(value) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function formatRoasPercent(value) {
+  return `${formatNumber(Number(value || 0) * 100)}%`;
+}
+
 function toPositiveIntegerOrUndefined(value) {
   const parsed = toNumberOrUndefined(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
@@ -497,8 +501,8 @@ function summarizeThresholds(rule) {
 
   if (rule.metric_family === 'd7_roas_cpp') {
     const parts = [];
-    if (globalTargets.roas_min != null) parts.push(`ROAS ≥ ${formatNumber(globalTargets.roas_min)}`);
-    if (globalTargets.roas_good != null) parts.push(`优秀线 ≥ ${formatNumber(globalTargets.roas_good)}`);
+    if (globalTargets.roas_min != null) parts.push(`ROAS ≥ ${formatRoasPercent(globalTargets.roas_min)}`);
+    if (globalTargets.roas_good != null) parts.push(`优秀线 ≥ ${formatRoasPercent(globalTargets.roas_good)}`);
     if (globalTargets.cpp_max != null) parts.push(`CPP ≤ ${formatNumber(globalTargets.cpp_max)}`);
     if (globalTargets.cpp_pause_threshold != null) parts.push(`暂停线 ≥ ${formatNumber(globalTargets.cpp_pause_threshold)}`);
     const adjustmentSummary = summarizeAdjustmentPolicy(rule);

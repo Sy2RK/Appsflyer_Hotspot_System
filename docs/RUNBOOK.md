@@ -75,6 +75,10 @@ docker compose up -d --build
 - Postgres: `localhost:5432`
 - `mcp-server`: Compose 内部服务，默认不直接对宿主机暴露
 
+本地 ClickHouse 说明：
+- 本地 Compose 默认不再对 `clickhouse` 使用无限自动重启；若启动失败，会停在失败态，方便直接排错
+- 云端 overlay 仍会为 `clickhouse` 保持 `restart: unless-stopped`
+
 登录行为：
 - 未登录浏览器访问 `/ui` / `/ui/` 会跳转到 `/login`
 - 未登录访问 `/api/*` 会返回 `401`
@@ -167,6 +171,109 @@ curl http://localhost:3000/api/ai/models
 预期：
 - 至少返回 1 个可用模型
 - 若未配置对应 provider 凭据，相关模型不会出现在列表中
+
+### 2.1 ClickHouse Crash Loop 恢复
+
+如果本地 `hotspot-clickhouse` 因 system log 坏 part 进入 crash loop，优先执行：
+
+```bash
+cd hotspot-system
+chmod +x scripts/repair-clickhouse-local.sh
+./scripts/repair-clickhouse-local.sh
+```
+
+脚本会按固定顺序执行：
+- 停止本地 `hotspot-clickhouse` 并关闭容器自动重启
+- 默认保存轻量取证信息：容器日志尾部、`metadata/system/*.sql`、坏 part 路径清单
+- 磁盘空间足够时，可用 `CLICKHOUSE_REPAIR_BACKUP_MODE=full ./scripts/repair-clickhouse-local.sh` 再额外执行整卷备份
+- 将已禁用的 system log 元数据移出活动 `metadata/system`
+- 删除 `core` 崩溃残留
+- 禁用会导致启动崩溃的 system log
+- 单次启动验证；若仍失败，则把日志里定位到的坏 part 移到 `detached/manual-quarantine-*`
+
+当前允许自动清理的残留只有：
+- `/var/lib/clickhouse/core`
+- 已禁用 system log UUID 目录下的 `detached/broken-on-start_*`
+- 已禁用 system log UUID 目录下的 `detached/recovery-*`
+
+不要手动删除：
+- `hotspot.*` 业务表所在的 `store/*/<uuid>` 主目录
+- `raw_events`、`metrics_daily`、`keyword_value_daily_metrics` 对应数据目录
+- 整个 `infra_clickhouse-data` volume
+
+### 2.2 Docker 空间回收
+
+Docker Desktop on macOS 使用的是 Linux VM 磁盘镜像 `Docker.raw`。它是稀疏文件：
+- `ls -lh` 显示的是逻辑上限，不等于真实磁盘占用
+- `du -sh ~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw` 才更接近真实占用
+
+如果本地出现 Docker 空间异常膨胀，优先执行：
+
+```bash
+cd hotspot-system
+chmod +x scripts/reclaim-docker-space-local.sh
+./scripts/reclaim-docker-space-local.sh
+```
+
+脚本会依次执行：
+- 清理未使用 build cache
+- 清理未使用镜像
+- 调用 `docker/desktop-reclaim-space` 将 Docker Desktop VM 内已释放的空闲块回收给 macOS
+
+重要说明：
+- 不要直接删除 `~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw`
+- 直接删除 `Docker.raw` 会清空本地 Docker 数据，包括本地 Postgres / ClickHouse 数据
+- 如果只想释放真实占用，不需要重建 `Docker.raw`
+
+为避免再次无休止增长：
+- 当前 Compose 已为所有服务启用日志轮转：`driver=local`、`max-size=10m`、`max-file=3`
+- 本地 `clickhouse` 禁止无限自动重启，并设置 `stop_grace_period=2m`
+- 本地 `clickhouse` 禁止生成 core dump
+- 云端仍保留 `restart: unless-stopped`，但同样继承日志轮转配置
+
+### 2.3 保数据缩小 Docker Desktop 磁盘上限
+
+如果你需要真正缩小 Docker Desktop 的磁盘镜像上限，而不仅仅是回收真实占用，必须先做逻辑导出。
+
+先导出当前业务数据与配置：
+
+```bash
+cd hotspot-system
+chmod +x scripts/backup-local-docker-reset.sh
+./scripts/backup-local-docker-reset.sh
+```
+
+这一步会导出：
+- Postgres 逻辑备份
+- ClickHouse `hotspot.*` 业务表备份
+- 当前仓库 commit
+- 当前 `.env`
+
+然后在 Docker Desktop 中执行：
+- `Settings`
+- `Resources`
+- `Advanced`
+- 调低 `Disk image size`
+- `Apply`
+
+重要说明：
+- 这一步会删除当前 Docker Desktop disk image
+- 本地 containers / images 会丢失
+- 但只要前面的逻辑导出完成，业务数据可以恢复
+
+缩盘完成后，重新恢复本地环境：
+
+```bash
+cd hotspot-system
+chmod +x scripts/restore-local-docker-reset.sh
+./scripts/restore-local-docker-reset.sh migration-backups/<your-backup-dir-or-tar.gz>
+```
+
+恢复完成后，验证：
+
+```bash
+curl http://127.0.0.1:3000/ready
+```
 
 如需排查 Guru Ads Agent 自动查库：
 

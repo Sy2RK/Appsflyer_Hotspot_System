@@ -31,10 +31,15 @@ import {
 } from './recommendationPolicies.js';
 import {
   buildMatureRoasWindow,
+  calculateRoasDeviationRatio,
   isRoasDataDisplayableStatus,
   isRoasDataUsableStatus,
-  resolveRoasDataStatus
+  resolveRoasDataStatus,
+  resolveRoasPrimarySource,
+  resolveRoasWarningCode,
+  shouldHoldForRoasProtection
 } from './roasWindow.js';
+import type { RoasPrimarySource, RoasWarningCode } from '../types/models.js';
 
 export interface BudgetAdvisorLogger {
   info: (message: string, context?: Record<string, unknown>) => void;
@@ -109,12 +114,19 @@ interface BudgetValueFact {
   cpi: number;
   cpp: number;
   d7_roas: number;
+  af_cohort_roas: number;
+  af_cohort_roas_missing: number;
 }
 
 interface BudgetValueCoverageSummary<T> {
   coverageMissing: boolean;
   coveredRows: T[];
   currentRoas: number | null;
+  afCohortRoas: number | null;
+  localDerivedRoas: number | null;
+  roasPrimarySource: RoasPrimarySource;
+  roasWarningCode: RoasWarningCode;
+  roasDeviationRatio: number | null;
   currentCpp: number | null;
   totalCost: number;
   totalPurchases: number;
@@ -204,7 +216,9 @@ async function ensureKeywordValueSchema(): Promise<void> {
   if (!ensureKeywordValueSchemaPromise) {
     ensureKeywordValueSchemaPromise = chExec(
       `ALTER TABLE keyword_value_daily_metrics
-        ADD COLUMN IF NOT EXISTS revenue_source_missing UInt8 DEFAULT 0`
+        ADD COLUMN IF NOT EXISTS revenue_source_missing UInt8 DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS af_cohort_roas Float64 DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS af_cohort_roas_missing UInt8 DEFAULT 1`
     ).catch((error) => {
       ensureKeywordValueSchemaPromise = null;
       throw error;
@@ -725,7 +739,9 @@ async function queryBudgetValueFacts(appKey: string, from: string, to: string): 
           cvr,
           cpi,
           cpp,
-          d7_roas
+          d7_roas,
+          af_cohort_roas,
+          af_cohort_roas_missing
         FROM keyword_value_daily_metrics FINAL
         WHERE app_key = {app_key:String}
           AND install_date >= toDate({from:String})
@@ -750,7 +766,9 @@ async function queryBudgetValueFacts(appKey: string, from: string, to: string): 
       cvr: safeNumber(row.cvr),
       cpi: safeNumber(row.cpi),
       cpp: safeNumber(row.cpp),
-      d7_roas: safeNumber(row.d7_roas)
+      d7_roas: safeNumber(row.d7_roas),
+      af_cohort_roas: safeNumber(row.af_cohort_roas),
+      af_cohort_roas_missing: safeNumber(row.af_cohort_roas_missing, 1)
     }));
   } catch {
     return [];
@@ -773,8 +791,31 @@ function averageOrNull(values: number[]): number | null {
   return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
 }
 
-function weightedRoasOrNull(rows: Array<Pick<BudgetValueFact, 'total_cost' | 'd7_roas'>>): number | null {
-  const eligibleRows = rows.filter((row) => Number(row.total_cost || 0) > 0 && Number.isFinite(Number(row.d7_roas || 0)));
+function weightedRoasOrNull(rows: Array<Pick<BudgetValueFact, 'total_cost' | 'revenue_d7'>>): number | null {
+  const eligibleRows = rows.filter(
+    (row) => Number(row.total_cost || 0) > 0 && Number.isFinite(Number(row.revenue_d7 || 0))
+  );
+  if (eligibleRows.length === 0) {
+    return null;
+  }
+  const totalCost = eligibleRows.reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
+  if (totalCost <= 0) {
+    return null;
+  }
+  const totalRevenue = eligibleRows.reduce((sum, row) => sum + Number(row.revenue_d7 || 0), 0);
+  return totalRevenue / totalCost;
+}
+
+function weightedAfCohortRoasOrNull(
+  rows: Array<Pick<BudgetValueFact, 'total_cost' | 'af_cohort_roas' | 'af_cohort_roas_missing'>>
+): number | null {
+  const eligibleRows = rows.filter(
+    (row) =>
+      Number(row.total_cost || 0) > 0 &&
+      Number(row.af_cohort_roas_missing || 0) !== 1 &&
+      row.af_cohort_roas != null &&
+      Number.isFinite(Number(row.af_cohort_roas))
+  );
   if (eligibleRows.length === 0) {
     return null;
   }
@@ -783,14 +824,17 @@ function weightedRoasOrNull(rows: Array<Pick<BudgetValueFact, 'total_cost' | 'd7
     return null;
   }
   const weightedRoas = eligibleRows.reduce(
-    (sum, row) => sum + Number(row.d7_roas || 0) * Number(row.total_cost || 0),
+    (sum, row) => sum + Number(row.total_cost || 0) * Number(row.af_cohort_roas || 0),
     0
   );
   return weightedRoas / totalCost;
 }
 
 export function summarizeBudgetValueCoverage<
-  T extends Pick<BudgetValueFact, 'total_cost' | 'purchase_count' | 'd7_roas' | 'revenue_source_missing'>
+  T extends Pick<
+    BudgetValueFact,
+    'total_cost' | 'purchase_count' | 'revenue_d7' | 'd7_roas' | 'revenue_source_missing' | 'af_cohort_roas' | 'af_cohort_roas_missing'
+  >
 >(rows: T[]): BudgetValueCoverageSummary<T> {
   const coveredRows = rows.filter((row) => row.revenue_source_missing !== 1);
   const missingRows = rows.filter((row) => row.revenue_source_missing === 1);
@@ -799,10 +843,20 @@ export function summarizeBudgetValueCoverage<
   const totalPurchases = coveredRows.reduce((sum, row) => sum + row.purchase_count, 0);
   const missingCost = missingRows.reduce((sum, row) => sum + row.total_cost, 0);
   const coverageRatio = totalCost + missingCost > 0 ? totalCost / (totalCost + missingCost) : 0;
+  const afCohortRoas = weightedAfCohortRoasOrNull(coveredRows);
+  const localDerivedRoas = weightedRoasOrNull(coveredRows);
+  const roasPrimarySource = resolveRoasPrimarySource({ afCohortRoas, localDerivedRoas });
+  const roasWarningCode = resolveRoasWarningCode({ afCohortRoas, localDerivedRoas });
+  const roasDeviationRatio = calculateRoasDeviationRatio(afCohortRoas, localDerivedRoas);
   return {
     coverageMissing,
     coveredRows,
-    currentRoas: weightedRoasOrNull(coveredRows),
+    currentRoas: roasPrimarySource === 'af_cohort' ? afCohortRoas : localDerivedRoas,
+    afCohortRoas,
+    localDerivedRoas,
+    roasPrimarySource,
+    roasWarningCode,
+    roasDeviationRatio,
     currentCpp: totalPurchases > 0 ? totalCost / totalPurchases : null,
     totalCost,
     totalPurchases,
@@ -1071,6 +1125,11 @@ export async function runBudgetAdvisorCycle(
         roasWindow: { from: string; to: string };
         roasDataStatus: RoasDataStatus;
         currentRoas: number | null;
+        afCohortRoas: number | null;
+        localDerivedRoas: number | null;
+        roasPrimarySource: RoasPrimarySource;
+        roasWarningCode: RoasWarningCode;
+        roasDeviationRatio: number | null;
         targetRoas: number | null;
         currentCpp: number | null;
         targetCpp: number | null;
@@ -1148,7 +1207,11 @@ export async function runBudgetAdvisorCycle(
           policyWindow.from,
           policyWindow.to
         );
-        const currentRoas = isRoasDataDisplayableStatus(roasDataStatus) ? valueCoverage.currentRoas : null;
+        const currentRoas =
+          valueCoverage.currentRoas != null &&
+          (valueCoverage.roasPrimarySource === 'af_cohort' || isRoasDataDisplayableStatus(roasDataStatus))
+            ? valueCoverage.currentRoas
+            : null;
         const currentCpp = isRoasDataDisplayableStatus(roasDataStatus) ? valueCoverage.currentCpp : null;
         const currentCtr = averageOrNull(decisionValueFacts.map((row) => row.ctr));
         const currentCvr = fact.last7_clicks > 0 ? fact.last7_installs / fact.last7_clicks : null;
@@ -1189,7 +1252,14 @@ export async function runBudgetAdvisorCycle(
               coveredCost: peerCoverage.coveredCost,
               missingCost: peerCoverage.missingCost
             });
-            return isRoasDataUsableStatus(peerRoasStatus) ? peerCoverage.currentRoas ?? NaN : NaN;
+            const peerCurrentRoas =
+              peerCoverage.currentRoas != null &&
+              (peerCoverage.roasPrimarySource === 'af_cohort' || isRoasDataDisplayableStatus(peerRoasStatus))
+                ? peerCoverage.currentRoas
+                : null;
+            return peerCoverage.roasPrimarySource === 'af_cohort' && peerCoverage.roasWarningCode === 'none'
+              ? peerCurrentRoas ?? NaN
+              : NaN;
           })
           .filter((value) => Number.isFinite(value)) as number[];
         const peerCtrValues = peerFacts
@@ -1217,7 +1287,10 @@ export async function runBudgetAdvisorCycle(
                 ctr: currentCtr,
                 cvr: currentCvr,
                 cpi: currentCpi,
-                roas: currentRoas
+                roas:
+                  valueCoverage.roasPrimarySource === 'af_cohort' && valueCoverage.roasWarningCode === 'none'
+                    ? currentRoas
+                    : null
               },
               peerMetrics: {
                 ctr: peerCtrValues,
@@ -1228,6 +1301,10 @@ export async function runBudgetAdvisorCycle(
             })
           : null;
         const relativeTargetEcpi = relativeCompareDriven && peerCpiValues.length > 0 ? median(peerCpiValues) : effectiveTargetEcpi;
+        const roasProtected = shouldHoldForRoasProtection({
+          primarySource: valueCoverage.roasPrimarySource,
+          warningCode: valueCoverage.roasWarningCode
+        });
 
         let decision = requiresCompleteRoas && !isRoasDataUsableStatus(roasDataStatus)
           ? {
@@ -1262,6 +1339,19 @@ export async function runBudgetAdvisorCycle(
               last7Cost: fact.last7_cost
             });
 
+        if ((policy?.metric_family === 'd7_roas_cpp' || policy?.metric_family === 'relative_compare') && roasProtected) {
+          decision = {
+            action: 'hold',
+            changeRatio: 0,
+            confidence: valueCoverage.roasWarningCode === 'af_vs_local_mismatch' ? 0.46 : 0.52,
+            reasonCode:
+              valueCoverage.roasWarningCode === 'af_vs_local_mismatch'
+                ? 'af_roas_mismatch_hold'
+                : 'af_roas_fallback_hold',
+            volumeTier
+          };
+        }
+
         if (worstCountryBreach && !valueDriven && !relativeCompareDriven && decision.action === 'hold') {
           decision = {
             action: state.current_stage === 'pause_candidate' ? 'pause' : 'decrease',
@@ -1291,6 +1381,11 @@ export async function runBudgetAdvisorCycle(
           roasWindow,
           roasDataStatus,
           currentRoas,
+          afCohortRoas: valueCoverage.afCohortRoas,
+          localDerivedRoas: valueCoverage.localDerivedRoas,
+          roasPrimarySource: valueCoverage.roasPrimarySource,
+          roasWarningCode: valueCoverage.roasWarningCode,
+          roasDeviationRatio: valueCoverage.roasDeviationRatio,
           targetRoas:
             policy?.metric_family === 'd7_roas_cpp'
               ? thresholdTargets.roas_good ?? thresholdTargets.roas_min ?? null
@@ -1324,6 +1419,11 @@ export async function runBudgetAdvisorCycle(
           roasWindow,
           roasDataStatus,
           currentRoas,
+          afCohortRoas,
+          localDerivedRoas,
+          roasPrimarySource,
+          roasWarningCode,
+          roasDeviationRatio,
           targetRoas,
           currentCpp,
           targetCpp,
@@ -1377,6 +1477,11 @@ export async function runBudgetAdvisorCycle(
             current_cpp: currentCpp,
             target_cpp: targetCpp,
             current_roas: currentRoas,
+            af_cohort_roas: afCohortRoas,
+            local_derived_roas: localDerivedRoas,
+            roas_primary_source: roasPrimarySource,
+            roas_warning_code: roasWarningCode,
+            roas_deviation_ratio: roasDeviationRatio,
             target_roas: targetRoas,
             value_coverage_missing: valueCoverageMissing,
             roas_data_status: roasDataStatus,
@@ -1414,6 +1519,11 @@ export async function runBudgetAdvisorCycle(
           primary_metric: metricSettings.primaryMetric,
           metric_mode: metricSettings.metricMode,
           current_roas: currentRoas,
+          af_cohort_roas: afCohortRoas,
+          local_derived_roas: localDerivedRoas,
+          roas_primary_source: roasPrimarySource,
+          roas_warning_code: roasWarningCode,
+          roas_deviation_ratio: roasDeviationRatio,
           target_roas: targetRoas,
           roas_window_from: metricSettings.primaryMetric === 'roas' ? roasWindow.from : null,
           roas_window_to: metricSettings.primaryMetric === 'roas' ? roasWindow.to : null,
@@ -1433,6 +1543,11 @@ export async function runBudgetAdvisorCycle(
             last3_installs: fact.last3_installs,
             last7_installs: fact.last7_installs,
             current_roas: currentRoas,
+            af_cohort_roas: afCohortRoas,
+            local_derived_roas: localDerivedRoas,
+            roas_primary_source: roasPrimarySource,
+            roas_warning_code: roasWarningCode,
+            roas_deviation_ratio: roasDeviationRatio,
             target_roas: targetRoas,
             roas_window_from: metricSettings.primaryMetric === 'roas' ? roasWindow.from : null,
             roas_window_to: metricSettings.primaryMetric === 'roas' ? roasWindow.to : null,

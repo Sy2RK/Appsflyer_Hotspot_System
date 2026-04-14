@@ -1,12 +1,21 @@
+x-default-logging: &default-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
     container_name: hotspot-clickhouse
-    restart: unless-stopped
+    restart: "no"
+    stop_grace_period: 2m
     env_file:
       - ../.env
     environment:
       TZ: Asia/Shanghai
+    ulimits:
+      core: 0
     ports:
       - '127.0.0.1:8123:8123'
       - '127.0.0.1:9000:9000'
@@ -17,11 +26,19 @@ services:
       - ./clickhouse/init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
       - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
       - ./clickhouse/disable-problematic-system-logs.xml:/etc/clickhouse-server/config.d/disable-problematic-system-logs.xml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    logging: *default-logging
 
   postgres:
     image: postgres:16
     container_name: hotspot-postgres
     restart: unless-stopped
+    stop_grace_period: 1m
     env_file:
       - ../.env
     ports:
@@ -29,6 +46,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    logging: *default-logging
 
   api:
     build:
@@ -58,9 +76,13 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     depends_on:
-      - clickhouse
-      - postgres
-      - mcp-server
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+      mcp-server:
+        condition: service_started
+    logging: *default-logging
 
   mcp-server:
     build:
@@ -82,8 +104,11 @@ services:
       MCP_BASE_URL: http://mcp-server:3100/mcp
       MCP_INTERNAL_TOKEN: ${MCP_INTERNAL_TOKEN:-dev-hotspot-mcp-token}
     depends_on:
-      - clickhouse
-      - postgres
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    logging: *default-logging
 
   aggregator:
     build:
@@ -103,8 +128,11 @@ services:
       AGGREGATOR_LOOKBACK_HOURS: 6
       AGGREGATOR_INTERVAL_MS: 300000
     depends_on:
-      - clickhouse
-      - postgres
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    logging: *default-logging
 
   detector:
     build:
@@ -126,8 +154,11 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     depends_on:
-      - clickhouse
-      - postgres
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    logging: *default-logging
 
   puller:
     build:
@@ -150,8 +181,11 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     depends_on:
-      - clickhouse
-      - postgres
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    logging: *default-logging
 
   keyword-engine:
     build:
@@ -172,8 +206,11 @@ services:
       KEYWORD_ENGINE_INITIAL_BACKFILL_DAYS: ${KEYWORD_ENGINE_INITIAL_BACKFILL_DAYS:-30}
       KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS: ${KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS:-3}
     depends_on:
-      - clickhouse
-      - postgres
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    logging: *default-logging
 
   budget-advisor:
     build:
@@ -196,8 +233,11 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     depends_on:
-      - clickhouse
-      - postgres
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    logging: *default-logging
 
   asa-keywords:
     build:
@@ -222,8 +262,11 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     depends_on:
-      - clickhouse
-      - postgres
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    logging: *default-logging
 
   asa-daily-brief:
     build:
@@ -247,8 +290,11 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     depends_on:
-      - clickhouse
-      - postgres
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    logging: *default-logging
 
   daily-brief:
     build:
@@ -273,8 +319,11 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     depends_on:
-      - clickhouse
-      - postgres
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    logging: *default-logging
 
   bitable-export:
     build:
@@ -298,8 +347,11 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     depends_on:
-      - clickhouse
-      - postgres
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    logging: *default-logging
 
   bitable-feedback-sync:
     build:
@@ -322,8 +374,11 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     depends_on:
-      - clickhouse
-      - postgres
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    logging: *default-logging
 
 volumes:
   clickhouse-data:

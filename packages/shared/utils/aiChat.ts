@@ -619,6 +619,26 @@ function formatNum(value: unknown): string {
   return Number(value ?? 0).toFixed(2);
 }
 
+function formatRoasPercent(value: unknown): string {
+  return `${(Math.max(0, Number(value ?? 0)) * 100).toFixed(2)}%`;
+}
+
+function formatOptionalRoasPercent(value: unknown): string {
+  if (value == null || String(value).trim() === '') {
+    return '当前不可用';
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? formatRoasPercent(numeric) : '当前不可用';
+}
+
+function parseNullableNumber(value: unknown): number | null {
+  if (value == null || String(value).trim() === '') {
+    return null;
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
 function normalizePlatform(platform?: string): string | undefined {
   const value = String(platform ?? '')
     .trim()
@@ -1330,7 +1350,15 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         to_char(sum(total_cost_7d), 'FM999999999999990.00') AS total_cost_7d,
         to_char(avg(current_ecpi), 'FM999999990.00') AS avg_ecpi,
         to_char(avg(current_cpp), 'FM999999990.00') AS avg_cpp,
-        to_char(avg(current_d7_roas), 'FM999999990.00') AS avg_roas
+        to_char(
+          coalesce(
+            sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
+              / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
+            sum(current_d7_roas * CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END)
+              / nullif(sum(CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END), 0)
+          ),
+          'FM999999990.00'
+        ) AS avg_roas
       FROM asa_keyword_states
       ${whereSql}`,
     values
@@ -1344,7 +1372,15 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         to_char(count(*), 'FM999999999999999') AS total,
         to_char(sum(installs_7d), 'FM999999999999990.00') AS installs_7d,
         to_char(avg(current_ecpi), 'FM999999990.00') AS avg_ecpi,
-        to_char(avg(current_d7_roas), 'FM999999990.00') AS avg_roas
+        to_char(
+          coalesce(
+            sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
+              / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
+            sum(current_d7_roas * CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END)
+              / nullif(sum(CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END), 0)
+          ),
+          'FM999999990.00'
+        ) AS avg_roas
       FROM asa_keyword_states
       ${whereSql}
       GROUP BY current_stage
@@ -1357,7 +1393,15 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         to_char(count(*), 'FM999999999999999') AS total,
         to_char(sum(installs_7d), 'FM999999999999990.00') AS installs_7d,
         to_char(avg(current_ecpi), 'FM999999990.00') AS avg_ecpi,
-        to_char(avg(current_d7_roas), 'FM999999990.00') AS avg_roas
+        to_char(
+          coalesce(
+            sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
+              / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
+            sum(current_d7_roas * CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END)
+              / nullif(sum(CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END), 0)
+          ),
+          'FM999999990.00'
+        ) AS avg_roas
       FROM asa_keyword_states
       ${whereSql}
       GROUP BY campaign, adset
@@ -1370,7 +1414,15 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         to_char(count(*), 'FM999999999999999') AS total,
         to_char(sum(installs_7d), 'FM999999999999990.00') AS installs_7d,
         to_char(avg(current_ecpi), 'FM999999990.00') AS avg_ecpi,
-        to_char(avg(current_d7_roas), 'FM999999990.00') AS avg_roas
+        to_char(
+          coalesce(
+            sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
+              / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
+            sum(current_d7_roas * CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END)
+              / nullif(sum(CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END), 0)
+          ),
+          'FM999999990.00'
+        ) AS avg_roas
       FROM asa_keyword_states
       ${whereSql}
       GROUP BY keyword
@@ -1419,14 +1471,14 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
     total_cost_7d: '0.00',
     avg_ecpi: '0.00',
     avg_cpp: '0.00',
-    avg_roas: '0.00'
+    avg_roas: null
   };
   const groups = groupRowsResult.rows.map((row) => ({
     label: row.key_b ? `${row.key_a} / ${row.key_b}` : row.key_a,
     total: Number(row.total || 0),
     installs7d: Number(row.installs_7d || 0),
     avgEcpi: Number(row.avg_ecpi || 0),
-    avgRoas: Number(row.avg_roas || 0)
+    avgRoas: parseNullableNumber(row.avg_roas)
   }));
   const actions = actionRows.rows.map((row) => `${row.action} ${row.total}`);
 
@@ -1438,7 +1490,7 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
       ? `- 日期范围：${String(spec.from || '不限')} ~ ${String(spec.to || '不限')}`
       : '- 日期范围：不限',
     `- 关键词总数：${summary.total}；7 日安装：${formatNum(summary.installs_7d || 0)}；7 日花费：${formatNum(summary.total_cost_7d || 0)}`,
-    `- 均值：eCPI ${formatNum(summary.avg_ecpi || 0)} / CPP ${formatNum(summary.avg_cpp || 0)} / D7 ROAS ${formatNum(summary.avg_roas || 0)}`,
+    `- 均值：eCPI ${formatNum(summary.avg_ecpi || 0)} / CPP ${formatNum(summary.avg_cpp || 0)} / D7 ROAS ${formatOptionalRoasPercent(summary.avg_roas)}`,
     actions.length ? `- 建议动作：${actions.join('；')}` : '- 建议动作：当前范围内暂无推荐记录',
     groups.length
       ? `- Top 聚合：${groups
@@ -1466,7 +1518,7 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         totalCost7d: Number(summary.total_cost_7d || 0),
         avgEcpi: Number(summary.avg_ecpi || 0),
         avgCpp: Number(summary.avg_cpp || 0),
-        avgRoas: Number(summary.avg_roas || 0)
+        avgRoas: parseNullableNumber(summary.avg_roas)
       },
       actionBreakdown: actionRows.rows.map((row) => ({
         action: row.action,
