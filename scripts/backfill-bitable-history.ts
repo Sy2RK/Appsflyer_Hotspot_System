@@ -2,7 +2,7 @@ import { logger } from '@api/common/logger/logger.js';
 import { runHistoricalBitableExportBackfill } from '@shared/utils/bitableExport.js';
 
 async function main(): Promise<void> {
-  const result = await runHistoricalBitableExportBackfill('delivery_actions', logger);
+  const result = await runHistoricalBitableExportBackfill('delivery_actions_non_asa', logger);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 
   if (result.failed_dates.length > 0) {

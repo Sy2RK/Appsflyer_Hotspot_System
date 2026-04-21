@@ -414,7 +414,7 @@ async function buildBudgetSummaryPack(spec: AiContextPackSpec): Promise<AiBuiltC
   }
 
   const joinSql = `LEFT JOIN recommendation_execution_feedbacks ref
-       ON ref.source_type = 'delivery_actions'
+       ON ref.source_type = 'delivery_actions_non_asa'
       AND ref.recommendation_type = 'budget'
       AND ref.recommendation_id = br.id`;
   const { whereSql, values } = buildBudgetWhere(spec);

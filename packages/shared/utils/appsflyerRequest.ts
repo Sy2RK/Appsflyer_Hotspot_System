@@ -1,3 +1,5 @@
+import { env } from '@shared/config/env.js';
+
 export type AppsflyerRequestFailureKind =
   | 'timeout'
   | 'network'
@@ -39,6 +41,13 @@ function bodyPreview(body: string): string {
     .trim()
     .slice(0, 200);
 }
+
+type AppsflyerRelayResponse = {
+  status?: number;
+  ok?: boolean;
+  body?: string;
+  error?: string;
+};
 
 function isRateLimitBody(status: number, body: string): boolean {
   const lower = body.toLowerCase();
@@ -133,6 +142,10 @@ export async function fetchAppsflyerText(
     body?: string;
   }
 ): Promise<string> {
+  if (env.appsflyerEgressRelayUrl) {
+    return fetchAppsflyerTextViaRelay(url, input);
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1, Math.floor(input.timeoutMs)));
 
@@ -153,6 +166,82 @@ export async function fetchAppsflyerText(
       throw error;
     }
     throw classifyAppsflyerTransportFailure(input.label, error, input.timeoutMs);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchAppsflyerTextViaRelay(
+  url: string,
+  input: {
+    headers: Record<string, string>;
+    timeoutMs: number;
+    label: string;
+    method?: 'GET' | 'POST';
+    body?: string;
+  }
+): Promise<string> {
+  const controller = new AbortController();
+  const relayTimeoutMs = Math.max(1, Math.floor(input.timeoutMs)) + 5000;
+  const timer = setTimeout(() => controller.abort(), relayTimeoutMs);
+
+  try {
+    const relayHeaders: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+    if (env.appsflyerEgressRelayToken) {
+      relayHeaders.Authorization = `Bearer ${env.appsflyerEgressRelayToken}`;
+    }
+
+    const response = await fetch(env.appsflyerEgressRelayUrl, {
+      method: 'POST',
+      headers: relayHeaders,
+      body: JSON.stringify({
+        url,
+        method: input.method ?? (input.body ? 'POST' : 'GET'),
+        headers: input.headers,
+        body: input.body,
+        timeoutMs: input.timeoutMs,
+        label: input.label
+      }),
+      signal: controller.signal
+    });
+    const raw = await response.text().catch(() => '');
+    if (!response.ok) {
+      throw new AppsflyerRequestError({
+        message: `${input.label}_relay_failed status=${response.status} body=${bodyPreview(raw) || 'empty'}`,
+        kind: response.status === 408 ? 'timeout' : 'network',
+        status: response.status,
+        bodyPreview: bodyPreview(raw) || null,
+        immediateRetryable: true,
+        scheduledRetryable: true
+      });
+    }
+
+    let payload: AppsflyerRelayResponse;
+    try {
+      payload = JSON.parse(raw) as AppsflyerRelayResponse;
+    } catch {
+      throw new Error(`${input.label}_relay_invalid_json`);
+    }
+
+    if (payload.error) {
+      throw new Error(`${input.label}_relay_upstream_failed ${payload.error}`);
+    }
+    if (typeof payload.status !== 'number') {
+      throw new Error(`${input.label}_relay_missing_status`);
+    }
+
+    const body = String(payload.body ?? '');
+    if (!payload.ok) {
+      throw classifyAppsflyerHttpFailure(input.label, payload.status, body);
+    }
+    return body;
+  } catch (error) {
+    if (error instanceof AppsflyerRequestError) {
+      throw error;
+    }
+    throw classifyAppsflyerTransportFailure(input.label, error, relayTimeoutMs);
   } finally {
     clearTimeout(timer);
   }

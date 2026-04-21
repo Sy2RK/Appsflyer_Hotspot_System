@@ -404,7 +404,7 @@
 
 字段:
 - `id`
-- `source_type` (`pull_daily|asa_raw|delivery_actions`)
+- `source_type` (`pull_daily|asa_raw|delivery_actions|delivery_actions_non_asa|delivery_actions_asa`)
 - `enabled`
 - `target_table_id`
 - `target_table_name`
@@ -419,10 +419,10 @@
 - `updated_at`
 
 说明：
-- `delivery_actions` 为当前主导出源，会在同一个 Feishu Base 内按 `report_date` 创建 / 复用日期表
+- `delivery_actions_non_asa` 与 `delivery_actions_asa` 为当前主导出源，会在同一个 Feishu Base 内分别按 `report_date` 创建 / 复用日期表
 - 该表只保留投放执行所需字段，不再输出原始技术明细
 - `target_table_id` / `target_table_name` 表示最近一次同步的日期表
-- `table_name_prefix` 用于生成每日日期表名，例如 `投放执行表_2026-03-27`
+- `table_name_prefix` 用于生成每日日期表名，例如 `投放执行表-非ASA_2026-03-27`
 - 该表只保存导出配置与最近同步结果，不保存实际导出数据
 
 ### `bitable_export_daily_tables`

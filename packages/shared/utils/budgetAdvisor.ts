@@ -3,13 +3,14 @@ import { env } from '../config/env.js';
 import { explainBudgetRecommendationWithLlm } from './llm.js';
 import { getDateStringInTimezone, shiftDateString } from './businessDate.js';
 import {
-  expirePendingBudgetRecommendationsForDate,
+  expireStalePendingBudgetRecommendationsForDate,
   insertLlmAuditLog,
   listApps,
   listKeywordLifecycleStatesByApp,
   listRecommendationPolicyConfigs,
   upsertBudgetRecommendation
 } from './repositories.js';
+import type { UpsertBudgetRecommendationInput } from './repositories.js';
 import {
   BudgetAction,
   BudgetExecutionAction,
@@ -1076,7 +1077,6 @@ export async function runBudgetAdvisorCycle(
         queryBudgetCountryFacts(app.app_key, countryFactFrom, date)
       ]);
       const filteredStates = states.filter((state) => String(state.last_seen_date || '') >= lookbackStartDate);
-      await expirePendingBudgetRecommendationsForDate(app.app_key, date);
 
       if (filteredStates.length === 0 || facts.length === 0) {
         details.push({
@@ -1407,6 +1407,7 @@ export async function runBudgetAdvisorCycle(
       totalCandidates += candidates.length;
       emitProgress();
 
+      const preparedRecommendations: UpsertBudgetRecommendationInput[] = [];
       for (const candidate of candidates) {
         const {
           fact,
@@ -1503,7 +1504,7 @@ export async function runBudgetAdvisorCycle(
           success: llm.ok
         });
 
-        await upsertBudgetRecommendation({
+        preparedRecommendations.push({
           app_key: app.app_key,
           platform: fact.platform,
           media_source: fact.media_source,
@@ -1566,11 +1567,24 @@ export async function runBudgetAdvisorCycle(
           scenario_tags: finalDecision.scenarioTags,
           status: 'pending'
         });
+      }
 
+      for (const recommendation of preparedRecommendations) {
+        await upsertBudgetRecommendation(recommendation);
         generated += 1;
         generatedTotal += 1;
         emitProgress();
       }
+      await expireStalePendingBudgetRecommendationsForDate(
+        app.app_key,
+        date,
+        preparedRecommendations.map((row) => ({
+          platform: row.platform,
+          media_source: row.media_source,
+          keyword: row.keyword,
+          match_type: row.match_type
+        }))
+      );
 
       details.push({
         app_key: app.app_key,

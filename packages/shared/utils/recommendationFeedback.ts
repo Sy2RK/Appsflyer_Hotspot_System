@@ -124,7 +124,11 @@ export interface BitableFeedbackSyncSnapshot {
   latest_skill_updated_at: string | null;
 }
 
-const SOURCE_TYPE: BitableExportSourceType = 'delivery_actions';
+const NON_ASA_SOURCE_TYPE: BitableExportSourceType = 'delivery_actions_non_asa';
+const ASA_SOURCE_TYPE: BitableExportSourceType = 'delivery_actions_asa';
+const LEGACY_SOURCE_TYPE: BitableExportSourceType = 'delivery_actions';
+const BUDGET_FEEDBACK_SOURCE_TYPE = NON_ASA_SOURCE_TYPE;
+const ACTIVE_FEEDBACK_SOURCE_TYPES = [NON_ASA_SOURCE_TYPE, ASA_SOURCE_TYPE] as const;
 const BUDGET_SCOPE = 'budget';
 const EXECUTION_STATUS_FIELD_LABEL = '执行状态';
 const ADOPTED_FIELD_LABEL = '是否采纳';
@@ -144,12 +148,23 @@ let latestSkillPromptCache: {
   value: string;
 } | null = null;
 
+function isSupportedBitableFeedbackSourceType(sourceType: BitableExportSourceType): boolean {
+  return ACTIVE_FEEDBACK_SOURCE_TYPES.includes(sourceType as (typeof ACTIVE_FEEDBACK_SOURCE_TYPES)[number]);
+}
+
 function bitableSourceIOLockName(sourceType: BitableExportSourceType): string {
   return `${BITABLE_IO_LOCK_PREFIX}:${sourceType}`;
 }
 
 function bitableFeedbackBackfillLockName(sourceType: BitableExportSourceType): string {
   return `${BITABLE_BACKFILL_LOCK_PREFIX}:${sourceType}`;
+}
+
+async function getLatestBudgetFeedbackSkillVersion(): Promise<FeedbackSkillVersionRecord | null> {
+  return (
+    (await getLatestFeedbackSkillVersion(BUDGET_SCOPE, BUDGET_FEEDBACK_SOURCE_TYPE)) ??
+    (await getLatestFeedbackSkillVersion(BUDGET_SCOPE, LEGACY_SOURCE_TYPE))
+  );
 }
 
 export async function withBitableSourceIOLock<T>(
@@ -496,10 +511,17 @@ async function queryBudgetFeedbackDatasetRows(filter: BudgetFeedbackQueryFilter 
         AND ks.platform = br.platform
         AND ks.keyword = br.keyword
         AND ks.match_type = br.match_type
-       LEFT JOIN recommendation_execution_feedbacks ref
-         ON ref.source_type = '${SOURCE_TYPE}'
-        AND ref.recommendation_type = 'budget'
-        AND ref.recommendation_id = br.id
+       LEFT JOIN LATERAL (
+         SELECT ref.*
+           FROM recommendation_execution_feedbacks ref
+          WHERE ref.source_type IN ('${BUDGET_FEEDBACK_SOURCE_TYPE}', '${LEGACY_SOURCE_TYPE}')
+            AND ref.recommendation_type = 'budget'
+            AND ref.recommendation_id = br.id
+          ORDER BY CASE WHEN ref.source_type = '${BUDGET_FEEDBACK_SOURCE_TYPE}' THEN 0 ELSE 1 END,
+                   ref.updated_at DESC,
+                   ref.id DESC
+          LIMIT 1
+       ) ref ON TRUE
        ${where}
       ORDER BY br.date DESC, br.updated_at DESC, br.id DESC`,
     values
@@ -556,7 +578,7 @@ function buildBudgetFeedbackDatasetEntry(row: BudgetFeedbackDatasetRow): Record<
       bitable_last_modified_time: row.bitable_last_modified_time
     },
     meta: {
-      source_type: SOURCE_TYPE
+      source_type: BUDGET_FEEDBACK_SOURCE_TYPE
     }
   };
 }
@@ -747,7 +769,7 @@ function buildFallbackSkillMarkdown(
     '# 预算反馈经验',
     '',
     '## 适用范围',
-    `- 来源：${SOURCE_TYPE}`,
+    `- 来源：${BUDGET_FEEDBACK_SOURCE_TYPE}`,
     `- 数据时间：${fromDate || '未知'} 到 ${toDate || '未知'}`,
     `- 数据规模：总样本 ${totalRows}，已回读反馈 ${reviewedRows}，成功 ${successRows}，风险 ${riskRows}`,
     '',
@@ -883,7 +905,7 @@ async function refreshBudgetFeedbackSkills(
   });
   const saved = await insertFeedbackSkillVersion({
     scope: BUDGET_SCOPE,
-    source_type: SOURCE_TYPE,
+    source_type: BUDGET_FEEDBACK_SOURCE_TYPE,
     from_date: fromDate,
     to_date: toDate,
     dataset_row_count: reviewedRows.length,
@@ -898,7 +920,7 @@ async function refreshBudgetFeedbackSkills(
     created_at: saved.created_at
   });
   latestSkillPromptCache = {
-    key: `${BUDGET_SCOPE}:${SOURCE_TYPE}`,
+    key: `${BUDGET_SCOPE}:${BUDGET_FEEDBACK_SOURCE_TYPE}`,
     expiresAt: Date.now() + SKILL_PROMPT_CACHE_TTL_MS,
     value: String(saved.skills_markdown || '').trim()
   };
@@ -933,7 +955,7 @@ export async function runBitableFeedbackSync(
   logger?: LoggerLike,
   logSource = 'system.bitable_feedback_sync'
 ): Promise<BitableFeedbackSyncResult> {
-  if (sourceType !== SOURCE_TYPE) {
+  if (!isSupportedBitableFeedbackSourceType(sourceType)) {
     throw new Error('unsupported_bitable_source_type');
   }
   await ensureRecommendationFeedbackStorage();
@@ -1110,10 +1132,14 @@ export async function runBitableFeedbackSync(
     );
 
     let latestSkill: FeedbackSkillVersionRecord | null = null;
-    if (readPhase.feedback_changed && readPhase.upsert_rows.some((row) => row.recommendation_type === 'budget')) {
+    if (
+      sourceType === BUDGET_FEEDBACK_SOURCE_TYPE &&
+      readPhase.feedback_changed &&
+      readPhase.upsert_rows.some((row) => row.recommendation_type === 'budget')
+    ) {
       latestSkill = await refreshBudgetFeedbackSkills(logger);
-    } else {
-      latestSkill = await getLatestFeedbackSkillVersion(BUDGET_SCOPE, SOURCE_TYPE);
+    } else if (sourceType === BUDGET_FEEDBACK_SOURCE_TYPE) {
+      latestSkill = await getLatestBudgetFeedbackSkillVersion();
     }
 
     const result = {
@@ -1170,10 +1196,11 @@ export async function runBitableFeedbackSync(
 export async function getBitableFeedbackSyncSnapshot(
   sourceType: BitableExportSourceType
 ): Promise<BitableFeedbackSyncSnapshot> {
-  const [log, latestSkill] = await Promise.all([
-    getLatestOperationLog({ action: 'bitable_feedback_sync', targetKey: sourceType }),
-    getLatestFeedbackSkillVersion(BUDGET_SCOPE, sourceType)
-  ]);
+  const log = await getLatestOperationLog({ action: 'bitable_feedback_sync', targetKey: sourceType });
+  const latestSkill =
+    sourceType === BUDGET_FEEDBACK_SOURCE_TYPE
+      ? await getLatestBudgetFeedbackSkillVersion()
+      : null;
   const detail = (log?.detail_json || {}) as Record<string, unknown>;
   return {
     last_status: String(log?.status || 'idle'),
@@ -1185,19 +1212,19 @@ export async function getBitableFeedbackSyncSnapshot(
 }
 
 export async function getLatestBudgetFeedbackSkill(): Promise<FeedbackSkillVersionRecord | null> {
-  return getLatestFeedbackSkillVersion(BUDGET_SCOPE, SOURCE_TYPE);
+  return getLatestBudgetFeedbackSkillVersion();
 }
 
 export async function loadLatestFeedbackSkillPrompt(scope: string): Promise<string> {
   if (scope !== BUDGET_SCOPE) {
     return '';
   }
-  const cacheKey = `${scope}:${SOURCE_TYPE}`;
+  const cacheKey = `${scope}:${BUDGET_FEEDBACK_SOURCE_TYPE}`;
   const now = Date.now();
   if (latestSkillPromptCache && latestSkillPromptCache.key === cacheKey && latestSkillPromptCache.expiresAt > now) {
     return latestSkillPromptCache.value;
   }
-  const latest = await getLatestFeedbackSkillVersion(scope, SOURCE_TYPE);
+  const latest = await getLatestBudgetFeedbackSkillVersion();
   const value = String(latest?.skills_markdown || '').trim();
   latestSkillPromptCache = {
     key: cacheKey,

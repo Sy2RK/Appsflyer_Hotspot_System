@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { Router } from 'express';
 import {
+  activeBitableExportSourceTypes,
   getBitableExportConfigsSnapshot,
   runBitableExport,
   resolveManualBitableExportHttpResult,
@@ -13,7 +14,7 @@ import { logger } from '../../common/logger/logger.js';
 import type { BitableExportSourceType } from '@shared/types/models.js';
 
 const router = Router();
-const SOURCE_TYPES = new Set<BitableExportSourceType>(['delivery_actions']);
+const SOURCE_TYPES = new Set<BitableExportSourceType>(activeBitableExportSourceTypes());
 const MANUAL_BITABLE_EXPORT_RUN_LOCK = 'api:bitable_export:run';
 const MANUAL_BITABLE_EXPORT_RUN_LOCK_TTL_MS = 30 * 60 * 1000;
 const MANUAL_BITABLE_FEEDBACK_SYNC_LOCK = 'api:bitable_feedback_sync:run';

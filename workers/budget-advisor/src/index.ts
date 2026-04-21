@@ -109,6 +109,27 @@ async function tick(reportDate: string, runMarker: string): Promise<boolean> {
       skipped_count: result.skipped_count,
       duration_ms: result.duration_ms
     });
+    const hasAppFailures = result.failed_count > 0;
+    const appFailureSummary = `预算建议生成未完全成功 ${reportDate}，失败应用 ${result.failed_count} 个，成功应用 ${result.success_count} 个`;
+    if (hasAppFailures) {
+      await failScheduledWorkerRun(BUDGET_ADVISOR_WORKER_NAME, runMarker, appFailureSummary);
+      await writeOperationLog(
+        {
+          source: 'worker.budget_advisor',
+          action: 'scheduled_budget_cycle',
+          target_type: 'budget_cycle',
+          target_key: reportDate,
+          status: 'failed',
+          summary: appFailureSummary,
+          detail_json: {
+            report_date: reportDate,
+            ...result
+          }
+        },
+        logger
+      );
+      return false;
+    }
     await completeScheduledWorkerRun(BUDGET_ADVISOR_WORKER_NAME, runMarker);
     await writeOperationLog(
       {

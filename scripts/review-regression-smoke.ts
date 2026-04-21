@@ -71,8 +71,8 @@ import type { ScheduledWorkerRunRecord } from '../packages/shared/utils/reposito
 
 function buildBitableResult(overrides: Partial<BitableExportRunResult>): BitableExportRunResult {
   return {
-    source_type: 'delivery_actions',
-    label: '投放执行表',
+    source_type: 'delivery_actions_non_asa',
+    label: '非 ASA 执行表',
     report_date: '2026-03-26',
     table_id: 'tbl_demo',
     table_name: '投放执行表_2026-03-26',
@@ -97,7 +97,7 @@ function buildBitableResult(overrides: Partial<BitableExportRunResult>): Bitable
 function buildExistingFeedback(): RecommendationExecutionFeedbackRecord {
   return {
     id: 1,
-    source_type: 'delivery_actions',
+    source_type: 'delivery_actions_non_asa',
     recommendation_type: 'budget',
     recommendation_id: 101,
     report_date: '2026-03-26',
@@ -2680,12 +2680,12 @@ async function main(): Promise<void> {
   assert.match(uiAppScript, /function resolveAsaTrendCppStatus\(source = \{\}\)/);
   assert.match(uiAppScript, /const trendMetric = buildAsaTrendMetricDisplaySource\(item\);[\s\S]*trendMetric\.d7Roas/);
   assert.match(uiAppScript, /投放项名称（飞书主字段）[\s\S]*七天后数据（系统自动回填）/);
-  assert.match(uiAppScript, /按日期创建或复用当天的「投放执行表」[\s\S]*历史日期自动留档/);
+  assert.match(uiAppScript, /关键词（飞书主字段）[\s\S]*广告系列[\s\S]*广告组[\s\S]*七天后数据（系统自动回填）/);
+  assert.match(uiAppScript, /「非 ASA 执行表」与「ASA 关键词执行表」[\s\S]*历史日期自动留档/);
   assert.doesNotMatch(uiAppScript, /创建或复用一张固定的「投放执行表」/);
 
   const uiIndexHtml = readFileSync('apps/api/src/modules/ui/public/index.html', 'utf8');
-  assert.match(uiIndexHtml, /投放项名称.*飞书主字段.*七天后数据.*系统自动回填/);
-  assert.match(uiIndexHtml, /按日期创建或复用当天的「投放执行表」.*历史日期自动留档/);
+  assert.match(uiIndexHtml, /「非 ASA 执行表」与「ASA 关键词执行表」.*历史日期自动留档/);
   assert.doesNotMatch(uiIndexHtml, /创建或复用一张固定的「投放执行表」/);
 
   const bitableExportScript = readFileSync('packages/shared/utils/bitableExport.ts', 'utf8');
@@ -2700,8 +2700,15 @@ async function main(): Promise<void> {
   );
   assert.match(
     bitableExportScript,
+    /\{ key: 'item_name', label: KEYWORD_FIELD_LABEL, value_type: 'text', default_selected: true \}/
+  );
+  assert.match(
+    bitableExportScript,
     /\{ key: 'display_product_name', label: '产品名', value_type: 'text', default_selected: true \}/
   );
+  assert.match(bitableExportScript, /const ACTIVE_SOURCE_TYPES = \[NON_ASA_SOURCE_TYPE, ASA_SOURCE_TYPE\] as const;/);
+  assert.match(bitableExportScript, /label: '非 ASA 执行表'/);
+  assert.match(bitableExportScript, /label: 'ASA 关键词执行表'/);
   assert.match(bitableExportScript, /function formatBudgetItemDisplayName\(row: Record<string, unknown>\): string/);
   assert.match(bitableExportScript, /function formatAsaItemDisplayName\(row: Record<string, unknown>\): string/);
   assert.match(bitableExportScript, /await ensureAsaKeywordRoasSchema\(\);\s*const result = await pgQuery<Record<string, unknown>>\(\s*`SELECT[\s\S]*FROM asa_keyword_recommendations ar/);
@@ -2715,11 +2722,11 @@ async function main(): Promise<void> {
   );
   assert.match(
     bitableExportScript,
-    /const fieldSync = await ensureTableFields\(\s*appToken,\s*table\.table_id,\s*selectedFields,\s*\{\s*cleanupExtraFields: compactSchema,\s*allowDestructiveFieldRebuild: existingTableRecordIds\.length === 0\s*\}/
+    /const fieldSync = await ensureTableFields\(\s*appToken,\s*sourceType,\s*table\.table_id,\s*selectedFields,\s*\{\s*cleanupExtraFields: compactSchema,\s*allowDestructiveFieldRebuild: existingTableRecordIds\.length === 0\s*\}/
   );
   assert.match(
     bitableExportScript,
-    /if \(compactSchema && existingTableRecordIds\.length === 0\) \{\s*await reorderActionFields\(appToken, table\.table_id, selectedFields, logger\);\s*\}/
+    /if \(compactSchema && existingTableRecordIds\.length === 0\) \{\s*await reorderActionFields\(appToken,\s*sourceType,\s*table\.table_id,\s*selectedFields,\s*logger\);\s*\}/
   );
   assert.doesNotMatch(bitableExportScript, /\{ key: 'platform', label: '平台', value_type: 'text', default_selected: true \}/);
   assert.doesNotMatch(
@@ -2732,10 +2739,43 @@ async function main(): Promise<void> {
   assert.match(asaKeywordsScript, /af_cohort_roas: kpi === 'roas' \? normalizeAfCohortRoasRate/);
   assert.match(asaKeywordsScript, /if\(covered_roas_cost_sum > 0, covered_revenue_d7_sum \/ covered_roas_cost_sum, 0\) AS d7_roas/);
   assert.match(asaKeywordsScript, /return eligibleRows\.reduce\(\(sum, row\) => sum \+ Number\(row\.revenue_d7 \|\| 0\), 0\) \/ totalCost;/);
+  assert.match(asaKeywordsScript, /【产品概览】/);
+  assert.match(asaKeywordsScript, /仅覆盖已配置 iOS 端的产品/);
+  assert.match(asaKeywordsScript, /成熟窗口 D7 ROAS/);
+  assert.match(asaKeywordsScript, /ASA 专属多维表格/);
+  assert.match(asaKeywordsScript, /AF 官方成熟窗口 D7 ROAS 缺失，当前不展示回退值/);
+  assert.match(asaKeywordsScript, /内部成熟回收 D7 ROAS .*仅用于保守判断/);
+  assert.match(asaKeywordsScript, /product_overview_rows:/);
+  assert.match(asaKeywordsScript, /throw new Error\('asa_brief_ios_only'\)/);
+  assert.doesNotMatch(asaKeywordsScript, /【关键词概览】/);
+  assert.doesNotMatch(asaKeywordsScript, /🛠️ \*\*建议操作\*\*/);
+
+  const appsRoutesScript = readFileSync('apps/api/src/modules/apps.routes.ts', 'utf8');
+  assert.match(appsRoutesScript, /Android 未配置 Pull App ID，Android 结果不会进入系统/);
+  assert.match(appsRoutesScript, /platform_status:/);
+
+  const asaKeywordRoutesScript = readFileSync('apps/api/src/modules/asaKeywords/asaKeywords.routes.ts', 'utf8');
+  assert.match(asaKeywordRoutesScript, /asa_brief_ios_only/);
+
+  const uiIndexScript = readFileSync('apps/api/src/modules/ui/public/index.html', 'utf8');
+  assert.match(uiIndexScript, /全部 iOS 产品/);
+  assert.match(
+    uiIndexScript,
+    /<select id="asaBriefPlatformSelect" name="platform">\s*<option value="">全部 iOS 产品<\/option>\s*<option value="ios">iOS<\/option>\s*<\/select>/
+  );
 
   const dailyBriefScript = readFileSync('packages/shared/utils/dailyBrief.ts', 'utf8');
   assert.match(dailyBriefScript, /function formatRoasPercent\(value: number \| null \| undefined\): string/);
   assert.match(dailyBriefScript, /成熟窗口 ROAS \$\{formatRoasPercent\(row\.current_roas\)\} ｜ 目标 \$\{formatRoasPercent\(row\.target_roas\)\}/);
+  assert.match(dailyBriefScript, /【异常提醒】/);
+  assert.match(dailyBriefScript, /【重点关注产品】/);
+  assert.match(dailyBriefScript, /anomaly_reminder:/);
+  assert.match(dailyBriefScript, /focus_products:/);
+  assert.match(dailyBriefScript, /非 ASA \/ ASA 专属多维表格/);
+  assert.doesNotMatch(dailyBriefScript, /【核心概览】/);
+  assert.doesNotMatch(dailyBriefScript, /【今日判断】/);
+  assert.doesNotMatch(dailyBriefScript, /【预算动作/);
+  assert.doesNotMatch(dailyBriefScript, /【建议操作】/);
 
   const roasSummaryToolScript = readFileSync('packages/shared/utils/roasSummaryTool.ts', 'utf8');
   assert.match(roasSummaryToolScript, /return value != null && Number\.isFinite\(value\) \? `\$\{\(Math\.max\(0, value\) \* 100\)\.toFixed\(2\)\}%` : '—';/);
@@ -2939,6 +2979,34 @@ async function main(): Promise<void> {
       message: '未找到对应应用，请先检查应用是否已在应用设置里创建。'
     });
   });
+
+  const budgetWorkerScript = readFileSync('workers/budget-advisor/src/index.ts', 'utf8');
+  assert.match(budgetWorkerScript, /const hasAppFailures = result\.failed_count > 0;/);
+  assert.match(budgetWorkerScript, /await failScheduledWorkerRun\(BUDGET_ADVISOR_WORKER_NAME, runMarker, appFailureSummary\);/);
+
+  const budgetAdvisorScript = readFileSync('packages/shared/utils/budgetAdvisor.ts', 'utf8');
+  assert.match(budgetAdvisorScript, /expireStalePendingBudgetRecommendationsForDate/);
+  assert.match(budgetAdvisorScript, /const preparedRecommendations: UpsertBudgetRecommendationInput\[\] = \[\];/);
+  assert.doesNotMatch(budgetAdvisorScript, /await expirePendingBudgetRecommendationsForDate\(app\.app_key, date\);/);
+
+  const repositoriesScript = readFileSync('packages/shared/utils/repositories.ts', 'utf8');
+  assert.match(repositoriesScript, /export async function expireStalePendingBudgetRecommendationsForDate/);
+  assert.match(repositoriesScript, /ref\.source_type IN \('delivery_actions_non_asa', 'delivery_actions'\)/);
+  assert.match(repositoriesScript, /roas_covered_cost DOUBLE PRECISION NOT NULL DEFAULT 0/);
+
+  assert.match(bitableExportScript, /function legacyFeedbackFallbackSourceType/);
+  assert.match(bitableExportScript, /listRecommendationExecutionFeedbacksByRecommendations\(fallbackSourceType, keys\)/);
+
+  const recommendationFeedbackScript = readFileSync('packages/shared/utils/recommendationFeedback.ts', 'utf8');
+  assert.match(recommendationFeedbackScript, /const LEGACY_SOURCE_TYPE: BitableExportSourceType = 'delivery_actions';/);
+  assert.match(recommendationFeedbackScript, /getLatestBudgetFeedbackSkillVersion/);
+  assert.match(recommendationFeedbackScript, /ref\.source_type IN \('\$\{BUDGET_FEEDBACK_SOURCE_TYPE\}', '\$\{LEGACY_SOURCE_TYPE\}'\)/);
+
+  assert.match(asaKeywordsScript, /return Boolean\(String\(app\?\.ios_pull_app_id \|\| ''\)\.trim\(\)\);/);
+  assert.doesNotMatch(asaKeywordsScript, /app\.pull_app_id\)\s*\{/);
+  assert.match(asaKeywordsScript, /roas_covered_cost: coveredRoasCost/);
+  assert.match(asaKeywordsScript, /current\.roas_covered_cost \+= Number\(row\.roas_covered_cost \|\| 0\);/);
+  assert.match(asaKeywordsScript, /queryAllAsaKeywordDashboardRowsForBrief/);
 
   console.log('review_regression_smoke_passed');
 }

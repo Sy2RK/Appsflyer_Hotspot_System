@@ -4,6 +4,9 @@ x-default-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+x-host-gateway-extra-hosts: &host-gateway-extra-hosts
+  - 'host.docker.internal:host-gateway'
+
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
@@ -75,6 +78,7 @@ services:
     dns:
       - 1.1.1.1
       - 8.8.8.8
+    extra_hosts: *host-gateway-extra-hosts
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -153,6 +157,7 @@ services:
     dns:
       - 1.1.1.1
       - 8.8.8.8
+    extra_hosts: *host-gateway-extra-hosts
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -180,6 +185,7 @@ services:
     dns:
       - 1.1.1.1
       - 8.8.8.8
+    extra_hosts: *host-gateway-extra-hosts
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -205,6 +211,7 @@ services:
       KEYWORD_ENGINE_INTERVAL_MS: ${KEYWORD_ENGINE_INTERVAL_MS:-86400000}
       KEYWORD_ENGINE_INITIAL_BACKFILL_DAYS: ${KEYWORD_ENGINE_INITIAL_BACKFILL_DAYS:-30}
       KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS: ${KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS:-3}
+    extra_hosts: *host-gateway-extra-hosts
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -232,6 +239,7 @@ services:
     dns:
       - 1.1.1.1
       - 8.8.8.8
+    extra_hosts: *host-gateway-extra-hosts
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -261,6 +269,7 @@ services:
     dns:
       - 1.1.1.1
       - 8.8.8.8
+    extra_hosts: *host-gateway-extra-hosts
     depends_on:
       clickhouse:
         condition: service_healthy

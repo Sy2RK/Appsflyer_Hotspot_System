@@ -255,6 +255,40 @@ let ensureScheduledWorkerRunsSchemaPromise: Promise<void> | null = null;
 let ensureRecommendationPolicyConfigsSchemaPromise: Promise<void> | null = null;
 let ensureBudgetRecommendationsSchemaPromise: Promise<void> | null = null;
 let ensureAsaKeywordRoasSchemaPromise: Promise<void> | null = null;
+const BITABLE_SOURCE_TYPE_VALUES = ['pull_daily', 'asa_raw', 'delivery_actions', 'delivery_actions_non_asa', 'delivery_actions_asa'] as const;
+
+async function ensureSourceTypeCheckConstraint(tableName: string, constraintName: string): Promise<void> {
+  const allowedValuesSql = BITABLE_SOURCE_TYPE_VALUES.map((value) => `'${value}'`).join(', ');
+  await pgQuery(
+    `DO $$
+     DECLARE
+       existing_constraint text;
+     BEGIN
+       FOR existing_constraint IN
+         SELECT con.conname
+           FROM pg_constraint con
+           JOIN pg_class rel ON rel.oid = con.conrelid
+           JOIN pg_attribute attr
+             ON attr.attrelid = rel.oid
+            AND attr.attnum = ANY (con.conkey)
+          WHERE rel.relname = '${tableName}'
+            AND con.contype = 'c'
+            AND attr.attname = 'source_type'
+       LOOP
+         EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', '${tableName}', existing_constraint);
+       END LOOP;
+       EXECUTE format(
+         $fmt$ALTER TABLE %I ADD CONSTRAINT %I CHECK (source_type IN (${allowedValuesSql})) NOT VALID$fmt$,
+         '${tableName}',
+         '${constraintName}'
+       );
+       EXECUTE format('ALTER TABLE %I VALIDATE CONSTRAINT %I', '${tableName}', '${constraintName}');
+     EXCEPTION
+       WHEN duplicate_object THEN
+         EXECUTE format('ALTER TABLE %I VALIDATE CONSTRAINT %I', '${tableName}', '${constraintName}');
+     END $$;`
+  );
+}
 
 async function ensurePullReportReadinessSchema(): Promise<void> {
   if (!ensurePullReportReadinessSchemaPromise) {
@@ -357,6 +391,14 @@ export async function ensureAsaKeywordRoasSchema(): Promise<void> {
       await pgQuery(
         `ALTER TABLE asa_keyword_states
             ADD COLUMN IF NOT EXISTS roas_coverage_ratio DOUBLE PRECISION NOT NULL DEFAULT 0`
+      );
+      await pgQuery(
+        `ALTER TABLE asa_keyword_states
+            ADD COLUMN IF NOT EXISTS roas_covered_cost DOUBLE PRECISION NOT NULL DEFAULT 0`
+      );
+      await pgQuery(
+        `ALTER TABLE asa_keyword_states
+            ADD COLUMN IF NOT EXISTS roas_missing_cost DOUBLE PRECISION NOT NULL DEFAULT 0`
       );
       await pgQuery(
         `ALTER TABLE asa_keyword_states
@@ -502,6 +544,7 @@ async function ensureBitableExportConfigSchema(): Promise<void> {
         `ALTER TABLE bitable_export_configs
            ADD COLUMN IF NOT EXISTS table_name_prefix TEXT NOT NULL DEFAULT '投放执行表'`
       );
+      await ensureSourceTypeCheckConstraint('bitable_export_configs', 'bitable_export_configs_source_type_check');
       await pgQuery(
         `CREATE INDEX IF NOT EXISTS idx_bitable_export_configs_lookup
           ON bitable_export_configs (enabled, source_type, updated_at DESC)`
@@ -532,6 +575,7 @@ async function ensureBitableExportDailyTablesSchema(): Promise<void> {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE (source_type, report_date)
       )`);
+      await ensureSourceTypeCheckConstraint('bitable_export_daily_tables', 'bitable_export_daily_tables_source_type_check');
       await pgQuery(
         `CREATE INDEX IF NOT EXISTS idx_bitable_export_daily_tables_lookup
           ON bitable_export_daily_tables (source_type, report_date DESC, updated_at DESC)`
@@ -549,6 +593,7 @@ async function ensureBitableExportDailyTablesSchema(): Promise<void> {
 async function ensureBitableExportRecordRefsSchema(): Promise<void> {
   if (!ensureBitableExportRecordRefsSchemaPromise) {
     ensureBitableExportRecordRefsSchemaPromise = Promise.all([
+      ensureSourceTypeCheckConstraint('bitable_export_record_refs', 'bitable_export_record_refs_source_type_check'),
       pgQuery(
         `ALTER TABLE bitable_export_record_refs
            ADD COLUMN IF NOT EXISTS is_adopted BOOLEAN NOT NULL DEFAULT FALSE`
@@ -593,6 +638,10 @@ async function ensureRecommendationExecutionFeedbacksSchema(): Promise<void> {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE (source_type, recommendation_type, recommendation_id)
       )`);
+      await ensureSourceTypeCheckConstraint(
+        'recommendation_execution_feedbacks',
+        'recommendation_execution_feedbacks_source_type_check'
+      );
       await pgQuery(
         `CREATE INDEX IF NOT EXISTS idx_recommendation_execution_feedbacks_lookup
           ON recommendation_execution_feedbacks (source_type, recommendation_type, report_date DESC, synced_at DESC)`
@@ -623,6 +672,7 @@ async function ensureFeedbackSkillVersionsSchema(): Promise<void> {
         prompt_hash TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )`);
+      await ensureSourceTypeCheckConstraint('feedback_skill_versions', 'feedback_skill_versions_source_type_check');
       await pgQuery(
         `CREATE INDEX IF NOT EXISTS idx_feedback_skill_versions_lookup
           ON feedback_skill_versions (scope, source_type, created_at DESC)`
@@ -1604,10 +1654,17 @@ export async function queryBudgetRecommendations(
     );
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  const feedbackJoin = `LEFT JOIN recommendation_execution_feedbacks ref
-       ON ref.source_type = 'delivery_actions'
-      AND ref.recommendation_type = 'budget'
-      AND ref.recommendation_id = br.id`;
+  const feedbackJoin = `LEFT JOIN LATERAL (
+      SELECT ref.*
+        FROM recommendation_execution_feedbacks ref
+       WHERE ref.source_type IN ('delivery_actions_non_asa', 'delivery_actions')
+         AND ref.recommendation_type = 'budget'
+         AND ref.recommendation_id = br.id
+       ORDER BY CASE WHEN ref.source_type = 'delivery_actions_non_asa' THEN 0 ELSE 1 END,
+                ref.updated_at DESC,
+                ref.id DESC
+       LIMIT 1
+    ) ref ON TRUE`;
 
   const countResult = await pgQuery<{ total: string }>(
     `SELECT to_char(count(*), 'FM999999999999999') AS total
@@ -1672,6 +1729,7 @@ export async function setBudgetRecommendationStatus(
 }
 
 export async function expirePendingBudgetRecommendationsForDate(appKey: string, date: string): Promise<void> {
+  await ensureBudgetRecommendationsSchema();
   await pgQuery(
     `UPDATE budget_recommendations
         SET status = 'expired',
@@ -1680,6 +1738,69 @@ export async function expirePendingBudgetRecommendationsForDate(appKey: string, 
         AND date = $2::date
         AND status = 'pending'`,
     [appKey, date]
+  );
+}
+
+export interface BudgetRecommendationIdentity {
+  platform: string;
+  media_source: string;
+  keyword: string;
+  match_type: string;
+}
+
+export async function expireStalePendingBudgetRecommendationsForDate(
+  appKey: string,
+  date: string,
+  activeIdentities: BudgetRecommendationIdentity[]
+): Promise<void> {
+  await ensureBudgetRecommendationsSchema();
+  const normalized = Array.from(
+    new Map(
+      activeIdentities
+        .map((item) => ({
+          platform: String(item.platform || '').trim(),
+          media_source: String(item.media_source || '').trim(),
+          keyword: String(item.keyword || '').trim(),
+          match_type: String(item.match_type || '').trim()
+        }))
+        .filter((item) => item.platform && item.media_source && item.keyword && item.match_type)
+        .map((item) => [[item.platform, item.media_source, item.keyword, item.match_type].join('\u0000'), item])
+    ).values()
+  );
+
+  if (normalized.length === 0) {
+    await expirePendingBudgetRecommendationsForDate(appKey, date);
+    return;
+  }
+
+  const values: unknown[] = [appKey, date];
+  const activeRowsSql = normalized
+    .map((item) => {
+      values.push(item.platform, item.media_source, item.keyword, item.match_type);
+      const offset = values.length - 3;
+      return `($${offset}, $${offset + 1}, $${offset + 2}, $${offset + 3})`;
+    })
+    .join(', ');
+
+  await pgQuery(
+    `WITH active(platform, media_source, keyword, match_type) AS (
+       VALUES ${activeRowsSql}
+     )
+     UPDATE budget_recommendations br
+        SET status = 'expired',
+            updated_at = NOW()
+      WHERE br.app_key = $1
+        AND br.date = $2::date
+        AND br.status = 'pending'
+        AND NOT EXISTS (
+          SELECT 1
+            FROM active a
+           WHERE a.platform = br.platform
+             AND a.media_source = br.media_source
+             AND a.keyword = br.keyword
+             AND a.match_type = br.match_type
+        )`,
+    values
   );
 }
 
@@ -2648,7 +2769,7 @@ export async function queryAsaKeywordStates(filter: AsaKeywordStateFilter): Prom
   const rowsResult = await pgQuery<AsaKeywordStateRow>(
     `SELECT id, app_key, platform, keyword, campaign, adset, current_stage, stage_score, first_seen_date, last_seen_date,
             current_ecpi, current_cpp, current_d7_roas, af_cohort_roas, local_derived_roas, roas_primary_source, roas_warning_code, roas_deviation_ratio,
-            roas_window_from, roas_window_to, roas_data_status, roas_coverage_ratio, target_ecpi, target_cpp, target_d7_roas,
+            roas_window_from, roas_window_to, roas_data_status, roas_coverage_ratio, roas_covered_cost, roas_missing_cost, target_ecpi, target_cpp, target_d7_roas,
             installs_7d, total_cost_7d, purchase_count_7d, revenue_d7_7d, trend_json, created_at, updated_at
        FROM asa_keyword_states
        ${where}
@@ -2683,6 +2804,8 @@ export async function upsertAsaKeywordState(input: {
   roas_window_to?: string | null;
   roas_data_status?: RoasDataStatus;
   roas_coverage_ratio?: number;
+  roas_covered_cost?: number;
+  roas_missing_cost?: number;
   target_ecpi: number;
   target_cpp: number;
   target_d7_roas: number;
@@ -2696,10 +2819,10 @@ export async function upsertAsaKeywordState(input: {
   const result = await pgQuery<AsaKeywordStateRow>(
     `INSERT INTO asa_keyword_states (
       app_key, platform, keyword, campaign, adset, current_stage, stage_score, first_seen_date, last_seen_date,
-      current_ecpi, current_cpp, current_d7_roas, af_cohort_roas, local_derived_roas, roas_primary_source, roas_warning_code, roas_deviation_ratio, roas_window_from, roas_window_to, roas_data_status, roas_coverage_ratio, target_ecpi, target_cpp, target_d7_roas,
+      current_ecpi, current_cpp, current_d7_roas, af_cohort_roas, local_derived_roas, roas_primary_source, roas_warning_code, roas_deviation_ratio, roas_window_from, roas_window_to, roas_data_status, roas_coverage_ratio, roas_covered_cost, roas_missing_cost, target_ecpi, target_cpp, target_d7_roas,
       installs_7d, total_cost_7d, purchase_count_7d, revenue_d7_7d, trend_json
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8::date, $9::date, $10, $11, $12, $13, $14, $15, $16, $17, $18::date, $19::date, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
+      $1, $2, $3, $4, $5, $6, $7, $8::date, $9::date, $10, $11, $12, $13, $14, $15, $16, $17, $18::date, $19::date, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
     )
     ON CONFLICT (app_key, platform, keyword, campaign, adset) DO UPDATE SET
       current_stage = EXCLUDED.current_stage,
@@ -2718,6 +2841,8 @@ export async function upsertAsaKeywordState(input: {
       roas_window_to = EXCLUDED.roas_window_to,
       roas_data_status = EXCLUDED.roas_data_status,
       roas_coverage_ratio = EXCLUDED.roas_coverage_ratio,
+      roas_covered_cost = EXCLUDED.roas_covered_cost,
+      roas_missing_cost = EXCLUDED.roas_missing_cost,
       target_ecpi = EXCLUDED.target_ecpi,
       target_cpp = EXCLUDED.target_cpp,
       target_d7_roas = EXCLUDED.target_d7_roas,
@@ -2728,7 +2853,7 @@ export async function upsertAsaKeywordState(input: {
       trend_json = EXCLUDED.trend_json,
       updated_at = NOW()
     RETURNING id, app_key, platform, keyword, campaign, adset, current_stage, stage_score, first_seen_date, last_seen_date,
-              current_ecpi, current_cpp, current_d7_roas, af_cohort_roas, local_derived_roas, roas_primary_source, roas_warning_code, roas_deviation_ratio, roas_window_from, roas_window_to, roas_data_status, roas_coverage_ratio, target_ecpi, target_cpp, target_d7_roas,
+              current_ecpi, current_cpp, current_d7_roas, af_cohort_roas, local_derived_roas, roas_primary_source, roas_warning_code, roas_deviation_ratio, roas_window_from, roas_window_to, roas_data_status, roas_coverage_ratio, roas_covered_cost, roas_missing_cost, target_ecpi, target_cpp, target_d7_roas,
               installs_7d, total_cost_7d, purchase_count_7d, revenue_d7_7d, trend_json, created_at, updated_at`,
     [
       input.app_key,
@@ -2752,6 +2877,8 @@ export async function upsertAsaKeywordState(input: {
       input.roas_window_to ?? null,
       input.roas_data_status ?? 'unavailable',
       Number(input.roas_coverage_ratio || 0),
+      Number(input.roas_covered_cost || 0),
+      Number(input.roas_missing_cost || 0),
       input.target_ecpi,
       input.target_cpp,
       input.target_d7_roas,

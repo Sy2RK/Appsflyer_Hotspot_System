@@ -730,7 +730,7 @@ curl "http://localhost:3000/api/bitable-exports/configs"
 保存投放执行表配置：
 
 ```bash
-curl -X POST "http://localhost:3000/api/bitable-exports/configs/delivery_actions" \
+curl -X POST "http://localhost:3000/api/bitable-exports/configs/delivery_actions_non_asa" \
   -H "Content-Type: application/json" \
   -d '{
     "enabled": true,
@@ -743,17 +743,17 @@ curl -X POST "http://localhost:3000/api/bitable-exports/configs/delivery_actions
 ```bash
 curl -X POST "http://localhost:3000/api/bitable-exports/run" \
   -H "Content-Type: application/json" \
-  -d '{"sourceType":"delivery_actions","reportDate":"2026-03-17"}'
+  -d '{"sourceType":"delivery_actions_non_asa","reportDate":"2026-03-17"}'
 ```
 
 预期：
-- 系统在同一 Base 下创建 / 复用对应日期的执行表，例如 `投放执行表_2026-03-17`
-- 表内同时包含通用投放建议与 ASA 关键词建议
+- 系统在同一 Base 下分别创建 / 复用对应日期的 `投放执行表-非ASA_2026-03-17` 与 `投放执行表-ASA_2026-03-17`
+- 非 ASA 表承接通用投放建议，ASA 表承接关键词级建议
 - 不再出现 `raw_json`、`event_uid` 之类技术字段
 - 群里收到一条 Feishu 交互卡片，包含：
   - 报告日期
   - 总条数
-  - 通用投放 / ASA 关键词条数
+  - 非 ASA / ASA 关键词条数
   - 表链接
 
 定时任务：

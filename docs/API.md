@@ -204,6 +204,8 @@ Request:
 - `ios_pull_app_id`
 - `android_pull_app_id`
 - `pull_app_id`
+- `platform_status`
+- `integration_issues`
 - 通知通道配置摘要（是否存在 app 级 Feishu / Webhook）
 
 ### `POST /api/apps`
@@ -234,6 +236,7 @@ Request:
 - `ios_pull_app_id` / `android_pull_app_id` / `pull_app_id` 三者至少填一个。
 - `ios_pull_app_id` 与 `android_pull_app_id` 不允许相同。
 - `pull_app_id` 为兼容字段，建议优先配置 iOS/Android 分字段。
+- 若缺少 `android_pull_app_id`，Android 结果不会进入后续 pull / 每日简报 / 执行表链路。
 - `display_name` 仅用于展示；不填时默认使用 `app_key` 去掉 `-`（例如 `ai-screen-time-coach` -> `ai screen time coach`）。
 - `ios_display_name` / `android_display_name` 仅用于展示；未填时回退到 `display_name` 或 `app_key`。
 - 若不显式提交 `notify_feishu_app_secret`，后端不会覆盖已有 secret；留空默认回退 `.env` 全局 Feishu 配置。
@@ -780,8 +783,9 @@ Request:
 查询 Feishu 多维表格导出配置快照。
 
 返回：
-- `sources`: 当前固定只返回一种导出源配置
-  - `delivery_actions`
+- `sources`: 当前固定返回两种导出源配置
+  - `delivery_actions_non_asa`
+  - `delivery_actions_asa`
 
 每个 source 包含：
 - `label`
@@ -793,7 +797,8 @@ Request:
 - `target_table_hint`
 
 说明：
-- `delivery_actions` 会在同一 Base 下按 `reportDate` 创建 / 复用日期表，例如 `投放执行表_2026-03-27`
+- `delivery_actions_non_asa` 会在同一 Base 下按 `reportDate` 创建 / 复用日期表，例如 `投放执行表-非ASA_2026-03-27`
+- `delivery_actions_asa` 会在同一 Base 下按 `reportDate` 创建 / 复用日期表，例如 `投放执行表-ASA_2026-03-27`
 - 表内只保留可执行信息，不再导出 Pull 明细 / ASA Raw / `raw_json`
 - 第一版不开放 Base / Table ID 前端编辑
 
@@ -801,7 +806,7 @@ Request:
 保存投放执行表推送配置。
 
 Path 参数：
-- `sourceType`: `delivery_actions`
+- `sourceType`: `delivery_actions_non_asa` 或 `delivery_actions_asa`
 
 Request:
 ```json
@@ -816,7 +821,8 @@ Request:
 - `enabled=true` 且 `chatId` 非空时，才会被每日 `bitable_time` 定时任务纳入执行
 - `tableNamePrefix` 决定每日日期表名，最终格式为 `前缀_YYYY-MM-DD`
 - 字段列为系统固定输出，接口传入的 `selectedFields` 会被忽略
-- 当前固定字段顺序为：`投放项名称（飞书主字段）`、`产品名`、`主指标`、`当前表现`、`目标表现`、`量级参考`、`建议动作`、`建议理由`、`执行状态`、`是否采纳`、`人工批复`、`七天后数据`
+- `delivery_actions_non_asa` 固定字段顺序为：`投放项名称（飞书主字段）`、`产品名`、`主指标`、`当前表现`、`目标表现`、`量级参考`、`建议动作`、`建议理由`、`执行状态`、`是否采纳`、`人工批复`、`七天后数据`
+- `delivery_actions_asa` 固定字段顺序为：`关键词（飞书主字段）`、`广告系列`、`广告组`、`产品名`、`主指标`、`当前表现`、`目标表现`、`量级参考`、`建议动作`、`建议理由`、`执行状态`、`是否采纳`、`人工批复`、`七天后数据`
 - `七天后数据` 为系统自动回填字段，不要求人工填写
 - `bitable_time` 固定按全局 `push_time + 5 分钟` 计算
 - 自动定时导出除了依赖 Pull 完成，也会等待 `budget-advisor` 与 `asa-keywords` 针对该 `reportDate` 完成，避免导出中间态建议
@@ -827,7 +833,7 @@ Request:
 Request:
 ```json
 {
-  "sourceType": "delivery_actions",
+  "sourceType": "delivery_actions_non_asa",
   "reportDate": "2026-03-18"
 }
 ```
@@ -848,7 +854,7 @@ Request:
 Request:
 ```json
 {
-  "sourceType": "delivery_actions"
+  "sourceType": "delivery_actions_non_asa"
 }
 ```
 
@@ -867,12 +873,16 @@ Request:
 - 每次都只刷新对应 `reportDate` 的日期表，不会删除其他日期归档表
 - 历史日期表的人工反馈修改也会继续回读
 - 群通知使用与现有日报相同的 Feishu bot
-- `delivery_actions`：
-  - 仅导出当前仍待处理的建议项（`pending`）
-  - 通用投放部分来自 `budget_recommendations + keyword_lifecycle_states`
-  - ASA 部分来自 `asa_keyword_recommendations + asa_keyword_states`
+- `delivery_actions_non_asa`：
+  - 仅导出当前仍待处理的非 ASA 建议项（`pending`）
+  - 数据来自 `budget_recommendations + keyword_lifecycle_states`
   - 表内使用 `执行状态`（单选）+ `是否采纳`（复选框）+ `人工批复` 字段；同一天重导时会尽量保留已有填写结果
-  - 目标表会在同一 Base 下自动创建 / 复用 `投放执行表_YYYY-MM-DD`
+  - 目标表会在同一 Base 下自动创建 / 复用 `投放执行表-非ASA_YYYY-MM-DD`
+- `delivery_actions_asa`：
+  - 仅导出当前仍待处理的 ASA 关键词建议项（`pending`）
+  - 数据来自 `asa_keyword_recommendations + asa_keyword_states`
+  - 关键词 / 广告系列 / 广告组显式分列，承接执行状态、人工反馈与七天后数据
+  - 目标表会在同一 Base 下自动创建 / 复用 `投放执行表-ASA_YYYY-MM-DD`
 
 ### `GET /api/operation-logs?source=&status=&limit=`
 查询系统操作日志。

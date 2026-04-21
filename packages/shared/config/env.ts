@@ -77,6 +77,8 @@ export const env = {
   cohortEndpointTemplate:
     process.env.APPSFLYER_COHORT_ENDPOINT_TEMPLATE ??
     'https://hq1.appsflyer.com/api/cohorts/v1/data/app/{app_id}',
+  appsflyerEgressRelayUrl: process.env.APPSFLYER_EGRESS_RELAY_URL?.trim() ?? '',
+  appsflyerEgressRelayToken: process.env.APPSFLYER_EGRESS_RELAY_TOKEN ?? '',
 
   aggregatorLookbackHours: optionalNumber('AGGREGATOR_LOOKBACK_HOURS', 6),
   aggregatorIntervalMs: optionalNumber('AGGREGATOR_INTERVAL_MS', 5 * 60 * 1000),

@@ -1545,7 +1545,7 @@ function buildDailyBriefLoadedContext() {
   }
   const report = payload.report || payload || {};
   const summary = report.summary || {};
-  const actionCount = Array.isArray(report.action_items) ? report.action_items.length : 0;
+  const focusCount = Array.isArray(report.focus_products) ? report.focus_products.length : 0;
   return [
     createAIChatLoadedContext({
       kind: 'daily_brief_preview',
@@ -1554,8 +1554,8 @@ function buildDailyBriefLoadedContext() {
         `- 报告日期：${report.report_date || '-'}`,
         `- 产品覆盖：${summary.apps_with_data || 0}/${summary.app_count || 0}`,
         `- 安装：${toFixed2(summary.total_installs || 0)}；成本：$${toFixed2(summary.total_cost || 0)}`,
-        `- 待处理预算：${summary.pending_budget_actions || 0}；建议动作：${actionCount}`,
-        `- 今日判断：${compactAIChatSummary(report.today_judgment || '暂无判断', 140)}`
+        `- 待处理预算：${summary.pending_budget_actions || 0}；重点关注产品：${focusCount}`,
+        `- 异常提醒：${compactAIChatSummary(report.anomaly_reminder || report.today_judgment || '暂无提醒', 140)}`
       ].join('\n'),
       appliedFilters: {
         reportDate: String(report.report_date || '').trim(),
@@ -1574,7 +1574,7 @@ function buildAsaBriefLoadedContext() {
   }
   const report = payload.report || payload || {};
   const summary = report.summary || {};
-  const actionCount = Array.isArray(report.action_rows) ? report.action_rows.length : 0;
+  const productCount = Array.isArray(report.product_overview_rows) ? report.product_overview_rows.length : 0;
   return [
     createAIChatLoadedContext({
       kind: 'asa_brief_preview',
@@ -1583,8 +1583,8 @@ function buildAsaBriefLoadedContext() {
         `- 报告日期：${report.report_date || '-'}`,
         `- 当前阶段：${asaStageLabel(report.current_stage)}`,
         `- 关键词数：${summary.keyword_count || 0}；安装：${toFixed2(summary.installs || 0)}；成本：$${toFixed2(summary.total_cost || 0)}`,
-        `- 建议动作：${actionCount}`,
-        `- 今日判断：${compactAIChatSummary(report.today_judgment || '暂无判断', 140)}`
+        `- 产品概览：${productCount} 个产品`,
+        '- 详细关键词执行信息已下沉到 ASA 专属多维表格'
       ].join('\n'),
       appliedFilters: {
         reportDate: String(report.report_date || '').trim(),
@@ -2933,6 +2933,19 @@ function hasAppLevelFeishuConfig(app) {
   );
 }
 
+function appPlatformCoverageLabel(app) {
+  const iosReady = Boolean(app?.platform_status?.ios_ready || app?.ios_pull_app_id);
+  const androidReady = Boolean(app?.platform_status?.android_ready || app?.android_pull_app_id);
+  return `iOS ${iosReady ? '已接入' : '未接入'} / Android ${androidReady ? '已接入' : '未接入'}`;
+}
+
+function appIntegrationIssuesLabel(app) {
+  const issues = Array.isArray(app?.integration_issues)
+    ? app.integration_issues.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  return issues.length > 0 ? issues.join('；') : '无';
+}
+
 function resolveInitialFeishuEnabled(app) {
   return hasAppLevelFeishuConfig(app);
 }
@@ -3600,6 +3613,8 @@ function renderApps() {
         <td class="table-cell-mono">${escapeHtml(app.android_pull_app_id || '-')}</td>
         <td class="table-cell-mono">${escapeHtml(app.pull_app_id || '-')}</td>
         <td>${escapeHtml(app.dataset)}</td>
+        <td>${escapeHtml(appPlatformCoverageLabel(app))}</td>
+        <td>${escapeHtml(appIntegrationIssuesLabel(app))}</td>
         <td>${escapeHtml(timezoneLabel(app.timezone))}</td>
         <td>${hasAppLevelFeishuConfig(app) ? '应用级飞书配置' : '全局默认配置'}</td>
         <td>${fmtTime(app.updated_at)}</td>
@@ -4693,6 +4708,9 @@ async function saveAppConfig(event) {
   showToast(existed ? `应用设置已更新：${appKey}` : `应用设置已创建：${appKey}`);
   await loadApps();
   const savedApp = state.apps.find((app) => app.app_key === appKey);
+  if (savedApp && Array.isArray(savedApp.integration_issues) && savedApp.integration_issues.length > 0) {
+    showToast(`当前仍有接入缺口：${savedApp.integration_issues.join('；')}`, true);
+  }
   if (savedApp) {
     applyAppToEditor(savedApp);
   } else {
@@ -5269,9 +5287,7 @@ function dailyBriefFilterItems(report) {
 }
 
 function renderDailyBriefBody(report) {
-  const apps = Array.isArray(report.app_rows) ? report.app_rows : Array.isArray(report.apps) ? report.apps : [];
-  const budgets = Array.isArray(report.budget_highlights) ? report.budget_highlights : [];
-  const alerts = Array.isArray(report.alert_highlights) ? report.alert_highlights : [];
+  const focusProducts = Array.isArray(report.focus_products) ? report.focus_products : [];
 
   const sections = [
     {
@@ -5280,59 +5296,17 @@ function renderDailyBriefBody(report) {
       items: dailyBriefFilterItems(report)
     },
     {
-      title: '📦 产品概览',
-      type: 'card',
-      items:
-        apps.length > 0
-          ? apps.slice(0, 8).map(
-              (row) => ({
-                title: `${row.display_name || productViewName(row.app_key, row.platform)}（${row.app_key}）`,
-                source: Array.isArray(report.media_sources_applied) && report.media_sources_applied.length > 0
-                  ? report.media_sources_applied.join('、')
-                  : '全部媒体源',
-                lines: [
-                  `平台 ${platformLabel(row.platform || 'unknown')}`,
-                  `安装 ${toFixed2(row.installs)} ｜ 点击 ${toFixed2(row.clicks)}`,
-                  `成本 $${toFixed2(row.total_cost)} ｜ 每次安装成本（eCPI） $${toFixed2(row.blended_ecpi)}`
-                ]
-              })
-            )
-          : [{ title: '暂无数据', source: '-', lines: ['当前日期暂无广告日报汇总数据。'] }]
-    },
-    {
-      title: `🎯 预算动作（超过阈值，共 ${budgets.length} 条）`,
-      type: 'card',
-      items:
-        budgets.length > 0
-          ? budgets.map(
-              (row) => {
-                const metricText =
-                  row.metric_mode === 'roas_pending_revenue'
-                    ? '收入回收数据待补齐，当前仍按每次安装成本（eCPI）生成建议'
-                    : `当前每次安装成本（eCPI） $${toFixed2(row.current_ecpi)} ｜ 目标 $${toFixed2(row.target_ecpi)}`;
-                return {
-                  title: `${actionLabel(row.action)} ${Math.abs((Number(row.change_ratio) || 0) * 100).toFixed(0)}% ｜ ${productViewName(row.app_key, row.platform)}`,
-                  source: row.media_source || '-',
-                  lines: [
-                    `广告系列 ${row.keyword}`,
-                    metricText,
-                    `理由 ${String(row.reason_summary || '').trim() || '暂无补充说明'}`
-                  ]
-                };
-              }
-            )
-          : [{ title: '暂无待处理预算动作', source: '-', lines: ['当前没有待处理预算动作。'] }]
-    },
-    {
-      title: '⚠️ 未恢复告警',
+      title: '🎯 重点关注产品',
       type: 'list',
       items:
-        alerts.length > 0
-          ? alerts.map(
-              (row) =>
-                `${productViewName(row.app_key, 'unknown')} / ${row.severity} / ${metricLabel(row.metric)} ｜ Δ ${toFixed2(row.delta_value)} ｜ ${String(row.explanation || '').slice(0, 64) || '-'}`
-            )
-          : ['当前没有未恢复告警。']
+        focusProducts.length > 0
+          ? focusProducts.map((row) => `${row.display_name}｜${row.signal}｜${row.headline}｜${row.detail}`)
+          : ['当前没有需要额外标记的重点关注产品。']
+    },
+    {
+      title: '🗂️ 执行信息',
+      type: 'list',
+      items: ['详细执行动作、关键词级建议、执行状态与人工反馈已统一下沉到非 ASA / ASA 专属多维表格。']
     }
   ];
 
@@ -5382,7 +5356,8 @@ function renderDailyBriefBody(report) {
 function renderDailyBriefModal(payload, mode) {
   const report = payload?.report || payload || {};
   const summary = report.summary || {};
-  const actionItems = Array.isArray(report.action_items) ? report.action_items : [];
+  const apps = Array.isArray(report.app_rows) ? report.app_rows : Array.isArray(report.apps) ? report.apps : [];
+  const focusProducts = Array.isArray(report.focus_products) ? report.focus_products : [];
   const dispatch = payload?.dispatch || null;
   const notify = payload?.notify || null;
   const skipped = payload?.skipped === true;
@@ -5398,7 +5373,7 @@ function renderDailyBriefModal(payload, mode) {
         : '已发送到飞书'
     : '发送失败';
   el.dailyBriefMeta.textContent =
-    `报告日期 ${report.report_date || '-'} · 产品 ${summary.app_count || 0} 个 · 覆盖 ${summary.apps_with_data || 0} 个 · 安装 ${toFixed2(summary.total_installs || 0)} · 成本 ${toFixed2(summary.total_cost || 0)} · 待处理预算 ${summary.pending_budget_actions || 0} · 建议操作 ${actionItems.length}` +
+    `报告日期 ${report.report_date || '-'} · 产品 ${summary.app_count || 0} 个 · 覆盖 ${summary.apps_with_data || 0} 个 · 安装 ${toFixed2(summary.total_installs || 0)} · 成本 ${toFixed2(summary.total_cost || 0)} · 待处理预算 ${summary.pending_budget_actions || 0} · 重点关注 ${focusProducts.length}` +
     (dispatch?.sent_at ? ` · 最近发送 ${fmtTime(dispatch.sent_at)}` : '') +
     (notify || skipped ? ` · ${deliveryStatus}` : '');
   el.dailyBriefHeroTitle.textContent = String(report.title || '每日简报');
@@ -5425,20 +5400,25 @@ function renderDailyBriefModal(payload, mode) {
       </article>
     `
   );
-  el.dailyBriefJudgment.textContent = String(report.today_judgment || '暂无判断');
-  el.dailyBriefActions.innerHTML = actionItems
-    .map(
-      (item) => `
-        <article class="daily-brief-action-card priority-${escapeHtml(item.priority)}">
-          <div class="daily-brief-action-head">
-            <span class="badge badge-${escapeHtml(item.priority)}">${escapeHtml(item.priority)}</span>
-            <strong>${escapeHtml(item.title)}</strong>
-          </div>
-          <p>${escapeHtml(item.detail)}</p>
-        </article>
-      `
-    )
-    .join('');
+  el.dailyBriefJudgment.textContent = String(report.anomaly_reminder || report.today_judgment || '暂无提醒');
+  el.dailyBriefActions.innerHTML = apps.length
+    ? apps
+        .slice(0, 8)
+        .map(
+          (row) => `
+            <article class="daily-brief-action-card priority-P2">
+              <div class="daily-brief-action-head">
+                <strong>${escapeHtml(row.display_name || productViewName(row.app_key, row.platform))}</strong>
+                <span class="badge badge-open">${escapeHtml(platformLabel(row.platform || 'unknown'))}</span>
+              </div>
+              <p>安装 ${escapeHtml(toFixed2(row.installs))} ｜ 点击 ${escapeHtml(toFixed2(row.clicks))}</p>
+              <p>成本 $${escapeHtml(toFixed2(row.total_cost))} ｜ eCPI $${escapeHtml(toFixed2(row.blended_ecpi))}</p>
+              <p>异常 ${escapeHtml(String(row.open_alerts || 0))} ｜ 待处理预算 ${escapeHtml(String(row.pending_budget_actions || 0))}</p>
+            </article>
+          `
+        )
+        .join('')
+    : '<p class="hint">当前日期暂无可展示的产品概览。</p>';
   renderDailyBriefBody(report);
   el.dailyBriefRaw.textContent = JSON.stringify(report.feishu_card_payload || {}, null, 2);
   setDailyBriefModalOpen(true);
@@ -5468,7 +5448,7 @@ function renderRuntimeSchedule(snapshot) {
     el.runtimeScheduleStatus.textContent = `当前时间安排：数据准备 ${pullTime} ｜ 消息发送 ${pushTime} ｜ 执行表 ${bitableTime} ｜ 时区 ${timezoneLabel(timezone)} ｜ 最近更新 ${updatedAt}`;
   }
   if (el.bitableSchedulePrimaryNote) {
-    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（北京时间）自动执行。系统会在同一飞书多维表格中按日期创建或复用当天的「投放执行表」，同日重跑刷新当天内容，历史日期自动留档。`;
+    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（北京时间）自动执行。系统会在同一飞书多维表格中分别按日期创建或复用当天的「非 ASA 执行表」与「ASA 关键词执行表」，同日重跑刷新当天内容，历史日期自动留档。`;
   }
 }
 
@@ -5484,7 +5464,7 @@ function renderRuntimeSchedulePreview() {
     el.runtimeSchedulePushSummary.textContent = `每日简报与 ASA 简报将在 ${pushTime} 发送，执行表会顺延到 ${bitableTime}。`;
   }
   if (el.bitableSchedulePrimaryNote) {
-    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（北京时间）自动执行。系统会在同一飞书多维表格中按日期创建或复用当天的「投放执行表」，同日重跑刷新当天内容，历史日期自动留档。`;
+    el.bitableSchedulePrimaryNote.textContent = `每日 ${bitableTime}（北京时间）自动执行。系统会在同一飞书多维表格中分别按日期创建或复用当天的「非 ASA 执行表」与「ASA 关键词执行表」，同日重跑刷新当天内容，历史日期自动留档。`;
   }
 }
 
@@ -5631,6 +5611,10 @@ function renderBitableExportCards() {
       const isEnabled = config.enabled === true;
       const fieldLabels = Array.isArray(source.fields) ? source.fields.map((field) => String(field.label || '').trim()).filter(Boolean) : [];
       const outputPreview = fieldLabels.slice(0, 8);
+      const fieldHint =
+        source.source_type === 'delivery_actions_asa'
+          ? '系统固定输出关键词（飞书主字段）、广告系列、广告组、产品名、主指标、当前/目标表现、量级参考、建议动作、建议理由、执行状态、是否采纳、人工批复，以及“七天后数据（系统自动回填）”。'
+          : '系统固定输出投放项名称（飞书主字段）、产品名、主指标、当前/目标表现、量级参考、建议动作、建议理由、执行状态、是否采纳、人工批复，以及“七天后数据（系统自动回填）”。';
 
       return `
         <article class="bitable-export-card" data-source-type="${escapeHtml(source.source_type)}">
@@ -5687,7 +5671,7 @@ function renderBitableExportCards() {
                   : ''
               }
             </div>
-            <p class="hint">系统固定输出投放项名称（飞书主字段）、产品名、主指标、当前/目标表现、量级参考、建议动作、建议理由、执行状态、是否采纳、人工批复，以及“七天后数据（系统自动回填）”。</p>
+            <p class="hint">${escapeHtml(fieldHint)}</p>
           </div>
 
           <div class="bitable-export-status">
@@ -5884,7 +5868,12 @@ async function syncBitableFeedbackCard(sourceType) {
       body: JSON.stringify({ sourceType })
     });
     const result = body.data || {};
-    await Promise.all([loadBitableExportConfigs(), loadBudgetRecommendations(undefined, state.budgetPage || 1)]);
+    await Promise.all([
+      loadBitableExportConfigs(),
+      sourceType === 'delivery_actions_asa'
+        ? loadAsaKeywords(undefined, state.asaKeywordPage || 1)
+        : loadBudgetRecommendations(undefined, state.budgetPage || 1)
+    ]);
     showToast(
       `执行反馈已回读 ${Number(result.synced_count || 0)} 条，忽略 ${Number(result.skipped_count || 0)} 条无映射记录`
     );
@@ -5897,7 +5886,7 @@ async function syncBitableFeedbackCard(sourceType) {
 }
 
 function currentExecutionTableUrl() {
-  const source = (state.bitableExportSources || []).find((item) => item.source_type === 'delivery_actions');
+  const source = (state.bitableExportSources || []).find((item) => item.source_type === 'delivery_actions_non_asa');
   return String(source?.table_url || '').trim();
 }
 
@@ -6541,6 +6530,20 @@ function normalizeRoasCoverageRatio(value, roasDataStatus) {
   return normalizeRoasDataStatus(roasDataStatus) === 'complete' ? 1 : 0;
 }
 
+function isStrictAsaRoasValueVisible(primarySource, warningCode) {
+  return String(primarySource || '') === 'af_cohort' && String(warningCode || '') !== 'af_vs_local_mismatch';
+}
+
+function hiddenAsaRoasReason(primarySource, warningCode) {
+  if (String(warningCode || '') === 'af_vs_local_mismatch') {
+    return 'AF 官方成熟窗口 D7 ROAS 与本地派生偏差较大，当前不展示数值';
+  }
+  if (String(primarySource || '') !== 'af_cohort') {
+    return 'AF 官方成熟窗口 D7 ROAS 缺失，当前不展示回退值';
+  }
+  return '';
+}
+
 function formatRoasPrimarySourceLabel(source) {
   return String(source || '') === 'af_cohort' ? 'AF Cohort 主口径' : '本地回退口径';
 }
@@ -6639,7 +6642,8 @@ function buildAsaMetricDisplaySource(source = {}) {
     purchaseCount: Number((source.purchase_count ?? source.purchase_count_7d) || 0),
     revenueD7: Number((source.revenue_d7 ?? source.revenue_d7_7d) || 0),
     cpp: Number((source.cpp ?? source.current_cpp) || 0),
-    d7Roas
+    d7Roas,
+    roasVisibleAsAfValue: isStrictAsaRoasValueVisible(roasPrimarySource, roasWarningCode)
   };
 }
 
@@ -6673,7 +6677,8 @@ function buildAsaTrendMetricDisplaySource(source = {}) {
     revenueD7,
     d7Roas,
     roasStatus,
-    cppStatus
+    cppStatus,
+    roasVisibleAsAfValue: isStrictAsaRoasValueVisible(roasPrimarySource, roasWarningCode)
   };
 }
 
@@ -6691,6 +6696,10 @@ function buildAsaCppMetricTitle(source = {}) {
 function buildAsaD7RoasMetricTitle(source = {}) {
   const metric = buildAsaMetricDisplaySource(source);
   let title = buildAsaCoverageTitle(metric.roasDataStatus, metric.roasCoverageRatio);
+  if (!metric.roasVisibleAsAfValue) {
+    const hiddenReason = hiddenAsaRoasReason(metric.roasPrimarySource, metric.roasWarningCode);
+    title = title ? `${title}；${hiddenReason}` : hiddenReason;
+  }
   if (metric.roasDisplayable && metric.totalCost > 0 && metric.revenueD7 <= 0) {
     title = title ? `${title}；覆盖窗口内未观察到 D7 收入` : '覆盖窗口内未观察到 D7 收入';
   }
@@ -6717,7 +6726,12 @@ function buildAsaCppMetricStackHtml(source = {}) {
 
 function buildAsaD7RoasMetricStackHtml(source = {}) {
   const metric = buildAsaMetricDisplaySource(source);
-  const valueText = !metric.roasDisplayable ? '—' : metric.totalCost > 0 ? formatRoasPercent(metric.d7Roas) : '-';
+  const valueText =
+    !metric.roasDisplayable || !metric.roasVisibleAsAfValue
+      ? '—'
+      : metric.totalCost > 0
+        ? formatRoasPercent(metric.d7Roas)
+        : '-';
   return buildAsaMetricStackHtml(
     `${formatAsaCoverageMeta(metric.roasDataStatus, metric.roasCoverageRatio)} · ${formatRoasPrimarySourceLabel(metric.roasPrimarySource)}`,
     valueText
@@ -6772,46 +6786,60 @@ function formatAsaCppDisplay(value, totalCost, purchaseCount, roasDataStatus) {
 
 function formatAsaD7RoasDisplay(value, totalCost, revenueD7, roasDataStatus, source = {}) {
   const status = normalizeRoasDataStatus(roasDataStatus);
-  const sourceText = buildRoasSourceMetaText(
-    source.roas_primary_source ?? source.roasPrimarySource,
-    source.roas_warning_code ?? source.roasWarningCode
-  );
+  const primarySource = source.roas_primary_source ?? source.roasPrimarySource;
+  const warningCode = source.roas_warning_code ?? source.roasWarningCode;
+  const sourceText = buildRoasSourceMetaText(primarySource, warningCode);
+  const strictVisible = isStrictAsaRoasValueVisible(primarySource, warningCode);
+  const hiddenReason = hiddenAsaRoasReason(primarySource, warningCode);
   if (status === 'pending') {
-    return `待补齐（源数据缺失）${sourceText ? `｜${sourceText}` : ''}`;
+    return '待补齐（AF 成熟窗口数据缺失）';
   }
   if (status === 'partial') {
     if (Number(totalCost || 0) <= 0) {
       return '-';
     }
-    return `${formatRoasPercent(value)}（按已覆盖成本计算）${sourceText ? `｜${sourceText}` : ''}`;
+    if (!strictVisible) {
+      return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
+    }
+    return `${formatRoasPercent(value)}（按已覆盖成本计算）`;
   }
   if (status === 'partial_low') {
     if (Number(totalCost || 0) <= 0) {
       return '-';
     }
-    return `${formatRoasPercent(value)}（覆盖率偏低，仅供参考）${sourceText ? `｜${sourceText}` : ''}`;
+    if (!strictVisible) {
+      return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
+    }
+    return `${formatRoasPercent(value)}（覆盖率偏低，仅供参考）`;
   }
   if (status === 'unavailable') {
-    return Number(totalCost || 0) > 0 ? `暂无成熟数据${sourceText ? `｜${sourceText}` : ''}` : '-';
+    return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
   }
   if (Number(totalCost || 0) <= 0) {
     return '-';
+  }
+  if (!strictVisible) {
+    return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
   }
   return `${formatRoasPercent(value)}${sourceText ? `｜${sourceText}` : ''}`;
 }
 
 function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7, roasDataStatus, source = {}) {
   const status = normalizeRoasDataStatus(roasDataStatus);
-  const sourceText = buildRoasSourceMetaText(
-    source.roas_primary_source ?? source.roasPrimarySource,
-    source.roas_warning_code ?? source.roasWarningCode
-  );
+  const primarySource = source.roas_primary_source ?? source.roasPrimarySource;
+  const warningCode = source.roas_warning_code ?? source.roasWarningCode;
+  const sourceText = buildRoasSourceMetaText(primarySource, warningCode);
+  const strictVisible = isStrictAsaRoasValueVisible(primarySource, warningCode);
+  const hiddenReason = hiddenAsaRoasReason(primarySource, warningCode);
   if (status === 'pending') {
-    return `待补齐（源数据缺失）${sourceText ? `｜${sourceText}` : ''}`;
+    return '待补齐（AF 成熟窗口数据缺失）';
   }
   if (status === 'partial') {
     if (Number(totalCost || 0) <= 0) {
       return '-';
+    }
+    if (!strictVisible) {
+      return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
     }
     const base = `${formatRoasPercent(value)}（按已覆盖成本计算）${sourceText ? `｜${sourceText}` : ''}`;
     return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
@@ -6822,16 +6850,22 @@ function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7, roasDataS
     if (Number(totalCost || 0) <= 0) {
       return '-';
     }
+    if (!strictVisible) {
+      return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
+    }
     const base = `${formatRoasPercent(value)}（覆盖率偏低，仅供参考）${sourceText ? `｜${sourceText}` : ''}`;
     return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
       ? `${base}（成熟窗口未观察到D7收入）`
       : base;
   }
   if (status === 'unavailable') {
-    return Number(totalCost || 0) > 0 ? `暂无成熟数据${sourceText ? `｜${sourceText}` : ''}` : '-';
+    return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
   }
   if (Number(totalCost || 0) <= 0) {
     return '-';
+  }
+  if (!strictVisible) {
+    return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
   }
   const base = `${formatRoasPercent(value)}${sourceText ? `｜${sourceText}` : ''}`;
   return asaHasCostWithoutD7Revenue(totalCost, revenueD7) ? `${base}（成熟窗口未观察到D7收入）` : base;
@@ -7076,12 +7110,12 @@ function renderAsaBriefModal(payload, mode) {
   const report = payload?.report || payload || {};
   const notify = payload?.notify || null;
   const skipped = payload?.skipped === true;
-  const actionRows = Array.isArray(report.action_rows) ? report.action_rows : [];
+  const productOverviewRows = Array.isArray(report.product_overview_rows) ? report.product_overview_rows : [];
   const summaryWindow = report.summary_window || null;
   el.asaBriefModalTitle.textContent = mode === 'send' ? 'ASA 简报发送结果' : 'ASA 简报预览';
   const sendStatus = notify?.ok ? (skipped ? '今日已发送，已跳过重复发送' : '已发送到飞书') : '发送失败';
   el.asaBriefMeta.textContent =
-    `报告日期 ${report.report_date || '-'} · 当前阶段 ${asaStageLabel(report.current_stage)} · 关键词数 ${report.summary?.keyword_count || 0}` +
+    `报告日期 ${report.report_date || '-'} · 当前阶段 ${asaStageLabel(report.current_stage)} · 关键词数 ${report.summary?.keyword_count || 0} · 产品 ${productOverviewRows.length}` +
     (summaryWindow ? ` · D7/CPP 窗口 ${summaryWindow.from}~${summaryWindow.to}` : '') +
     (notify || skipped ? ` · ${sendStatus}` : '');
   el.asaBriefSummaryGrid.innerHTML = asaBriefSummaryItems(report)
@@ -7095,34 +7129,23 @@ function renderAsaBriefModal(payload, mode) {
     )
     .join('');
   el.asaBriefJudgment.textContent =
-    report.today_judgment ||
-    (report.current_stage === 'stable'
-      ? '当前按稳定期标准输出建议，优先观察 7 日回收率和每次购买成本是否同步达标。'
-      : '当前按上升期标准输出建议，优先观察每次安装成本和安装增长效率。');
-  el.asaBriefActions.innerHTML = actionRows.length
-    ? actionRows
-        .slice(0, 12)
-        .map((row) => {
-          const llmSummary = safeJsonParse(row.llm_summary, {});
-          return `
-            <article class="daily-brief-action-card priority-P2">
-              <div class="daily-brief-action-head">
-                <span class="badge ${asaRecommendationBadgeClass(row.action)}">${escapeHtml(actionLabel(row.action))}</span>
-                <strong>${escapeHtml(productViewName(row.app_key, row.platform))} / ${escapeHtml(row.keyword)}</strong>
-              </div>
-              <p>广告系列：${escapeHtml(row.campaign)}</p>
-              <p>广告组：${escapeHtml(row.adset || '-')}</p>
-              <p>${escapeHtml(
-                row.primary_metric === 'd7_roas_cpp'
-                  ? `D7 ROAS ${formatAsaD7RoasDisplayWithReason(row.current_d7_roas, row.total_cost_7d, row.revenue_d7_7d, row.roas_data_status, row)} / 目标 ${formatRoasPercent(row.target_d7_roas)} ｜ CPP ${formatAsaCppDisplay(row.current_cpp, row.total_cost_7d, row.purchase_count_7d, row.roas_data_status)} / 目标 ${row.target_cpp > 0 ? `$${toFixed2(row.target_cpp)}` : '-'}`
-                  : `当前 eCPI ${formatAsaEcpiDisplayWithReason(row.current_ecpi, row.total_cost_7d, row.installs_7d)} / 目标 $${toFixed2(row.target_ecpi)}`
-              )}</p>
-              <p>${escapeHtml(String(llmSummary.summary_cn || row.reason_code || '暂无补充说明'))}</p>
-            </article>
-          `;
-        })
+    `仅覆盖已配置 iOS 端的产品。详细关键词级建议、执行状态跟踪、人工反馈与七天后数据，统一下沉到 ASA 专属多维表格。` +
+    (summaryWindow ? ` 成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}。` : '');
+  el.asaBriefActions.innerHTML = productOverviewRows.length
+    ? productOverviewRows
+        .map((row) => `
+          <article class="daily-brief-action-card priority-P2">
+            <div class="daily-brief-action-head">
+              <strong>${escapeHtml(row.display_name)}</strong>
+              <span class="badge badge-open">${escapeHtml(asaStageLabel(row.current_stage))}</span>
+            </div>
+            <p>关键词 ${escapeHtml(String(row.keyword_count || 0))} 个 ｜ 待处理执行项 ${escapeHtml(String(row.pending_action_count || 0))}</p>
+            <p>近7日安装 ${escapeHtml(toFixed2(row.installs))} ｜ 近7日成本 $${escapeHtml(toFixed2(row.total_cost))} ｜ 近7日 eCPI ${escapeHtml(formatAsaEcpiDisplay(row.ecpi, row.total_cost, row.installs))}</p>
+            <p>成熟窗口 D7 ROAS ${escapeHtml(formatAsaD7RoasDisplay(row.d7_roas, row.total_cost, row.revenue_d7, row.roas_data_status, row))}</p>
+          </article>
+        `)
         .join('')
-    : '<p class="hint">当前没有可纳入简报的建议操作。</p>';
+    : '<p class="hint">当前日期暂无可展示的 ASA 产品概览。</p>';
   el.asaBriefRaw.textContent = JSON.stringify(report.feishu_card_payload || {}, null, 2);
   setAsaBriefModalOpen(true);
 }
@@ -7138,13 +7161,16 @@ async function previewAsaBrief(event) {
   const params = new URLSearchParams({ reportDate });
   const appKey = String(el.asaBriefAppSelect.value || '').trim();
   const platform = String(el.asaBriefPlatformSelect.value || '').trim().toLowerCase();
+  if (platform && platform !== 'ios') {
+    throw new Error('ASA 简报仅支持 iOS 范围');
+  }
   if (appKey) params.set('appKey', appKey);
   if (platform) params.set('platform', platform);
   const body = await api(`/api/asa-keywords/brief/preview?${params.toString()}`);
   state.asaBriefPreviewPayload = body.data || null;
   state.asaBriefPreviewLoadedAt = new Date().toISOString();
   renderAsaBriefModal(body.data, 'preview');
-  el.asaBriefStatus.textContent = `已生成 ${reportDate} 的 ASA 简报预览，建议动作会随简报一起发送。`;
+  el.asaBriefStatus.textContent = `已生成 ${reportDate} 的 ASA 轻量简报预览；详细关键词执行信息已下沉到 ASA 专属多维表格。`;
 }
 
 async function sendAsaBrief() {
@@ -7152,6 +7178,9 @@ async function sendAsaBrief() {
   if (!reportDate) throw new Error('请先选择报告日期');
   const appKey = String(el.asaBriefAppSelect.value || '').trim();
   const platform = String(el.asaBriefPlatformSelect.value || '').trim().toLowerCase();
+  if (platform && platform !== 'ios') {
+    throw new Error('ASA 简报仅支持 iOS 范围');
+  }
   const body = await api('/api/asa-keywords/brief/send', {
     method: 'POST',
     body: JSON.stringify({ reportDate, appKey: appKey || undefined, platform: platform || undefined, force: true })
@@ -7159,7 +7188,7 @@ async function sendAsaBrief() {
   state.asaBriefPreviewPayload = body.data || null;
   state.asaBriefPreviewLoadedAt = new Date().toISOString();
   renderAsaBriefModal(body.data, 'send');
-  el.asaBriefStatus.textContent = `ASA 简报已发送到飞书：${reportDate}，建议动作已随简报一并发送。`;
+  el.asaBriefStatus.textContent = `ASA 简报已发送到飞书：${reportDate}。详细关键词执行信息请查看 ASA 专属多维表格。`;
   showToast('ASA 简报已发送到飞书');
 }
 

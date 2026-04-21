@@ -441,6 +441,8 @@ export interface AsaKeywordStateRow {
   roas_window_to: string | null;
   roas_data_status: RoasDataStatus;
   roas_coverage_ratio: number;
+  roas_covered_cost: number;
+  roas_missing_cost: number;
   target_ecpi: number;
   target_cpp: number;
   target_d7_roas: number;
@@ -503,7 +505,12 @@ export interface AsaKeywordRouteRecord {
   updated_at: string;
 }
 
-export type BitableExportSourceType = 'pull_daily' | 'asa_raw' | 'delivery_actions';
+export type BitableExportSourceType =
+  | 'pull_daily'
+  | 'asa_raw'
+  | 'delivery_actions'
+  | 'delivery_actions_non_asa'
+  | 'delivery_actions_asa';
 
 export interface BitableExportConfigRecord {
   id: number;

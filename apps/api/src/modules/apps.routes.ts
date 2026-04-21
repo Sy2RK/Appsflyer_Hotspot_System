@@ -6,37 +6,80 @@ import { resolveDisplayName, resolvePlatformDisplayName } from '@shared/utils/di
 
 const router = Router();
 
+function hasIosIntegration(app: {
+  ios_pull_app_id?: string | null;
+  pull_app_id?: string | null;
+}): boolean {
+  return Boolean(String(app.ios_pull_app_id || '').trim());
+}
+
+function hasAndroidIntegration(app: {
+  android_pull_app_id?: string | null;
+}): boolean {
+  return Boolean(String(app.android_pull_app_id || '').trim());
+}
+
+function buildIntegrationIssues(app: {
+  android_display_name?: string | null;
+  ios_display_name?: string | null;
+  android_pull_app_id?: string | null;
+  ios_pull_app_id?: string | null;
+  pull_app_id?: string | null;
+}): string[] {
+  const issues: string[] = [];
+  const hasAndroidLabel = Boolean(String(app.android_display_name || '').trim());
+  const hasIosLabel = Boolean(String(app.ios_display_name || '').trim());
+  if (hasAndroidLabel && !hasAndroidIntegration(app)) {
+    issues.push('Android 未配置 Pull App ID，Android 结果不会进入系统');
+  }
+  if (hasIosLabel && !hasIosIntegration(app)) {
+    issues.push('iOS 未配置 Pull App ID，iOS 结果不会进入系统');
+  }
+  return issues;
+}
+
+function toAppResponse(app: Awaited<ReturnType<typeof listApps>>[number]) {
+  const integrationIssues = buildIntegrationIssues(app);
+  return {
+    app_key: app.app_key,
+    display_name: resolveDisplayName(app.app_key, app.display_name),
+    ios_display_name: resolvePlatformDisplayName(
+      app.app_key,
+      resolveDisplayName(app.app_key, app.display_name),
+      app.ios_display_name,
+      'iOS'
+    ),
+    android_display_name: resolvePlatformDisplayName(
+      app.app_key,
+      resolveDisplayName(app.app_key, app.display_name),
+      app.android_display_name,
+      'Android'
+    ),
+    pull_app_id: app.pull_app_id,
+    ios_pull_app_id: app.ios_pull_app_id,
+    android_pull_app_id: app.android_pull_app_id,
+    dataset: app.dataset,
+    timezone: app.timezone,
+    notify_webhook_url: app.notify_webhook_url,
+    notify_feishu_app_id: app.notify_feishu_app_id,
+    notify_feishu_chat_id: app.notify_feishu_chat_id,
+    has_feishu_secret: Boolean(app.notify_feishu_app_secret),
+    platform_status: {
+      ios_ready: hasIosIntegration(app),
+      android_ready: hasAndroidIntegration(app),
+      asa_push_eligible: hasIosIntegration(app)
+    },
+    integration_issues: integrationIssues,
+    created_at: app.created_at,
+    updated_at: app.updated_at
+  };
+}
+
 router.get('/api/apps', async (_req, res) => {
   const apps = await listApps();
   res.json({
     ok: true,
-    data: apps.map((app) => ({
-      app_key: app.app_key,
-      display_name: resolveDisplayName(app.app_key, app.display_name),
-      ios_display_name: resolvePlatformDisplayName(
-        app.app_key,
-        resolveDisplayName(app.app_key, app.display_name),
-        app.ios_display_name,
-        'iOS'
-      ),
-      android_display_name: resolvePlatformDisplayName(
-        app.app_key,
-        resolveDisplayName(app.app_key, app.display_name),
-        app.android_display_name,
-        'Android'
-      ),
-      pull_app_id: app.pull_app_id,
-      ios_pull_app_id: app.ios_pull_app_id,
-      android_pull_app_id: app.android_pull_app_id,
-      dataset: app.dataset,
-      timezone: app.timezone,
-      notify_webhook_url: app.notify_webhook_url,
-      notify_feishu_app_id: app.notify_feishu_app_id,
-      notify_feishu_chat_id: app.notify_feishu_chat_id,
-      has_feishu_secret: Boolean(app.notify_feishu_app_secret),
-      created_at: app.created_at,
-      updated_at: app.updated_at
-    }))
+    data: apps.map((app) => toAppResponse(app))
   });
 });
 
@@ -125,33 +168,7 @@ router.post('/api/apps', async (req, res) => {
 
   return res.json({
     ok: true,
-    data: {
-      app_key: saved.app_key,
-      display_name: resolveDisplayName(saved.app_key, saved.display_name),
-      ios_display_name: resolvePlatformDisplayName(
-        saved.app_key,
-        resolveDisplayName(saved.app_key, saved.display_name),
-        saved.ios_display_name,
-        'iOS'
-      ),
-      android_display_name: resolvePlatformDisplayName(
-        saved.app_key,
-        resolveDisplayName(saved.app_key, saved.display_name),
-        saved.android_display_name,
-        'Android'
-      ),
-      pull_app_id: saved.pull_app_id,
-      ios_pull_app_id: saved.ios_pull_app_id,
-      android_pull_app_id: saved.android_pull_app_id,
-      dataset: saved.dataset,
-      timezone: saved.timezone,
-      notify_webhook_url: saved.notify_webhook_url,
-      notify_feishu_app_id: saved.notify_feishu_app_id,
-      notify_feishu_chat_id: saved.notify_feishu_chat_id,
-      has_feishu_secret: Boolean(saved.notify_feishu_app_secret),
-      created_at: saved.created_at,
-      updated_at: saved.updated_at
-    }
+    data: toAppResponse(saved)
   });
 });
 

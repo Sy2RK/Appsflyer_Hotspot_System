@@ -38,8 +38,7 @@ import {
   resolveRoasPrimarySource,
   resolveRoasCoverageRatio,
   resolveRoasDataStatus,
-  resolveRoasWarningCode,
-  shouldHoldForRoasProtection
+  resolveRoasWarningCode
 } from './roasWindow.js';
 import {
   buildRecommendationPolicyKey,
@@ -265,6 +264,7 @@ export interface AsaBriefPreview {
   today_judgment: string;
   rows: AsaKeywordDashboardRow[];
   action_rows: AsaKeywordRecommendationRow[];
+  product_overview_rows: AsaBriefProductOverviewRow[];
   text: string;
   feishu_card_payload: Record<string, unknown>;
 }
@@ -893,13 +893,16 @@ function toClickHouseDateTime(raw: string, fallback?: string): string {
 function asaTargets(apps: AppConfigRecord[]): Array<{ app: AppConfigRecord; platform: string; appId: string }> {
   const targets: Array<{ app: AppConfigRecord; platform: string; appId: string }> = [];
   for (const app of apps) {
-    if (app.ios_pull_app_id) {
-      targets.push({ app, platform: 'ios', appId: app.ios_pull_app_id });
-    } else if (app.pull_app_id) {
-      targets.push({ app, platform: 'ios', appId: app.pull_app_id });
+    const iosPullAppId = String(app.ios_pull_app_id || '').trim();
+    if (hasAsaIosIntegration(app) && iosPullAppId) {
+      targets.push({ app, platform: 'ios', appId: iosPullAppId });
     }
   }
   return targets;
+}
+
+function hasAsaIosIntegration(app: AppConfigRecord | null | undefined): boolean {
+  return Boolean(String(app?.ios_pull_app_id || '').trim());
 }
 
 interface AsaSliceFetchFailure {
@@ -1181,7 +1184,20 @@ function recommendationSummary(
   currentEcpi: number,
   currentCpp: number,
   currentD7Roas: number,
-  extra: { actionItems?: string[]; scenarioTags?: string[] } = {}
+  extra: {
+    actionItems?: string[];
+    scenarioTags?: string[];
+    reasonCode?: string;
+    roasWindow?: { from: string; to: string };
+    roasPrimarySource?: RoasPrimarySource;
+    roasWarningCode?: RoasWarningCode;
+    targetEcpi?: number;
+    targetCpp?: number;
+    targetD7Roas?: number;
+    failedMetrics?: string[];
+    strongMetrics?: string[];
+    countryBreaches?: Array<{ country: string; ecpi: number; targetEcpi: number }>;
+  } = {}
 ): {
   summary_cn: string;
   risk_level: 'low' | 'medium' | 'high';
@@ -1192,41 +1208,100 @@ function recommendationSummary(
 } {
   const actionItems = Array.isArray(extra.actionItems) ? extra.actionItems.filter(Boolean).slice(0, 8) : [];
   const scenarioTags = Array.isArray(extra.scenarioTags) ? extra.scenarioTags.filter(Boolean).slice(0, 8) : [];
+  const failedMetrics = Array.isArray(extra.failedMetrics) ? extra.failedMetrics.filter(Boolean) : [];
+  const strongMetrics = Array.isArray(extra.strongMetrics) ? extra.strongMetrics.filter(Boolean) : [];
+  const countryBreaches = Array.isArray(extra.countryBreaches) ? extra.countryBreaches : [];
+  const roasWindowLabel = extra.roasWindow ? `${extra.roasWindow.from} 至 ${extra.roasWindow.to}` : '当前成熟窗口';
+  const roasSourceLabel =
+    extra.roasPrimarySource === 'af_cohort'
+      ? 'AF Cohort 主口径'
+      : extra.roasWarningCode === 'af_vs_local_mismatch'
+        ? 'AF 与本地派生偏差较大，当前自动动作已收紧'
+        : 'AF 官方 D7 ROAS 缺失，内部仅用本地成熟回收做保守判断';
+  const explainMetric = (metric: string): string => {
+    if (metric === 'ecpi') return 'eCPI';
+    if (metric === 'roas') return 'D7 ROAS';
+    if (metric === 'cpp') return 'CPP';
+    return metric;
+  };
+  const thresholdPoints = [
+    stage === 'stable'
+      ? `成熟窗口：${roasWindowLabel}`
+      : `决策阶段：${stage === 'rising' ? '上升期' : '稳定期'}`,
+    stage === 'stable'
+      ? extra.roasPrimarySource === 'af_cohort'
+        ? `D7 ROAS ${formatAsaPercentValue(currentD7Roas)} vs 目标 ${formatAsaPercentValue(extra.targetD7Roas)}`
+        : `内部成熟回收 D7 ROAS ${formatAsaPercentValue(currentD7Roas)} vs 目标 ${formatAsaPercentValue(extra.targetD7Roas)}（仅用于保守判断）`
+      : `eCPI $${currentEcpi.toFixed(2)} vs 目标 $${Number(extra.targetEcpi || 0).toFixed(2)}`,
+    stage === 'stable'
+      ? `CPP $${currentCpp.toFixed(2)} vs 目标 $${Number(extra.targetCpp || 0).toFixed(2)}`
+      : `ROAS 口径：${roasSourceLabel}`,
+    stage === 'stable' ? `ROAS 口径：${roasSourceLabel}` : null,
+    failedMetrics.length > 0 ? `弱项指标：${failedMetrics.map(explainMetric).join(' / ')}` : null,
+    strongMetrics.length > 0 ? `强项指标：${strongMetrics.map(explainMetric).join(' / ')}` : null,
+    countryBreaches.length > 0
+      ? `国家阈值触发：${countryBreaches
+          .slice(0, 2)
+          .map((item) => `${item.country} eCPI $${item.ecpi.toFixed(2)} > $${item.targetEcpi.toFixed(2)}`)
+          .join('；')}`
+      : null,
+    extra.reasonCode ? `触发依据：${formatAsaReasonCodeLabel(extra.reasonCode)}` : null
+  ].filter(Boolean) as string[];
   if (stage === 'stable') {
+    const stableSummary =
+      action === 'decrease'
+        ? extra.roasPrimarySource === 'af_cohort'
+          ? `稳定期成熟窗口 D7 ROAS ${formatAsaPercentValue(currentD7Roas)} 低于目标 ${formatAsaPercentValue(extra.targetD7Roas)}，且 CPP $${currentCpp.toFixed(2)} 高于目标 $${Number(extra.targetCpp || 0).toFixed(2)}，建议先下调 20% 控制成本。`
+          : `稳定期 AF 官方成熟窗口 D7 ROAS 暂缺，内部成熟回收与 CPP 风险偏弱，建议先保守下调 20% 控制成本。`
+        : action === 'increase'
+          ? `稳定期成熟窗口 D7 ROAS ${formatAsaPercentValue(currentD7Roas)} 高于目标 ${formatAsaPercentValue(extra.targetD7Roas)}，CPP $${currentCpp.toFixed(2)} 低于目标 $${Number(extra.targetCpp || 0).toFixed(2)}，可上调 20% 放量。`
+          : extra.roasPrimarySource === 'af_cohort'
+            ? `稳定期成熟窗口 D7 ROAS 与 CPP 基本贴近目标线，当前建议保持预算。`
+            : `稳定期 AF 官方成熟窗口 D7 ROAS 暂缺，当前不直接展示回退值，先保持预算并继续观察。`;
     return {
-      summary_cn:
-        action === 'decrease'
-          ? `稳定期回收偏弱或 CPP 偏高，建议先下调 20% 控制无效成本。`
-          : action === 'increase'
-            ? `稳定期 D7 ROAS 与 CPP 表现健康，可上调 20% 放量。`
-            : `稳定期指标处于可接受区间，当前建议保持预算。`,
+      summary_cn: stableSummary,
       risk_level: action === 'decrease' ? 'medium' : 'low',
-      checklist: ['复核最近 7 天 purchase 事件是否完整', '确认 D7 ROAS 与投放后台口径一致'],
-      explanation_points: [
-        `d7_roas=${currentD7Roas.toFixed(2)}`,
-        `cpp=${currentCpp.toFixed(2)}`,
-        `stage=${stage}`
-      ],
+      checklist: ['复核成熟窗口 purchase / revenue 回传是否完整', '确认 D7 ROAS 统一按成熟窗口 AF Cohort 解释'],
+      explanation_points: thresholdPoints,
       action_items:
         actionItems.length > 0 ? actionItems : ['先确认回收窗口已经成熟，再执行调价。', '执行动作后继续观察 3-7 天。'],
       scenario_tags: scenarioTags
     };
   }
 
+  const risingSummary =
+    action === 'decrease'
+      ? `上升期 eCPI $${currentEcpi.toFixed(2)} 高于目标 $${Number(extra.targetEcpi || 0).toFixed(2)}，建议下调 20% 控制放量成本。`
+      : action === 'increase'
+        ? `上升期 eCPI $${currentEcpi.toFixed(2)} 优于目标 $${Number(extra.targetEcpi || 0).toFixed(2)}，可上调 20% 继续放量验证。`
+        : `上升期当前 eCPI 基本贴近目标线，建议先保持预算。`;
   return {
-    summary_cn:
-      action === 'decrease'
-        ? `上升期 eCPI 偏高，建议下调 20% 控制放量成本。`
-        : action === 'increase'
-          ? `上升期 eCPI 表现较优，可上调 20% 继续放量验证。`
-          : `上升期当前 eCPI 接近目标线，建议先保持预算。`,
+    summary_cn: risingSummary,
     risk_level: action === 'decrease' ? 'medium' : 'low',
     checklist: ['确认最近 3 天安装量是否稳定', '检查关键词与 campaign 命名是否一致'],
-    explanation_points: [`ecpi=${currentEcpi.toFixed(2)}`, `stage=${stage}`],
+    explanation_points: thresholdPoints,
     action_items:
       actionItems.length > 0 ? actionItems : ['先验证素材与关键词匹配度，再决定是否继续放量。', '执行动作后至少跟踪 2-3 天成本变化。'],
     scenario_tags: scenarioTags
   };
+}
+
+function formatAsaPercentValue(value: number | null | undefined): string {
+  return `${(Number(value || 0) * 100).toFixed(2)}%`;
+}
+
+function formatAsaReasonCodeLabel(reasonCode: string): string {
+  if (reasonCode === 'roas_window_unavailable') return '成熟窗口缺少可用 ROAS 数据';
+  if (reasonCode === 'roas_pending_revenue') return '成熟窗口数据仍在补齐';
+  if (reasonCode === 'af_roas_fallback_hold') return 'AF 官方 ROAS 缺失，自动放量被收紧';
+  if (reasonCode === 'af_roas_mismatch_hold') return 'AF 与本地派生 ROAS 偏差过大';
+  if (reasonCode === 'stable_dual_metric') return '稳定期按 D7 ROAS + CPP 双指标判断';
+  if (reasonCode === 'policy_country_ecpi_breach') return '国家级 eCPI 超出策略阈值';
+  if (reasonCode === 'rising_ecpi') return '上升期按 eCPI 阈值判断';
+  if (reasonCode === 'relative_compare_underperform') return '相对同组关键词表现偏弱';
+  if (reasonCode === 'relative_compare_outperform') return '相对同组关键词表现更强';
+  if (reasonCode === 'relative_compare_peer_insufficient') return '同组关键词样本不足';
+  return reasonCode;
 }
 
 async function queryAsaMetricWindow(from: string, to: string): Promise<AsaKeywordDailyMetricInsertRow[]> {
@@ -1729,10 +1804,8 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     const effectiveTargetEcpi = relativeDecision?.targetEcpi ?? targetEcpi;
     const effectiveTargetD7Roas = relativeDecision?.targetD7Roas ?? targetD7Roas;
     const usesRoasPrimaryMetric = isAsaRoasPrimaryMetric(policy, effectiveTargetD7Roas);
-    const roasProtected = shouldHoldForRoasProtection({
-      primarySource: roasPrimarySource,
-      warningCode: roasWarningCode
-    });
+    const roasMismatchProtected = roasWarningCode === 'af_vs_local_mismatch';
+    const roasFallbackSource = roasPrimarySource !== 'af_cohort';
 
     await upsertAsaKeywordState({
       app_key: current.app_key,
@@ -1756,6 +1829,8 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       roas_window_to: roasWindow.to,
       roas_data_status: roasDataStatus,
       roas_coverage_ratio: roasCoverageRatio,
+      roas_covered_cost: coveredRoasCost,
+      roas_missing_cost: missingRoasCost,
       target_ecpi: effectiveTargetEcpi,
       target_cpp: targetCpp,
       target_d7_roas: effectiveTargetD7Roas,
@@ -1766,10 +1841,10 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       trend_json: buildTrendJson(contextRows.length > 0 ? contextRows : rows.slice(-14))
     });
     stateRows += 1;
-    const action =
+    const preliminaryAction =
       usesRoasPrimaryMetric && !isRoasDataUsableStatus(roasDataStatus)
         ? 'hold'
-        : roasProtected
+        : roasMismatchProtected
           ? 'hold'
         : relativeDecision
           ? relativeDecision.action
@@ -1785,16 +1860,20 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
               : currentEcpi <= targetEcpi * 0.9
                 ? 'increase'
                 : 'hold';
+    const action =
+      roasFallbackSource && usesRoasPrimaryMetric && preliminaryAction === 'increase'
+        ? 'hold'
+        : preliminaryAction;
 
     const reasonCode =
       usesRoasPrimaryMetric && !isRoasDataUsableStatus(roasDataStatus)
         ? roasDataStatus === 'unavailable'
           ? 'roas_window_unavailable'
           : 'roas_pending_revenue'
-        : roasProtected
-          ? roasPrimarySource !== 'af_cohort'
-            ? 'af_roas_fallback_hold'
-            : 'af_roas_mismatch_hold'
+        : roasMismatchProtected
+          ? 'af_roas_mismatch_hold'
+        : roasFallbackSource && usesRoasPrimaryMetric && preliminaryAction === 'increase'
+          ? 'af_roas_fallback_hold'
         : relativeDecision?.reasonCode ??
           stage === 'stable'
             ? 'stable_dual_metric'
@@ -1803,7 +1882,17 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
               : 'rising_ecpi';
     const llmResult = recommendationSummary(action, stage, currentEcpi, currentCpp, currentD7Roas, {
       actionItems: scenarioEvaluation.actionItems,
-      scenarioTags: scenarioEvaluation.scenarioTags
+      scenarioTags: scenarioEvaluation.scenarioTags,
+      reasonCode,
+      roasWindow,
+      roasPrimarySource,
+      roasWarningCode,
+      targetEcpi: effectiveTargetEcpi,
+      targetCpp,
+      targetD7Roas: effectiveTargetD7Roas,
+      failedMetrics: relativeDecision?.failedMetrics ?? [],
+      strongMetrics: relativeDecision?.strongMetrics ?? [],
+      countryBreaches
     });
     await upsertAsaKeywordRecommendation({
       app_key: current.app_key,
@@ -1870,13 +1959,16 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
     });
   }
 
+  const llmUpdates = pendingLlmUpdates;
+  let completedLlmUpdates = 0;
+
   logInfo(logger, 'asa_keyword_llm_enrichment_start', {
-    recommendation_count: pendingLlmUpdates.length,
+    recommendation_count: llmUpdates.length,
     concurrency: env.asaRecommendationLlmConcurrency,
     thinking_enabled: false
   });
 
-  await mapWithConcurrency(pendingLlmUpdates, env.asaRecommendationLlmConcurrency, async (item) => {
+  await mapWithConcurrency(llmUpdates, env.asaRecommendationLlmConcurrency, async (item) => {
     const primaryMetric =
       item.policy?.metric_family === 'd7_roas_cpp'
         ? 'roas'
@@ -1981,6 +2073,13 @@ async function rebuildAsaKeywordStatesAndRecommendations(backfillDays: number, l
       llm_summary: llmCall.output,
       status: 'pending'
     });
+    completedLlmUpdates += 1;
+    if (completedLlmUpdates % 10 === 0 || completedLlmUpdates === llmUpdates.length) {
+      logInfo(logger, 'asa_keyword_llm_enrichment_progress', {
+        completed: completedLlmUpdates,
+        total: llmUpdates.length
+      });
+    }
   });
 
   logInfo(logger, 'asa_keyword_state_cycle_done', { state_rows: stateRows, recommendation_rows: recommendationRows });
@@ -2342,7 +2441,7 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
 export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): Promise<AsaKeywordQueryResult> {
   await ensureAsaKeywordRoasSchema();
   const page = Math.max(1, Math.floor(filter.page ?? 1));
-  const pageSize = Math.min(100, Math.max(1, Math.floor(filter.pageSize ?? 20)));
+  const pageSize = Math.min(500, Math.max(1, Math.floor(filter.pageSize ?? 20)));
   const policyRows =
     filter.appKey && filter.platform
       ? await listRecommendationPolicyConfigs({ engine: 'asa', enabled: true })
@@ -2429,6 +2528,51 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
     pageSize,
     totalPages: stateResult.totalPages
   };
+}
+
+async function queryAllAsaKeywordDashboardRowsForBrief(filter: AsaKeywordQueryFilter): Promise<AsaKeywordQueryResult> {
+  const firstPage = await queryAsaKeywordDashboard({
+    ...filter,
+    page: 1,
+    pageSize: 500
+  });
+  if (firstPage.totalPages <= 1) {
+    return firstPage;
+  }
+
+  const rows = [...firstPage.rows];
+  for (let page = 2; page <= firstPage.totalPages; page += 1) {
+    const nextPage = await queryAsaKeywordDashboard({
+      ...filter,
+      page,
+      pageSize: 500
+    });
+    rows.push(...nextPage.rows);
+  }
+  return {
+    ...firstPage,
+    rows
+  };
+}
+
+async function queryAllAsaKeywordRecommendationsForBrief(
+  filter: Parameters<typeof queryAsaKeywordRecommendations>[0]
+): Promise<AsaKeywordRecommendationRow[]> {
+  const firstPage = await queryAsaKeywordRecommendations({
+    ...filter,
+    page: 1,
+    pageSize: 500
+  });
+  const rows = [...firstPage.rows];
+  for (let page = 2; page <= firstPage.totalPages; page += 1) {
+    const nextPage = await queryAsaKeywordRecommendations({
+      ...filter,
+      page,
+      pageSize: 500
+    });
+    rows.push(...nextPage.rows);
+  }
+  return rows;
 }
 
 export async function queryAsaKeywordTrend(
@@ -2560,43 +2704,46 @@ function formatAsaSummaryRoas(input: {
   roas_data_status?: string | null;
 }): string {
   const formatAsaRoasPercent = (value: number | null | undefined) => `${(Number(value || 0) * 100).toFixed(2)}%`;
-  const sourceLabel = input.roas_primary_source === 'af_cohort' ? 'AF Cohort 主口径' : '本地回退口径';
-  const warningLabel =
-    input.roas_warning_code === 'af_missing'
-      ? 'AF 缺失，当前为本地派生'
-      : input.roas_warning_code === 'af_vs_local_mismatch'
-        ? 'AF 与本地派生偏差较大'
-        : input.roas_warning_code === 'af_grain_unavailable'
-          ? '当前粒度无 AF 官方 ROAS'
-          : '';
-  const suffix = `｜${sourceLabel}${warningLabel ? `（${warningLabel}）` : ''}`;
   const status = String(input.roas_data_status || 'unavailable');
+  const strictAfDisplay =
+    input.roas_primary_source === 'af_cohort' && input.roas_warning_code !== 'af_vs_local_mismatch';
+  const hiddenReason =
+    input.roas_warning_code === 'af_vs_local_mismatch'
+      ? 'AF 官方成熟窗口 D7 ROAS 与本地派生偏差较大，当前不展示数值'
+      : input.roas_primary_source !== 'af_cohort'
+        ? 'AF 官方成熟窗口 D7 ROAS 缺失，当前不展示回退值'
+        : '';
   if (status === 'pending') {
-    return `待补齐（源数据缺失）${suffix}`;
+    return '待补齐（AF 成熟窗口数据缺失）';
   }
   if (status === 'partial') {
     if (Number(input.total_cost || 0) <= 0) return '-';
+    if (!strictAfDisplay) return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
     const value = formatAsaRoasPercent(input.d7_roas);
     return hasCostWithoutD7Revenue(input)
-      ? `${value}（覆盖率达阈值，按已覆盖成本计算；成熟窗口未观察到 D7 收入）${suffix}`
-      : `${value}（覆盖率达阈值，按已覆盖成本计算）${suffix}`;
+      ? `${value}（覆盖率达阈值；成熟窗口未观察到 D7 收入）`
+      : `${value}（覆盖率达阈值）`;
   }
   if (status === 'partial_low') {
     if (Number(input.total_cost || 0) <= 0) return '-';
+    if (!strictAfDisplay) return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
     const value = formatAsaRoasPercent(input.d7_roas);
     return hasCostWithoutD7Revenue(input)
-      ? `${value}（覆盖率偏低，仅供参考；成熟窗口未观察到 D7 收入）${suffix}`
-      : `${value}（覆盖率偏低，仅供参考）${suffix}`;
+      ? `${value}（覆盖率偏低；成熟窗口未观察到 D7 收入）`
+      : `${value}（覆盖率偏低）`;
   }
   if (status === 'unavailable') {
-    return Number(input.total_cost || 0) > 0 ? `暂无成熟数据${suffix}` : '-';
+    return Number(input.total_cost || 0) > 0 ? '暂无成熟数据' : '-';
   }
   if (input.total_cost == null) {
-    return `${formatAsaRoasPercent(input.d7_roas)}${suffix}`;
+    return strictAfDisplay ? formatAsaRoasPercent(input.d7_roas) : hiddenReason || '-';
   }
   if (Number(input.total_cost || 0) <= 0) return '-';
+  if (!strictAfDisplay) {
+    return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
+  }
   const value = formatAsaRoasPercent(input.d7_roas);
-  return hasCostWithoutD7Revenue(input) ? `${value}（成熟窗口未观察到 D7 收入）${suffix}` : `${value}${suffix}`;
+  return hasCostWithoutD7Revenue(input) ? `${value}（成熟窗口未观察到 D7 收入）` : `${value}`;
 }
 
 function metricSummaryLine(
@@ -2640,8 +2787,12 @@ function buildAsaTodayJudgment(
   }
   if (summary.roas_data_status === 'partial') {
     return actionCount > 0
-      ? `当前成熟窗口的 Cohort 覆盖率已达可采纳阈值，当前 ROAS 优先以 ${summary.roas_primary_source === 'af_cohort' ? 'AF Cohort' : '本地回退'} 展示，先处理 ${actionCount} 条建议操作并继续观察缺口补齐。`
-      : `当前成熟窗口的 Cohort 覆盖率已达可采纳阈值，当前 ROAS 优先以 ${summary.roas_primary_source === 'af_cohort' ? 'AF Cohort' : '本地回退'} 展示，后续继续观察缺口是否补齐。`;
+      ? summary.roas_primary_source === 'af_cohort'
+        ? `当前成熟窗口的 Cohort 覆盖率已达可采纳阈值，ROAS 统一按 AF Cohort 主口径解释，先处理 ${actionCount} 条建议操作并继续观察缺口补齐。`
+        : `当前成熟窗口覆盖率已达可采纳阈值，但 AF 官方 D7 ROAS 仍缺失，当前不展示回退值，先处理 ${actionCount} 条执行项并继续观察回流。`
+      : summary.roas_primary_source === 'af_cohort'
+        ? '当前成熟窗口的 Cohort 覆盖率已达可采纳阈值，ROAS 统一按 AF Cohort 主口径解释，后续继续观察缺口是否补齐。'
+        : '当前成熟窗口覆盖率已达可采纳阈值，但 AF 官方 D7 ROAS 仍缺失，当前不展示回退值，后续继续观察回流。';
   }
   if (summary.roas_data_status === 'partial_low') {
     return actionCount > 0
@@ -2703,31 +2854,159 @@ function resolveAsaDispatchRouteKey(
   return ['scope', appKey || 'all', platform || 'all'].join(':');
 }
 
+export interface AsaBriefProductOverviewRow {
+  app_key: string;
+  platform: string;
+  display_name: string;
+  keyword_count: number;
+  installs: number;
+  total_cost: number;
+  mature_roas_cost: number;
+  purchase_count: number;
+  revenue_d7: number;
+  ecpi: number;
+  d7_roas: number;
+  roas_primary_source: RoasPrimarySource;
+  roas_warning_code: RoasWarningCode;
+  roas_data_status: RoasDataStatus;
+  current_stage: ProductStage | 'mixed';
+  pending_action_count: number;
+}
+
+function mergeAsaProductStage(stages: Array<ProductStage | null | undefined>): ProductStage | 'mixed' {
+  const normalized = Array.from(new Set(stages.filter(Boolean)));
+  return normalized.length === 1 ? normalized[0]! : 'mixed';
+}
+
+function mergeAsaProductRoasWarning(warnings: Array<RoasWarningCode | null | undefined>): RoasWarningCode {
+  if (warnings.includes('af_vs_local_mismatch')) return 'af_vs_local_mismatch';
+  if (warnings.includes('af_missing')) return 'af_missing';
+  if (warnings.includes('af_grain_unavailable')) return 'af_grain_unavailable';
+  return 'none';
+}
+
+function buildAsaProductOverviewRows(params: {
+  rows: AsaKeywordDashboardRow[];
+  actionRows: AsaKeywordRecommendationRow[];
+  appByKey: Map<string, AppConfigRecord>;
+}): AsaBriefProductOverviewRow[] {
+  const actionCountByProduct = new Map<string, number>();
+  for (const row of params.actionRows) {
+    const key = `${row.app_key}|${row.platform}`;
+    actionCountByProduct.set(key, (actionCountByProduct.get(key) || 0) + 1);
+  }
+
+  const grouped = new Map<
+    string,
+    {
+      app_key: string;
+      platform: string;
+      keywords: Set<string>;
+      installs: number;
+      total_cost: number;
+      purchase_count: number;
+      revenue_d7: number;
+      roas_covered_cost: number;
+      roas_missing_cost: number;
+      roas_primary_sources: RoasPrimarySource[];
+      roas_warning_codes: RoasWarningCode[];
+      stages: ProductStage[];
+    }
+  >();
+
+  for (const row of params.rows) {
+    const key = `${row.app_key}|${row.platform}`;
+    const current =
+      grouped.get(key) || {
+        app_key: row.app_key,
+        platform: row.platform,
+        keywords: new Set<string>(),
+        installs: 0,
+        total_cost: 0,
+        purchase_count: 0,
+        revenue_d7: 0,
+        roas_covered_cost: 0,
+        roas_missing_cost: 0,
+        roas_primary_sources: [],
+        roas_warning_codes: [],
+        stages: []
+      };
+    current.keywords.add(String(row.keyword || '').trim());
+    current.installs += Number(row.installs_7d || 0);
+    current.total_cost += Number(row.total_cost_7d || 0);
+    current.purchase_count += Number(row.purchase_count_7d || 0);
+    current.revenue_d7 += Number(row.revenue_d7_7d || 0);
+    current.roas_covered_cost += Number(row.roas_covered_cost || 0);
+    current.roas_missing_cost += Number(row.roas_missing_cost || 0);
+    current.roas_primary_sources.push(row.roas_primary_source);
+    current.roas_warning_codes.push(row.roas_warning_code);
+    current.stages.push(row.current_stage);
+    grouped.set(key, current);
+  }
+
+  return Array.from(grouped.values())
+    .map((row) => {
+      const aggregatedRoasStatus = resolveRoasDataStatus({
+        hasWindowRows: row.keywords.size > 0,
+        hasSpend: row.roas_covered_cost + row.roas_missing_cost > 0,
+        coveredCost: row.roas_covered_cost,
+        missingCost: row.roas_missing_cost
+      });
+      const d7Roas = row.roas_covered_cost > 0 ? row.revenue_d7 / row.roas_covered_cost : 0;
+      const roasPrimarySource =
+        row.roas_primary_sources.every((source) => source === 'af_cohort') ? 'af_cohort' : 'local_fallback';
+      return {
+        app_key: row.app_key,
+        platform: row.platform,
+        display_name: resolveProductViewName(params.appByKey.get(row.app_key), row.platform),
+        keyword_count: row.keywords.size,
+        installs: row.installs,
+        total_cost: row.total_cost,
+        mature_roas_cost: row.roas_covered_cost + row.roas_missing_cost,
+        purchase_count: row.purchase_count,
+        revenue_d7: row.revenue_d7,
+        ecpi: row.installs > 0 ? row.total_cost / row.installs : 0,
+        d7_roas: d7Roas,
+        roas_primary_source: roasPrimarySource as RoasPrimarySource,
+        roas_warning_code: mergeAsaProductRoasWarning(row.roas_warning_codes),
+        roas_data_status: aggregatedRoasStatus,
+        current_stage: mergeAsaProductStage(row.stages),
+        pending_action_count: actionCountByProduct.get(`${row.app_key}|${row.platform}`) || 0
+      };
+    })
+    .sort((left, right) => right.total_cost - left.total_cost || right.installs - left.installs || left.display_name.localeCompare(right.display_name));
+}
+
 export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Promise<AsaBriefPreview> {
-  const result = await queryAsaKeywordDashboard({
-    appKey: filters.appKey,
-    platform: filters.platform,
-    from: filters.reportDate,
-    to: filters.reportDate,
-    page: 1,
-    pageSize: 100
-  });
-  const summaryWindow = result.summary_window ?? buildAsaRoasWindow(filters.reportDate, null);
-  const briefSummary: AsaKeywordSummary = result.summary;
-  const appByKey = new Map((await listApps()).map((app) => [app.app_key, app]));
-  const rows = result.rows;
-  const rowContextMap = new Map(rows.map((row) => [[row.app_key, row.platform, row.keyword, row.campaign, row.adset].join('|'), row] as const));
-  const actionRows = (
-    await queryAsaKeywordRecommendations({
+  const [result, apps] = await Promise.all([
+    queryAllAsaKeywordDashboardRowsForBrief({
       appKey: filters.appKey,
-      platform: filters.platform,
+      platform: filters.platform || 'ios',
       from: filters.reportDate,
       to: filters.reportDate,
       page: 1,
-      pageSize: 50
+      pageSize: 500
+    }),
+    listApps()
+  ]);
+  const summaryWindow = result.summary_window ?? buildAsaRoasWindow(filters.reportDate, null);
+  const briefSummary: AsaKeywordSummary = result.summary;
+  const appByKey = new Map(apps.map((app) => [app.app_key, app]));
+  const eligibleAppKeys = new Set(asaTargets(apps).map((target) => target.app.app_key));
+  const rows = result.rows.filter((row) => eligibleAppKeys.has(row.app_key));
+  const actionRows = (
+    await queryAllAsaKeywordRecommendationsForBrief({
+      appKey: filters.appKey,
+      platform: filters.platform || 'ios',
+      status: 'pending',
+      from: filters.reportDate,
+      to: filters.reportDate,
+      page: 1,
+      pageSize: 200
     })
-  ).rows
-    .filter((row) => row.status === 'pending' || row.status === 'sent')
+  )
+    .filter((row) => eligibleAppKeys.has(row.app_key))
+    .filter((row) => row.status === 'pending')
     .sort((a, b) => {
       const rank = (status: string) => (status === 'pending' ? 0 : 1);
       return rank(a.status) - rank(b.status) || b.change_ratio - a.change_ratio;
@@ -2735,60 +3014,37 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
   const uniqueStages = Array.from(new Set(rows.map((row) => row.current_stage)));
   const currentStage = uniqueStages.length === 1 ? uniqueStages[0] : 'mixed';
   const todayJudgment = buildAsaTodayJudgment(currentStage, result.summary, actionRows);
-  const keywordOverviewRows = [...rows]
-    .sort((a, b) => (b.total_cost_7d || 0) - (a.total_cost_7d || 0) || (b.installs_7d || 0) - (a.installs_7d || 0))
-    .slice(0, 8);
-  const title = `ASA 关键词简报｜${filters.reportDate}`;
+  const productOverviewRows = buildAsaProductOverviewRows({
+    rows,
+    actionRows,
+    appByKey
+  }).slice(0, 8);
+  const title = `ASA 产品简报｜${filters.reportDate}`;
   const lines = [
     `报告日期：${filters.reportDate}`,
-    `D7 / CPP 成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}`,
+    `仅覆盖已配置 iOS 端的产品`,
+    `成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}`,
     '',
-    '【核心概览】',
-    `- 当前阶段：${stageTitle(currentStage)}`,
-    `- 关键词数：${result.summary.keyword_count}`,
-    `- 核心指标：近7日安装 ${result.summary.installs.toFixed(0)} ｜ 近7日成本 $${result.summary.total_cost.toFixed(2)} ｜ 近7日 eCPI ${formatAsaSummaryEcpi(result.summary)} ｜ CPP（成熟窗口） ${formatAsaSummaryCpp(briefSummary)} ｜ D7 ROAS（成熟窗口） ${formatAsaSummaryRoas(briefSummary)}`,
-    '',
-    '【今日判断】',
-    `- ${todayJudgment}`,
-    '',
-    '【关键词概览】',
-    ...(keywordOverviewRows.length > 0
-      ? keywordOverviewRows.map((row) => {
-          const appName = resolveProductViewName(appByKey.get(row.app_key), row.platform);
-          return `- ${appName}：关键词 ${row.keyword} ｜ 广告系列 ${row.campaign} ｜ 广告组 ${row.adset} ｜ 近7日安装 ${row.installs_7d.toFixed(0)} ｜ 近7日成本 $${row.total_cost_7d.toFixed(2)} ｜ 近7日 eCPI ${formatAsaSummaryEcpi({
-            total_cost: row.total_cost_7d,
-            installs: row.installs_7d,
-            ecpi: row.current_ecpi
+    '【产品概览】',
+    ...(productOverviewRows.length > 0
+      ? productOverviewRows.map((row) => {
+          return `- ${row.display_name}：关键词 ${row.keyword_count} 个 ｜ 近7日安装 ${row.installs.toFixed(0)} ｜ 近7日成本 $${row.total_cost.toFixed(2)} ｜ 近7日 eCPI ${formatAsaSummaryEcpi({
+            total_cost: row.total_cost,
+            installs: row.installs,
+            ecpi: row.ecpi
           })} ｜ 成熟窗口 D7 ROAS ${formatAsaSummaryRoas({
-            total_cost: row.total_cost_7d,
-            revenue_d7: row.revenue_d7_7d,
-            d7_roas: row.current_d7_roas,
+            total_cost: row.mature_roas_cost,
+            revenue_d7: row.revenue_d7,
+            d7_roas: row.d7_roas,
             roas_primary_source: row.roas_primary_source,
             roas_warning_code: row.roas_warning_code,
             roas_data_status: row.roas_data_status
-          })}`;
+          })} ｜ 待处理执行项 ${row.pending_action_count}`;
         })
-      : ['- 当前日期暂无 ASA 关键词汇总数据。']),
+      : ['- 当前日期暂无可展示的 ASA 产品汇总数据。']),
     '',
-    '【建议操作】',
-    ...(actionRows.length > 0
-      ? actionRows.slice(0, 12).map((row, index) => {
-          const appName = resolveProductViewName(appByKey.get(row.app_key), row.platform);
-          const context = rowContextMap.get([row.app_key, row.platform, row.keyword, row.campaign, row.adset].join('|'));
-          return `${index + 1}. [${statusLabel(row.status)}] ${appName} / ${row.keyword}\n   - 广告系列：${row.campaign} ｜ 广告组：${row.adset}\n   - ${metricSummaryLine(row, {
-            total_cost: context?.total_cost_7d,
-            installs: context?.installs_7d,
-            revenue_d7: context?.revenue_d7_7d,
-            purchase_count: context?.purchase_count_7d
-          })}`;
-        })
-      : ['- 当前没有可纳入简报的建议操作。']),
-    '',
-    '【口径说明】',
-    '- ASA 关键词成本直接来自 AppsFlyer Master API（关键词 + 广告系列 + 广告组）。',
-    '- 建议操作已并入 ASA 简报，不再单独发送。',
-    `- CPP 与 D7 ROAS 按成熟窗口（${summaryWindow.from} 至 ${summaryWindow.to}）汇总。`,
-    '- eCPI 显示为 “—” 表示有花费无安装；D7 ROAS 显示“待补齐/暂无成熟数据”表示 Cohort 源数据尚未完整。'
+    '【执行信息】',
+    '- 关键词级建议、执行状态跟踪、人工反馈与七天后数据，统一下沉到 ASA 专属多维表格。'
   ];
 
   const headerTitle = filters.appKey
@@ -2805,68 +3061,33 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
         tag: 'div',
         text: {
           tag: 'lark_md',
-          content: `📅 **报告日期**\n${filters.reportDate}\n当前阶段：${stageTitle(currentStage)}\nD7 / CPP 成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}`
+          content: `📅 **报告日期**\n${filters.reportDate}\n仅覆盖已配置 iOS 端的产品\n成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}\n详细关键词执行信息请查看 ASA 专属多维表格。`
         }
       },
-      {
-        tag: 'div',
-        fields: [
-          { is_short: true, text: { tag: 'lark_md', content: `**关键词数**\n${result.summary.keyword_count}` } },
-          { is_short: true, text: { tag: 'lark_md', content: `**安装量**\n${result.summary.installs.toFixed(0)}` } },
-          { is_short: true, text: { tag: 'lark_md', content: `**成本**\n$${result.summary.total_cost.toFixed(2)}` } },
-          { is_short: true, text: { tag: 'lark_md', content: `**eCPI**\n${formatAsaSummaryEcpi(result.summary)}` } },
-          { is_short: true, text: { tag: 'lark_md', content: `**CPP（成熟窗口）**\n${formatAsaSummaryCpp(briefSummary)}` } },
-          { is_short: true, text: { tag: 'lark_md', content: `**D7 ROAS（成熟窗口）**\n${formatAsaSummaryRoas(briefSummary)}` } }
-        ]
-      },
-      { tag: 'hr' },
-      { tag: 'div', text: { tag: 'lark_md', content: `🧭 **今日判断**\n${todayJudgment}` } },
       { tag: 'hr' },
       {
         tag: 'div',
         text: {
           tag: 'lark_md',
           content:
-            keywordOverviewRows.length > 0
-              ? `📦 **关键词概览**\n${keywordOverviewRows
+            productOverviewRows.length > 0
+              ? `📦 **产品概览**\n${productOverviewRows
                   .map((row) => {
-                    const appName = resolveProductViewName(appByKey.get(row.app_key), row.platform);
-                    return `- **${appName} / ${row.keyword}**\n  广告系列：${row.campaign}\n  广告组：${row.adset}\n  近7日安装 ${row.installs_7d.toFixed(0)} ｜ 近7日成本 $${row.total_cost_7d.toFixed(2)} ｜ 近7日 eCPI ${formatAsaSummaryEcpi({
-                      total_cost: row.total_cost_7d,
-                      installs: row.installs_7d,
-                      ecpi: row.current_ecpi
+                    return `- **${row.display_name}**\n  阶段：${stageTitle(row.current_stage)} ｜ 关键词 ${row.keyword_count} 个 ｜ 待处理执行项 ${row.pending_action_count}\n  近7日安装 ${row.installs.toFixed(0)} ｜ 近7日成本 $${row.total_cost.toFixed(2)} ｜ 近7日 eCPI ${formatAsaSummaryEcpi({
+                      total_cost: row.total_cost,
+                      installs: row.installs,
+                      ecpi: row.ecpi
                     })} ｜ 成熟窗口 D7 ROAS ${formatAsaSummaryRoas({
-                      total_cost: row.total_cost_7d,
-                      revenue_d7: row.revenue_d7_7d,
-                      d7_roas: row.current_d7_roas,
+                      total_cost: row.total_cost,
+                      revenue_d7: row.revenue_d7,
+                      d7_roas: row.d7_roas,
                       roas_primary_source: row.roas_primary_source,
                       roas_warning_code: row.roas_warning_code,
                       roas_data_status: row.roas_data_status
                     })}`;
                   })
                   .join('\n\n')}`
-              : '📦 **关键词概览**\n当前日期暂无 ASA 关键词汇总数据。'
-        }
-      },
-      { tag: 'hr' },
-      {
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content:
-            actionRows.length > 0
-              ? `🛠️ **建议操作**\n${actionRows
-                  .slice(0, 12)
-                  .map((row, index) => {
-                    const context = rowContextMap.get([row.app_key, row.platform, row.keyword, row.campaign, row.adset].join('|'));
-                    return `${index + 1}. **[${statusLabel(row.status)}] ${resolveProductViewName(appByKey.get(row.app_key), row.platform)} / ${row.keyword}**\n   广告系列：${row.campaign}\n   广告组：${row.adset}\n   ${metricSummaryLine(row, {
-                     total_cost: context?.total_cost_7d,
-                     installs: context?.installs_7d,
-                     revenue_d7: context?.revenue_d7_7d
-                   })}`;
-                  })
-                  .join('\n\n')}`
-              : '🛠️ **建议操作**\n当前没有可纳入简报的建议操作。'
+              : '📦 **产品概览**\n当前日期暂无可展示的 ASA 产品汇总数据。'
         }
       },
       {
@@ -2874,7 +3095,7 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
         elements: [
           {
             tag: 'plain_text',
-            content: `口径说明：ASA 关键词成本直接来自 AppsFlyer Master API（关键词 + 广告系列 + 广告组）。建议操作已并入 ASA 简报，不再单独发送。CPP 与 D7 ROAS 按成熟窗口（${summaryWindow.from} 至 ${summaryWindow.to}）汇总。eCPI 显示为“—”表示有花费无安装；D7 ROAS 显示“待补齐/暂无成熟数据”表示 Cohort 源数据尚未完整。`
+            content: `口径说明：ASA 简报只保留轻量产品概览，详细关键词级建议与反馈链路统一在 ASA 专属多维表格承接。成熟窗口 D7 ROAS 按 ${summaryWindow.from} 至 ${summaryWindow.to} 汇总展示。`
           }
         ]
       }
@@ -2890,6 +3111,7 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
     today_judgment: todayJudgment,
     rows,
     action_rows: actionRows,
+    product_overview_rows: productOverviewRows,
     text: lines.join('\n'),
     feishu_card_payload: card
   };
@@ -2911,7 +3133,12 @@ export async function sendAsaKeywordBrief(
   report: AsaBriefPreview;
   notify: { ok: boolean; status?: number; error?: string; render_mode?: 'interactive' | 'post' | 'text' | 'text_fallback' };
 }> {
-  const report = await buildAsaKeywordBriefPreview({ reportDate, appKey: filters.appKey, platform: filters.platform });
+  const normalizedPlatform = String(filters.platform || 'ios').trim().toLowerCase() || 'ios';
+  if (filters.platform && normalizedPlatform !== 'ios') {
+    throw new Error('asa_brief_ios_only');
+  }
+
+  const report = await buildAsaKeywordBriefPreview({ reportDate, appKey: filters.appKey, platform: normalizedPlatform });
   const routes = await listEnabledAsaKeywordRoutes();
   const matchedRoute = asaRouteForFilters(routes, filters);
   const routeKey = resolveAsaDispatchRouteKey(filters, matchedRoute);
@@ -2956,12 +3183,6 @@ export async function sendAsaKeywordBrief(
       last_error: notify.ok ? null : notify.error ?? null,
       sent_at: notify.ok ? new Date().toISOString() : null
     });
-    if (notify.ok && report.action_rows.length > 0) {
-      const rowIds = report.action_rows.filter((row) => row.status === 'pending').map((row) => row.id);
-      if (rowIds.length > 0) {
-        await pgQuery(`UPDATE asa_keyword_recommendations SET status = 'sent', updated_at = NOW() WHERE id = ANY($1::bigint[])`, [rowIds]);
-      }
-    }
     return { ok: notify.ok, skipped: false, report, notify };
   } finally {
     await releaseJobLock(lockName, lockOwnerId);

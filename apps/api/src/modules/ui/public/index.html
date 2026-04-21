@@ -166,7 +166,7 @@
 
               <div class="bitable-note-card">
                 <strong>运行说明</strong>
-                <p id="bitableSchedulePrimaryNote">每日 10:05（北京时间）自动执行。系统会在同一飞书多维表格中按日期创建或复用当天的「投放执行表」，同日重跑刷新当天内容，历史日期自动留档。</p>
+                <p id="bitableSchedulePrimaryNote">每日 10:05（北京时间）自动执行。系统会在同一飞书多维表格中分别按日期创建或复用当天的「非 ASA 执行表」与「ASA 关键词执行表」，同日重跑刷新当天内容，历史日期自动留档。</p>
                 <p>表内只保留对实际投放有用的字段，不再显示技术字段；“投放项名称”会固定为飞书主字段第一列，“七天后数据”由系统自动补写。同一天再次导出时，系统会尽量保留你已填写的“执行状态”“是否采纳”“人工批复”和已回填的“七天后数据”。</p>
               </div>
             </div>
@@ -1130,7 +1130,7 @@
                   <div class="stack asa-subpanel">
                     <div class="card-head card-head-compact">
                       <h5>ASA 简报</h5>
-                      <p>可单独预览和发送 ASA 简报，建议动作会随简报一起发送，不会混入通用日报。</p>
+                      <p>可单独预览和发送 ASA 轻量简报，仅覆盖已配置 iOS 端的产品；详细关键词执行信息统一下沉到 ASA 专属多维表格。</p>
                     </div>
                     <form id="asaBriefForm" class="asa-brief-form">
                       <div class="asa-brief-controls">
@@ -1145,9 +1145,8 @@
                         <label class="filter-field">
                           <span class="field-label">平台</span>
                           <select id="asaBriefPlatformSelect" name="platform">
-                            <option value="">全部平台</option>
+                            <option value="">全部 iOS 产品</option>
                             <option value="ios">iOS</option>
-                            <option value="android">Android</option>
                           </select>
                         </label>
                       </div>
@@ -1156,7 +1155,7 @@
                         <button id="sendAsaBriefBtn" class="btn btn-primary" type="button">发送 ASA 简报</button>
                       </div>
                     </form>
-                    <div id="asaBriefStatus" class="hint">默认使用 ASA 简报专用发送配置；如果没有命中专用配置，会回退到应用级或全局飞书配置。</div>
+                    <div id="asaBriefStatus" class="hint">默认使用 ASA 简报专用发送配置；如果没有命中专用配置，会回退到应用级或全局飞书配置。ASA 简报仅支持 iOS 范围。</div>
                   </div>
                 </div>
               </section>
@@ -1412,6 +1411,8 @@
                     <th>Android 应用 ID</th>
                     <th>兼容应用 ID</th>
                     <th>数据集名称</th>
+                    <th>平台接入</th>
+                    <th>接入缺口</th>
                     <th>时区</th>
                     <th>通知配置</th>
                     <th>更新时间</th>
@@ -1691,38 +1692,17 @@
           <div id="dailyBriefSummaryGrid" class="daily-brief-summary-grid"></div>
 
           <section class="daily-brief-section">
-            <h5>🧭 今日判断</h5>
+            <h5>⚠️ 异常提醒</h5>
             <p id="dailyBriefJudgment" class="daily-brief-judgment">-</p>
           </section>
 
           <section class="daily-brief-section">
-            <div class="title-with-help">
-              <h5>🛠️ 建议操作</h5>
-              <div class="help-group">
-                <button
-                  id="dailyBriefThresholdHelpBtn"
-                  class="help-icon"
-                  type="button"
-                  aria-label="查看日报预算动作阈值说明"
-                >
-                  ?
-                </button>
-                <div id="dailyBriefThresholdHelpPanel" class="help-popover help-popover-floating help-popover-compact">
-                  <h4>日报预算动作阈值</h4>
-                  <ul class="simple-list">
-                    <li>日报不再只展示 Top 5，而是展示所有超过阈值的预算动作。</li>
-                    <li>当前阈值：置信度 ≥ 80%，且 eCPI 相对目标偏离 ≥ 25%。</li>
-                    <li>为避免日报过长，单日报预算动作展示上限为 30 条。</li>
-                    <li>展示顺序按 eCPI 偏离程度与置信度综合排序。</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
+            <h5>📦 产品概览</h5>
             <div id="dailyBriefActions" class="daily-brief-action-list"></div>
           </section>
 
           <section class="daily-brief-section">
-            <h5>📦 重点内容预览</h5>
+            <h5>🎯 重点关注产品</h5>
             <div id="dailyBriefBody" class="daily-brief-body"></div>
           </section>
 
@@ -1745,13 +1725,13 @@
         <div class="daily-brief-summary-grid" id="asaBriefSummaryGrid"></div>
         <section class="section-panel section-panel-inner">
           <div class="card-head card-head-compact">
-            <h4>本期判断</h4>
+            <h4>执行说明</h4>
           </div>
           <p id="asaBriefJudgment" class="daily-brief-judgment">-</p>
         </section>
         <section class="section-panel section-panel-inner">
           <div class="card-head card-head-compact">
-            <h4>建议操作</h4>
+            <h4>产品概览</h4>
           </div>
           <div id="asaBriefActions" class="daily-brief-action-list"></div>
         </section>

@@ -197,6 +197,9 @@ router.get('/api/asa-keywords/brief/preview', async (req, res, next) => {
     if (!reportDate || !isDate(reportDate)) {
       return res.status(400).json({ ok: false, error: 'invalid_report_date' });
     }
+    if (platform && platform !== 'ios') {
+      return res.status(400).json({ ok: false, error: 'asa_brief_ios_only' });
+    }
     const preview = await buildAsaKeywordBriefPreview({
       reportDate,
       appKey: appKey || undefined,
@@ -217,6 +220,9 @@ router.post('/api/asa-keywords/brief/send', async (req, res, next) => {
     const platform = typeof body.platform === 'string' ? body.platform.trim().toLowerCase() : '';
     if (!reportDate || !isDate(reportDate)) {
       return res.status(400).json({ ok: false, error: 'invalid_report_date' });
+    }
+    if (platform && platform !== 'ios') {
+      return res.status(400).json({ ok: false, error: 'asa_brief_ios_only' });
     }
 
     const lockName = [

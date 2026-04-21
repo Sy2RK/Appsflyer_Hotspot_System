@@ -292,7 +292,7 @@ CREATE INDEX IF NOT EXISTS idx_operation_logs_lookup
 
 CREATE TABLE IF NOT EXISTS bitable_export_configs (
   id BIGSERIAL PRIMARY KEY,
-  source_type TEXT NOT NULL UNIQUE CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')),
+  source_type TEXT NOT NULL UNIQUE CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions', 'delivery_actions_non_asa', 'delivery_actions_asa')),
   enabled BOOLEAN NOT NULL DEFAULT FALSE,
   target_table_id TEXT,
   target_table_name TEXT,
@@ -312,7 +312,7 @@ ALTER TABLE bitable_export_configs
 
 ALTER TABLE bitable_export_configs
   ADD CONSTRAINT bitable_export_configs_source_type_check
-  CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')) NOT VALID;
+  CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions', 'delivery_actions_non_asa', 'delivery_actions_asa')) NOT VALID;
 
 ALTER TABLE bitable_export_configs
   VALIDATE CONSTRAINT bitable_export_configs_source_type_check;
@@ -335,7 +335,7 @@ ALTER TABLE bitable_export_configs
 
 CREATE TABLE IF NOT EXISTS bitable_export_daily_tables (
   id BIGSERIAL PRIMARY KEY,
-  source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions', 'delivery_actions_non_asa', 'delivery_actions_asa')),
   report_date DATE NOT NULL,
   table_id TEXT NOT NULL DEFAULT '',
   table_name TEXT NOT NULL DEFAULT '',
@@ -352,7 +352,7 @@ CREATE INDEX IF NOT EXISTS idx_bitable_export_daily_tables_lookup
 
 CREATE TABLE IF NOT EXISTS bitable_export_record_refs (
   id BIGSERIAL PRIMARY KEY,
-  source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions', 'delivery_actions_non_asa', 'delivery_actions_asa')),
   report_date DATE NOT NULL,
   table_id TEXT NOT NULL DEFAULT '',
   snapshot_id TEXT NOT NULL DEFAULT '',
@@ -381,7 +381,7 @@ ALTER TABLE bitable_export_record_refs
 
 CREATE TABLE IF NOT EXISTS recommendation_execution_feedbacks (
   id BIGSERIAL PRIMARY KEY,
-  source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions', 'delivery_actions_non_asa', 'delivery_actions_asa')),
   recommendation_type TEXT NOT NULL CHECK (recommendation_type IN ('budget', 'asa_keyword')),
   recommendation_id BIGINT NOT NULL,
   report_date DATE NOT NULL,
@@ -405,7 +405,7 @@ CREATE INDEX IF NOT EXISTS idx_recommendation_execution_feedbacks_lookup
 CREATE TABLE IF NOT EXISTS feedback_skill_versions (
   id BIGSERIAL PRIMARY KEY,
   scope TEXT NOT NULL,
-  source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('pull_daily', 'asa_raw', 'delivery_actions', 'delivery_actions_non_asa', 'delivery_actions_asa')),
   from_date DATE,
   to_date DATE,
   dataset_row_count INTEGER NOT NULL DEFAULT 0,
@@ -527,6 +527,8 @@ CREATE TABLE IF NOT EXISTS asa_keyword_states (
   roas_window_to DATE,
   roas_data_status TEXT NOT NULL DEFAULT 'unavailable',
   roas_coverage_ratio DOUBLE PRECISION NOT NULL DEFAULT 0,
+  roas_covered_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+  roas_missing_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
   target_ecpi DOUBLE PRECISION NOT NULL DEFAULT 0,
   target_cpp DOUBLE PRECISION NOT NULL DEFAULT 0,
   target_d7_roas DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -543,6 +545,8 @@ ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_window_from DATE;
 ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_window_to DATE;
 ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_data_status TEXT NOT NULL DEFAULT 'unavailable';
 ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_coverage_ratio DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_covered_cost DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_missing_cost DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS af_cohort_roas DOUBLE PRECISION;
 ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS local_derived_roas DOUBLE PRECISION;
 ALTER TABLE asa_keyword_states ADD COLUMN IF NOT EXISTS roas_primary_source TEXT NOT NULL DEFAULT 'local_fallback';

@@ -1,10 +1,10 @@
 import crypto from 'crypto';
 import { logger } from '@api/common/logger/logger.js';
 import { env } from '@shared/config/env.js';
+import { activeBitableExportSourceTypes } from '@shared/utils/bitableExport.js';
 import { runBitableFeedbackSync } from '@shared/utils/recommendationFeedback.js';
 import { releaseJobLock, tryAcquireJobLock } from '@shared/utils/repositories.js';
 
-const SOURCE_TYPE = 'delivery_actions' as const;
 const WORKER_LOCK = 'worker:bitable_feedback_sync:tick';
 const WORKER_LOCK_TTL_MS = 30 * 60 * 1000;
 
@@ -28,7 +28,9 @@ async function tick(): Promise<void> {
       logger.warn('bitable_feedback_sync_skip_distributed_overlap');
       return;
     }
-    await runBitableFeedbackSync(SOURCE_TYPE, logger, 'worker.bitable_feedback_sync');
+    for (const sourceType of activeBitableExportSourceTypes()) {
+      await runBitableFeedbackSync(sourceType, logger, 'worker.bitable_feedback_sync');
+    }
   } catch (error) {
     logger.error('bitable_feedback_sync_failed', {
       error: error instanceof Error ? error.message : String(error)

@@ -75,6 +75,7 @@ interface DailyBriefBudgetHighlight {
 
 interface DailyBriefAlertHighlight {
   app_key: string;
+  platform: string;
   severity: string;
   metric: string;
   delta_value: number;
@@ -87,6 +88,17 @@ interface DailyBriefActionItem {
   category: 'alert' | 'budget' | 'data';
   title: string;
   detail: string;
+}
+
+export interface DailyBriefFocusProduct {
+  app_key: string;
+  platform: string;
+  display_name: string;
+  signal: '风险提示' | '表现亮点';
+  headline: string;
+  detail: string;
+  sort_rank: number;
+  total_cost: number;
 }
 
 interface FeishuCardPayload {
@@ -109,6 +121,7 @@ export interface DailyBriefPreview {
   title: string;
   text: string;
   today_judgment: string;
+  anomaly_reminder: string;
   render_mode: 'interactive' | 'text_fallback';
   feishu_card_payload: FeishuCardPayload;
   summary: {
@@ -144,6 +157,7 @@ export interface DailyBriefPreview {
   budget_highlights: DailyBriefBudgetHighlight[];
   alert_highlights: DailyBriefAlertHighlight[];
   action_items: DailyBriefActionItem[];
+  focus_products: DailyBriefFocusProduct[];
 }
 
 export interface DailyBriefSendResult {
@@ -722,6 +736,125 @@ function resolveVisibleProductCount(apps: AppConfigRecord[], filters: DailyBrief
   return total;
 }
 
+function buildFocusProducts(params: {
+  appRows: Array<DailyBriefAppMetrics & { display_name: string; open_alerts: number; pending_budget_actions: number }>;
+  alertRows: DailyBriefAlertHighlight[];
+  summary: DailyBriefPreview['summary'];
+}): DailyBriefFocusProduct[] {
+  const focusByKey = new Map<string, DailyBriefFocusProduct>();
+  const alertByProduct = new Map<string, DailyBriefAlertHighlight[]>();
+
+  for (const alert of params.alertRows) {
+    const key = `${alert.app_key}|${normalizePlatformValue(alert.platform) || 'unknown'}`;
+    const list = alertByProduct.get(key) || [];
+    list.push(alert);
+    alertByProduct.set(key, list);
+  }
+
+  for (const row of params.appRows) {
+    const key = `${row.app_key}|${row.platform}`;
+    const productAlerts = (alertByProduct.get(key) || []).sort((left, right) => severityRank(left.severity) - severityRank(right.severity));
+    const topAlert = productAlerts[0];
+    const overallEcpi = params.summary.blended_ecpi > 0 ? params.summary.blended_ecpi : 0;
+
+    let focus: DailyBriefFocusProduct | null = null;
+    if (topAlert) {
+      focus = {
+        app_key: row.app_key,
+        platform: row.platform,
+        display_name: row.display_name,
+        signal: '风险提示',
+        headline: `${topAlert.severity} 异常未恢复`,
+        detail: `${metricLabel(topAlert.metric)} 出现明显波动，当前告警 ${row.open_alerts} 条 ｜ 成本 ${formatUsd(row.total_cost)} ｜ eCPI ${formatUsd(row.blended_ecpi)}`,
+        sort_rank: topAlert.severity === 'P0' ? 0 : 1,
+        total_cost: row.total_cost
+      };
+    } else if (row.total_cost >= 50 && row.installs <= 0) {
+      focus = {
+        app_key: row.app_key,
+        platform: row.platform,
+        display_name: row.display_name,
+        signal: '风险提示',
+        headline: '有成本无安装',
+        detail: `当日成本 ${formatUsd(row.total_cost)}，安装 0，建议优先核对归因链路和投放流量质量。`,
+        sort_rank: 2,
+        total_cost: row.total_cost
+      };
+    } else if (overallEcpi > 0 && row.total_cost >= 80 && row.blended_ecpi >= overallEcpi * 1.5) {
+      focus = {
+        app_key: row.app_key,
+        platform: row.platform,
+        display_name: row.display_name,
+        signal: '风险提示',
+        headline: 'eCPI 明显高于整体均线',
+        detail: `当前 eCPI ${formatUsd(row.blended_ecpi)}，整体均线 ${formatUsd(overallEcpi)} ｜ 安装 ${row.installs.toFixed(0)} ｜ 成本 ${formatUsd(row.total_cost)}`,
+        sort_rank: 3,
+        total_cost: row.total_cost
+      };
+    } else if (overallEcpi > 0 && row.total_cost >= 80 && row.installs >= 5 && row.blended_ecpi <= overallEcpi * 0.65) {
+      focus = {
+        app_key: row.app_key,
+        platform: row.platform,
+        display_name: row.display_name,
+        signal: '表现亮点',
+        headline: 'eCPI 明显优于整体均线',
+        detail: `当前 eCPI ${formatUsd(row.blended_ecpi)}，整体均线 ${formatUsd(overallEcpi)} ｜ 安装 ${row.installs.toFixed(0)} ｜ 成本 ${formatUsd(row.total_cost)}`,
+        sort_rank: 4,
+        total_cost: row.total_cost
+      };
+    } else if (row.pending_budget_actions >= 3 && row.total_cost >= 50) {
+      focus = {
+        app_key: row.app_key,
+        platform: row.platform,
+        display_name: row.display_name,
+        signal: '风险提示',
+        headline: '待处理执行项较多',
+        detail: `当前待处理执行项 ${row.pending_budget_actions} 条 ｜ 成本 ${formatUsd(row.total_cost)} ｜ 安装 ${row.installs.toFixed(0)}`,
+        sort_rank: 5,
+        total_cost: row.total_cost
+      };
+    }
+
+    if (focus && !focusByKey.has(key)) {
+      focusByKey.set(key, focus);
+    }
+  }
+
+  return Array.from(focusByKey.values())
+    .sort((left, right) => left.sort_rank - right.sort_rank || right.total_cost - left.total_cost || left.display_name.localeCompare(right.display_name))
+    .slice(0, 6);
+}
+
+function buildAnomalyReminder(params: {
+  summary: DailyBriefPreview['summary'];
+  alertRows: DailyBriefAlertHighlight[];
+  appRows: Array<DailyBriefAppMetrics & { display_name: string; open_alerts: number; pending_budget_actions: number }>;
+  focusProducts: DailyBriefFocusProduct[];
+  appByKey: Map<string, AppConfigRecord>;
+}): string {
+  if (params.summary.apps_with_data === 0) {
+    return '当日暂无可用 Pull 汇总数据，建议先核对 Pull 链路与 AppsFlyer 返回状态。';
+  }
+  const topAlert = [...params.alertRows].sort((left, right) => severityRank(left.severity) - severityRank(right.severity))[0];
+  if (topAlert) {
+    return `${resolveDisplayName(topAlert.app_key, params.appByKey.get(topAlert.app_key)?.display_name)} 出现 ${topAlert.severity} 级 ${metricLabel(topAlert.metric)} 异常，建议优先排查，详细执行项请转到多维表格处理。`;
+  }
+  const zeroInstallHighSpend = [...params.appRows]
+    .filter((row) => row.total_cost >= 50 && row.installs <= 0)
+    .sort((left, right) => right.total_cost - left.total_cost)[0];
+  if (zeroInstallHighSpend) {
+    return `${zeroInstallHighSpend.display_name} 出现“有成本无安装”，优先核对归因与投放流量质量，详细动作请在多维表格查看。`;
+  }
+  const riskProductCount = params.focusProducts.filter((row) => row.signal === '风险提示').length;
+  if (riskProductCount > 0) {
+    return `当前有 ${riskProductCount} 个重点关注产品，建议优先处理 ${params.focusProducts[0]?.display_name || '异常产品'}，详细执行信息已下沉到多维表格。`;
+  }
+  if (params.summary.pending_budget_actions > 0) {
+    return `当前没有产品级严重异常，但仍有 ${params.summary.pending_budget_actions} 条待处理执行项，详细动作请在多维表格查看。`;
+  }
+  return '当前未发现产品级严重异常，建议快速浏览产品概览；详细执行信息请在多维表格处理。';
+}
+
 function buildActionItems(params: {
   appRows: Array<DailyBriefAppMetrics & { display_name: string; open_alerts: number; pending_budget_actions: number }>;
   budgetHighlights: DailyBriefBudgetHighlight[];
@@ -803,11 +936,8 @@ function buildDailyBriefInteractiveCard(params: {
   title: string;
   summary: DailyBriefPreview['summary'];
   appRows: Array<DailyBriefAppMetrics & { display_name: string; open_alerts: number; pending_budget_actions: number }>;
-  budgetHighlights: DailyBriefBudgetHighlight[];
-  alertRows: DailyBriefAlertHighlight[];
-  actionItems: DailyBriefActionItem[];
-  appByKey: Map<string, AppConfigRecord>;
-  todayJudgment: string;
+  focusProducts: DailyBriefFocusProduct[];
+  anomalyReminder: string;
   existingSentAt?: string | null;
   filters: DailyBriefPreview['filters'];
 }): FeishuCardPayload {
@@ -817,38 +947,17 @@ function buildDailyBriefInteractiveCard(params: {
           .slice(0, 8)
           .map(
             (row) =>
-              `• **${row.display_name}**\n媒体源：${params.filters.media_sources.length > 0 ? params.filters.media_sources.join('、') : '全部'}\n安装 ${row.installs.toFixed(0)} ｜ 点击 ${row.clicks.toFixed(0)} ｜ 成本 ${formatUsd(row.total_cost)} ｜ eCPI ${formatUsd(row.blended_ecpi)} ｜ 告警 ${row.open_alerts} ｜ 预算 ${row.pending_budget_actions}`
+              `• **${row.display_name}**\n安装 ${row.installs.toFixed(0)} ｜ 成本 ${formatUsd(row.total_cost)} ｜ eCPI ${formatUsd(row.blended_ecpi)} ｜ 异常 ${row.open_alerts} ｜ 待处理 ${row.pending_budget_actions}`
           )
           .join('\n')
       : '• 当前日期暂无 Pull 汇总数据。';
 
-  const budgetOverview =
-    params.budgetHighlights.length > 0
-      ? params.budgetHighlights
-          .map((row) => {
-            const appName = resolveProductViewName(params.appByKey.get(row.app_key), row.platform);
-            const metricText = formatBudgetMetricStatus(row);
-            const executionSummary = formatExecutionActionSummary(row);
-            return `${actionEmoji(row.action)} **${appName}**\n媒体源：${row.media_source}\n广告系列：${row.keyword}\n${formatBudgetActionSummary(row)} ｜ ${metricText} ｜ 置信度 ${(row.confidence * 100).toFixed(0)}${
-              executionSummary ? `\n执行动作：${executionSummary}` : ''
-            }\n理由：${row.reason_summary || buildBudgetAdjustmentReason(row)}`;
-          })
+  const focusOverview =
+    params.focusProducts.length > 0
+      ? params.focusProducts
+          .map((row) => `• **${row.display_name}｜${row.signal}**\n${row.headline}\n${row.detail}`)
           .join('\n\n')
-      : '暂无待处理预算动作。';
-
-  const alertOverview =
-    params.alertRows.length > 0
-      ? params.alertRows
-          .map((row) => {
-            const appName = resolveDisplayName(row.app_key, params.appByKey.get(row.app_key)?.display_name);
-            return `• **${appName}** / ${row.severity} / ${metricLabel(row.metric)}\nΔ ${row.delta_value.toFixed(2)} ｜ ${trimSentence(row.explanation, 72) || '暂无解释'}`;
-          })
-          .join('\n\n')
-      : '当前没有未恢复告警。';
-
-  const actionOverview = params.actionItems
-    .map((item, index) => `${index + 1}. ${priorityEmoji(item.priority)} **[${item.priority}] ${item.title}**\n${item.detail}`)
-    .join('\n\n');
+      : '当前没有需要额外标记的重点关注产品。';
 
   const filterNote =
     params.filters.media_sources.length > 0
@@ -858,28 +967,14 @@ function buildDailyBriefInteractiveCard(params: {
   const elements: Array<Record<string, unknown>> = [
     {
       tag: 'div',
-      text: cardMarkdown(`📅 **报告日期**\n${params.reportDate}\n${filterNote}`)
-    },
-    {
-      tag: 'div',
-      fields: [
-        { is_short: true, text: cardMarkdown(`**产品覆盖**\n${params.summary.apps_with_data}/${params.summary.app_count}`) },
-        { is_short: true, text: cardMarkdown(`**综合 eCPI**\n${formatUsd(params.summary.blended_ecpi)}`) },
-        { is_short: true, text: cardMarkdown(`**安装**\n${params.summary.total_installs.toFixed(0)}`) },
-        { is_short: true, text: cardMarkdown(`**点击**\n${params.summary.total_clicks.toFixed(0)}`) },
-        { is_short: true, text: cardMarkdown(`**成本**\n${formatUsd(params.summary.total_cost)}`) },
-        { is_short: true, text: cardMarkdown(`**待处理预算**\n${params.summary.pending_budget_actions}`) }
-      ]
+      text: cardMarkdown(`📅 **报告日期**\n${params.reportDate}\n${filterNote}\n详细执行信息请查看非 ASA / ASA 专属多维表格。`)
     },
     { tag: 'hr' },
-    { tag: 'div', text: cardMarkdown(`🧭 **今日判断**\n${params.todayJudgment}`) },
+    { tag: 'div', text: cardMarkdown(`⚠️ **异常提醒**\n${params.anomalyReminder}`) },
     { tag: 'hr' },
     { tag: 'div', text: cardMarkdown(`📦 **产品概览**\n${appOverview}`) },
     { tag: 'hr' },
-    { tag: 'div', text: cardMarkdown(`🎯 **预算动作（超过阈值，共 ${params.budgetHighlights.length} 条）**\n${budgetOverview}`) },
-    { tag: 'div', text: cardMarkdown(`⚠️ **未恢复告警**\n${alertOverview}`) },
-    { tag: 'hr' },
-    { tag: 'div', text: cardMarkdown(`🛠️ **建议操作**\n${actionOverview}`) }
+    { tag: 'div', text: cardMarkdown(`🎯 **重点关注产品**\n${focusOverview}`) }
   ];
 
   if (params.existingSentAt) {
@@ -991,18 +1086,26 @@ export async function buildDailyBriefPreview(
     appByKey,
     summary
   });
-  const todayJudgment = buildTodayJudgment(summary);
+  const focusProducts = buildFocusProducts({
+    appRows,
+    alertRows: alertHighlights,
+    summary
+  });
+  const todayJudgment = buildAnomalyReminder({
+    summary,
+    alertRows: alertHighlights,
+    appRows,
+    focusProducts,
+    appByKey
+  });
   const title = `${env.dailyBriefTitlePrefix}｜${reportDate}`;
   const cardPayload = buildDailyBriefInteractiveCard({
     reportDate,
     title,
     summary,
     appRows,
-    budgetHighlights: normalizedBudgetHighlights,
-    alertRows: alertHighlights,
-    actionItems,
-    appByKey,
-    todayJudgment,
+    focusProducts,
+    anomalyReminder: todayJudgment,
     existingSentAt: existingDispatch?.status === 'sent' ? existingDispatch.sent_at : null,
     filters: {
       app_key: cleanText(filters.appKey) || null,
@@ -1017,15 +1120,7 @@ export async function buildDailyBriefPreview(
     lines.push(`媒体源过滤：${mediaSourcesApplied.join('、')}`);
   }
   lines.push('');
-  lines.push('【核心概览】');
-  lines.push(`- 产品覆盖：${summary.apps_with_data}/${summary.app_count}`);
-  lines.push(
-    `- 核心指标：安装 ${summary.total_installs.toFixed(0)} ｜ 点击 ${summary.total_clicks.toFixed(0)} ｜ 成本 ${formatUsd(summary.total_cost)} ｜ 综合 eCPI ${formatUsd(summary.blended_ecpi)}`
-  );
-  lines.push(`- 风险状态：未恢复告警 ${summary.open_alerts} 条 ｜ 待处理预算建议 ${summary.pending_budget_actions} 条`);
-
-  lines.push('');
-  lines.push('【今日判断】');
+  lines.push('【异常提醒】');
   lines.push(`- ${todayJudgment}`);
 
   lines.push('');
@@ -1040,35 +1135,19 @@ export async function buildDailyBriefPreview(
     lines.push('- 当前日期暂无 Pull 汇总数据。');
   }
 
-  if (normalizedBudgetHighlights.length > 0) {
-    lines.push('');
-    lines.push(`【预算动作（超过阈值，共 ${normalizedBudgetHighlights.length} 条）】`);
-    for (const row of normalizedBudgetHighlights) {
-      const appName = resolveProductViewName(appByKey.get(row.app_key), row.platform);
-      const metricModeText = formatBudgetMetricStatus(row);
-      lines.push(
-        `- ${appName}：媒体源 ${row.media_source}；广告系列 ${row.keyword}；${formatBudgetActionSummary(row)}，${metricModeText}，置信度 ${(row.confidence * 100).toFixed(0)}%。${
-          formatExecutionActionSummary(row) ? `执行动作 ${formatExecutionActionSummary(row)}。` : ''
-        }${row.reason_summary}`
-      );
+  lines.push('');
+  lines.push('【重点关注产品】');
+  if (focusProducts.length > 0) {
+    for (const row of focusProducts) {
+      lines.push(`- ${row.display_name}｜${row.signal}：${row.headline}。${row.detail}`);
     }
-  }
-
-  if (alertHighlights.length > 0) {
-    lines.push('');
-    lines.push('【未恢复告警】');
-    for (const row of alertHighlights) {
-      const appName = resolveDisplayName(row.app_key, appByKey.get(row.app_key)?.display_name);
-      lines.push(`- ${appName} / ${row.severity} / ${metricLabel(row.metric)}：Δ ${row.delta_value.toFixed(2)}，${trimSentence(row.explanation, 72)}`);
-    }
+  } else {
+    lines.push('- 当前没有需要额外标记的重点关注产品。');
   }
 
   lines.push('');
-  lines.push('【建议操作】');
-  actionItems.forEach((item, index) => {
-    lines.push(`${index + 1}. [${item.priority}] ${item.title}`);
-    lines.push(`   - ${item.detail}`);
-  });
+  lines.push('【执行信息】');
+  lines.push('- 详细执行动作、关键词级建议、执行状态与人工反馈已统一下沉到非 ASA / ASA 专属多维表格。');
 
   if (existingDispatch?.status === 'sent' && existingDispatch.sent_at) {
     lines.push('');
@@ -1081,6 +1160,7 @@ export async function buildDailyBriefPreview(
     title,
     text: lines.join('\n'),
     today_judgment: todayJudgment,
+    anomaly_reminder: todayJudgment,
     render_mode: 'interactive',
     feishu_card_payload: cardPayload,
     summary,
@@ -1094,7 +1174,8 @@ export async function buildDailyBriefPreview(
     apps: appRows,
     budget_highlights: normalizedBudgetHighlights,
     alert_highlights: alertHighlights,
-    action_items: actionItems
+    action_items: actionItems,
+    focus_products: focusProducts
   };
 }
 

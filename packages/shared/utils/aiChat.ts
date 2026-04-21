@@ -196,6 +196,11 @@ interface AiChatToolCall {
   rawArguments: string;
 }
 
+interface AiChatPromptDateHint {
+  singleDate: string;
+  yearSource: 'page_context' | 'current_year';
+}
+
 interface AiChatCompletionStepResult {
   content: string;
   toolCalls: AiChatToolCall[];
@@ -427,10 +432,10 @@ export function normalizeGuruToolName(name: string): GuruMcpToolName | null {
 }
 
 function toProviderToolFunctionName(toolName: GuruMcpToolName, provider: AiChatProviderId): string {
-  if (provider !== 'openai') {
-    return toolName;
+  if (provider === 'openai' || provider === 'openrouter') {
+    return OPENAI_GURU_TOOL_NAME_ALIASES[toolName] || toolName;
   }
-  return OPENAI_GURU_TOOL_NAME_ALIASES[toolName] || toolName;
+  return toolName;
 }
 
 export function buildAiChatToolDefinitionsForModel(
@@ -1127,7 +1132,7 @@ async function buildBudgetSummaryPack(spec: AiContextPackSpec): Promise<AiBuiltC
   }
 
   const joinSql = `LEFT JOIN recommendation_execution_feedbacks ref
-       ON ref.source_type = 'delivery_actions'
+       ON ref.source_type = 'delivery_actions_non_asa'
       AND ref.recommendation_type = 'budget'
       AND ref.recommendation_id = br.id`;
   const { whereSql, values } = buildBudgetWhere(spec);
@@ -1755,6 +1760,96 @@ function normalizeLoadedContexts(
     }));
 }
 
+function extractYearFromDateLike(value: unknown): string | null {
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{4})-\d{2}-\d{2}(?:\s+\d{2}:\d{2}:\d{2})?$/);
+  return match ? match[1] : null;
+}
+
+function resolvePageContextYear(pageContext?: AiChatPageContext): string | null {
+  const candidates: unknown[] = [
+    pageContext?.defaults?.to,
+    pageContext?.defaults?.from,
+    pageContext?.currentFilters?.to,
+    pageContext?.currentFilters?.from
+  ];
+  for (const item of normalizeLoadedContexts(pageContext?.loaded_contexts, 4)) {
+    candidates.push(item.applied_filters?.to);
+    candidates.push(item.applied_filters?.from);
+  }
+  for (const value of candidates) {
+    const year = extractYearFromDateLike(value);
+    if (year) {
+      return year;
+    }
+  }
+  return null;
+}
+
+function toValidIsoDate(year: string, month: number, day: number): string | null {
+  if (!Number.isInteger(month) || !Number.isInteger(day) || month < 1 || month > 12 || day < 1 || day > 31) {
+    return null;
+  }
+  const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  const probe = new Date(`${iso}T00:00:00Z`);
+  if (
+    Number.isNaN(probe.getTime()) ||
+    probe.getUTCFullYear() !== Number(year) ||
+    probe.getUTCMonth() + 1 !== month ||
+    probe.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return iso;
+}
+
+function inferPromptDateHint(promptMessage: string, pageContext?: AiChatPageContext): AiChatPromptDateHint | null {
+  const prompt = String(promptMessage || '').trim();
+  if (!prompt) {
+    return null;
+  }
+  if (/\b\d{4}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}/.test(prompt) || /\b\d{4}\s*年/.test(prompt)) {
+    return null;
+  }
+
+  const matches: Array<{ month: number; day: number; index: number }> = [];
+  const monthDayPattern = /(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?/g;
+  for (const match of prompt.matchAll(monthDayPattern)) {
+    const month = Number(match[1]);
+    const day = Number(match[2]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      matches.push({ month, day, index: match.index ?? 0 });
+    }
+  }
+  const dottedPattern = /(^|[^\d])(\d{1,2})[./](\d{1,2})(?=(?:的|日|号|天|\s|$|[，。,、；;！!？?]))/g;
+  for (const match of prompt.matchAll(dottedPattern)) {
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      matches.push({ month, day, index: (match.index ?? 0) + String(match[1] || '').length });
+    }
+  }
+
+  const unique = matches
+    .sort((a, b) => a.index - b.index)
+    .filter((item, index, items) => index === 0 || `${item.month}-${item.day}` !== `${items[index - 1]?.month}-${items[index - 1]?.day}`);
+  if (unique.length !== 1) {
+    return null;
+  }
+
+  const pageYear = resolvePageContextYear(pageContext);
+  const fallbackYear = getDateStringInTimezone(new Date(), env.timezone).slice(0, 4);
+  const year = pageYear || fallbackYear;
+  const singleDate = toValidIsoDate(year, unique[0].month, unique[0].day);
+  if (!singleDate) {
+    return null;
+  }
+  return {
+    singleDate,
+    yearSource: pageYear ? 'page_context' : 'current_year'
+  };
+}
+
 function buildLoadedContextTrace(items: AiChatLoadedContext[] | undefined): AiChatPageTrace[] {
   return normalizeLoadedContexts(items, 2).map((item) => {
     const filters = sanitizePageContextFilterRecord(item.applied_filters as Record<string, unknown> | undefined);
@@ -1866,6 +1961,7 @@ function buildAiChatSystemPrompt(input: {
     pageContextRule,
     clarificationRule,
     '调用工具前，先判断是否已经有足够的手动上下文或历史工具结果；避免重复查询同一份数据。',
+    '如果用户只写了“4.2”“4/2”“4月2日”这类未带年份的日期，优先沿用当前页面上下文里的年份；如果页面没有年份，再按当前业务年份理解。不要自行改成别的年份。',
     '使用 metrics.get_trend 时：installs/clicks/total_cost 必须走 pull；revenue/event_count/purchase_count 必须走 push。不要把 ROAS 当成可直接查询的 metric；若用户明确要实时/当日收入口径，请分别查询 cost 与 revenue 后再回答。',
     '若用户询问 ROAS、回收、D7 ROAS，且诉求是与简报/日报口径对齐，优先使用 roas.get_summary。通用每日简报 / 预算建议场景用 scope=budget；ASA 简报 / ASA 看板场景用 scope=asa。使用 roas.get_summary 后，回答里必须明确写出“报告日期”和“成熟窗口 from 至 to”，并说明这不是当日实时 ROAS。',
     '如果工具结果写明“暂无聚合记录/暂无可用数据”，要把它理解为数据缺失或未回传，而不是数值等于 0；此时不要直接下结论说收入为 0 或 ROAS 为 0%。',
@@ -1964,6 +2060,7 @@ function resolveGuruToolArguments(input: {
   args: Record<string, unknown>;
   pageContext?: AiChatPageContext;
   manualSpecs: AiContextPackSpec[];
+  promptDateHint?: AiChatPromptDateHint | null;
 }): Record<string, unknown> {
   const fallbackSpec = findFallbackContextSpec(input.toolName, input.pageContext, input.manualSpecs);
   const fallbackArgs = fallbackSpec ? resolveGuruMcpToolForContextPack(fallbackSpec).arguments : {};
@@ -1987,7 +2084,7 @@ function resolveGuruToolArguments(input: {
   }
   if (input.toolName === GURU_MCP_TOOL_NAMES.metricsGetTrend) {
     const metric = readText('metric');
-    return {
+    const result = {
       appKey: readText('appKey') || '',
       templateId: readText('templateId') || 'media_source',
       platform: readText('platform'),
@@ -1997,18 +2094,27 @@ function resolveGuruToolArguments(input: {
       metric,
       eventName: readText('eventName')
     };
+    if (input.promptDateHint?.singleDate) {
+      result.from = input.promptDateHint.singleDate;
+      result.to = input.promptDateHint.singleDate;
+    }
+    return result;
   }
   if (input.toolName === GURU_MCP_TOOL_NAMES.roasGetSummary) {
-    return {
+    const result = {
       appKey: readText('appKey') || '',
       templateId: readText('templateId') || 'mature_window',
       scope: normalizeRoasScope(readText('scope')),
       platform: readText('platform'),
       reportDate: readText('reportDate')
     };
+    if (input.promptDateHint?.singleDate) {
+      result.reportDate = input.promptDateHint.singleDate;
+    }
+    return result;
   }
   if (input.toolName === GURU_MCP_TOOL_NAMES.budgetGetSummary) {
-    return {
+    const result = {
       appKey: readText('appKey') || '',
       templateId: readText('templateId') || 'platform_media_source',
       platform: readText('platform'),
@@ -2019,8 +2125,13 @@ function resolveGuruToolArguments(input: {
       isAdopted: readBoolean('isAdopted'),
       hasManualReview: readBoolean('hasManualReview')
     };
+    if (input.promptDateHint?.singleDate) {
+      result.from = input.promptDateHint.singleDate;
+      result.to = input.promptDateHint.singleDate;
+    }
+    return result;
   }
-  return {
+  const result = {
     appKey: readText('appKey') || '',
     templateId: readText('templateId') || 'stage',
     platform: readText('platform'),
@@ -2030,6 +2141,11 @@ function resolveGuruToolArguments(input: {
     keyword: readText('keyword'),
     campaign: readText('campaign')
   };
+  if (input.promptDateHint?.singleDate) {
+    result.from = input.promptDateHint.singleDate;
+    result.to = input.promptDateHint.singleDate;
+  }
+  return result;
 }
 
 function buildToolSignature(toolName: GuruMcpToolName, args: Record<string, unknown>): string {
@@ -2313,6 +2429,7 @@ export async function runAiChat(
   const shouldEnableThinking =
     modelConfig.supportsThinking && (input.images.length > 0 || contextPromptResult.packsUsed.length > 0);
   const pageContextPrompt = buildAiPageContextPrompt(input.pageContext);
+  const promptDateHint = inferPromptDateHint(promptMessage, input.pageContext);
   const pageTrace = buildLoadedContextTrace(input.pageContext?.loaded_contexts);
   const toolTrace: AiChatToolTrace[] = [];
   const toolTraceSignatures = new Set<string>();
@@ -2395,7 +2512,8 @@ export async function runAiChat(
         toolName: toolCall.name,
         args: toolCall.arguments,
         pageContext: input.pageContext,
-        manualSpecs: input.contextPacks
+        manualSpecs: input.contextPacks,
+        promptDateHint
       });
       const signature = buildToolSignature(toolCall.name, resolvedArgs);
       let execution: AiChatToolExecutionResult;
