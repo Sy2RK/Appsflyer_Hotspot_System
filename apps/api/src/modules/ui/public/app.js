@@ -7101,8 +7101,8 @@ function asaBriefSummaryItems(report) {
     { label: '安装量', value: toFixed2(summary.installs || 0) },
     { label: '成本', value: `$${toFixed2(summary.total_cost || 0)}` },
     { label: '每次安装成本（eCPI）', value: formatAsaEcpiDisplay(summary.ecpi || 0, summary.total_cost || 0, summary.installs || 0) },
-    { label: cppLabel, value: formatAsaCppDisplay(summary.cpp || 0, summary.total_cost || 0, summary.purchase_count || 0, summary.roas_data_status) },
-    { label: roasLabel, value: formatAsaD7RoasDisplay(summary.d7_roas || 0, summary.total_cost || 0, summary.revenue_d7 || 0, summary.roas_data_status, summary) }
+    { label: cppLabel, value: formatAsaCppDisplay(summary.cpp || 0, summary.mature_roas_cost ?? summary.total_cost ?? 0, summary.purchase_count || 0, summary.roas_data_status) },
+    { label: roasLabel, value: formatAsaD7RoasDisplay(summary.d7_roas || 0, summary.mature_roas_cost ?? summary.total_cost ?? 0, summary.revenue_d7 || 0, summary.roas_data_status, summary) }
   ];
 }
 
@@ -7133,17 +7133,20 @@ function renderAsaBriefModal(payload, mode) {
     (summaryWindow ? ` 成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}。` : '');
   el.asaBriefActions.innerHTML = productOverviewRows.length
     ? productOverviewRows
-        .map((row) => `
-          <article class="daily-brief-action-card priority-P2">
-            <div class="daily-brief-action-head">
-              <strong>${escapeHtml(row.display_name)}</strong>
-              <span class="badge badge-open">${escapeHtml(asaStageLabel(row.current_stage))}</span>
-            </div>
-            <p>关键词 ${escapeHtml(String(row.keyword_count || 0))} 个 ｜ 待处理执行项 ${escapeHtml(String(row.pending_action_count || 0))}</p>
-            <p>近7日安装 ${escapeHtml(toFixed2(row.installs))} ｜ 近7日成本 $${escapeHtml(toFixed2(row.total_cost))} ｜ 近7日 eCPI ${escapeHtml(formatAsaEcpiDisplay(row.ecpi, row.total_cost, row.installs))}</p>
-            <p>成熟窗口 D7 ROAS ${escapeHtml(formatAsaD7RoasDisplay(row.d7_roas, row.total_cost, row.revenue_d7, row.roas_data_status, row))}</p>
-          </article>
-        `)
+        .map((row) => {
+          const matureRoasCost = Number(row.mature_roas_cost ?? row.total_cost ?? 0);
+          return `
+            <article class="daily-brief-action-card priority-P2">
+              <div class="daily-brief-action-head">
+                <strong>${escapeHtml(row.display_name)}</strong>
+                <span class="badge badge-open">${escapeHtml(asaStageLabel(row.current_stage))}</span>
+              </div>
+              <p>关键词 ${escapeHtml(String(row.keyword_count || 0))} 个 ｜ 待处理执行项 ${escapeHtml(String(row.pending_action_count || 0))}</p>
+              <p>近7日安装 ${escapeHtml(toFixed2(row.installs))} ｜ 近7日成本 $${escapeHtml(toFixed2(row.total_cost))} ｜ 近7日 eCPI ${escapeHtml(formatAsaEcpiDisplay(row.ecpi, row.total_cost, row.installs))}</p>
+              <p>成熟窗口 D7 ROAS ${escapeHtml(formatAsaD7RoasDisplay(row.d7_roas, matureRoasCost, row.revenue_d7, row.roas_data_status, row))}</p>
+            </article>
+          `;
+        })
         .join('')
     : '<p class="hint">当前日期暂无可展示的 ASA 产品概览。</p>';
   el.asaBriefRaw.textContent = JSON.stringify(report.feishu_card_payload || {}, null, 2);

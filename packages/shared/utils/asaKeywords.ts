@@ -208,6 +208,7 @@ export interface AsaKeywordSummary {
   keyword_count: number;
   installs: number;
   total_cost: number;
+  mature_roas_cost: number;
   purchase_count: number;
   revenue_d7: number;
   ecpi: number;
@@ -394,6 +395,7 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
       keyword_count: 0,
       installs: 0,
       total_cost: 0,
+      mature_roas_cost: 0,
       purchase_count: 0,
       revenue_d7: 0,
       ecpi: 0,
@@ -437,6 +439,7 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
     keyword_count: Number(rawSummary.keyword_count || 0),
     installs: Number(rawSummary.installs || 0),
     total_cost: Number(rawSummary.total_cost || 0),
+    mature_roas_cost: Number(rawSummary.covered_roas_cost_sum || 0) + Number(rawSummary.missing_roas_cost_sum || 0),
     purchase_count: isRoasDataDisplayableStatus(roasDataStatus) ? Number(rawSummary.purchase_count || 0) : 0,
     revenue_d7: isRoasDataDisplayableStatus(roasDataStatus) ? Number(rawSummary.revenue_d7 || 0) : 0,
     ecpi: Number(rawSummary.ecpi || 0),
@@ -2493,6 +2496,7 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
   const summary: AsaKeywordSummary = {
     ...baseSummary,
     purchase_count: matureSummary.purchase_count,
+    mature_roas_cost: matureSummary.mature_roas_cost,
     revenue_d7: matureSummary.revenue_d7,
     cpp: matureSummary.cpp,
     d7_roas: matureSummary.d7_roas,
@@ -2908,6 +2912,8 @@ function buildAsaProductOverviewRows(params: {
       revenue_d7: number;
       roas_covered_cost: number;
       roas_missing_cost: number;
+      af_roas_cost: number;
+      af_roas_weighted_sum: number;
       roas_primary_sources: RoasPrimarySource[];
       roas_warning_codes: RoasWarningCode[];
       stages: ProductStage[];
@@ -2927,6 +2933,8 @@ function buildAsaProductOverviewRows(params: {
         revenue_d7: 0,
         roas_covered_cost: 0,
         roas_missing_cost: 0,
+        af_roas_cost: 0,
+        af_roas_weighted_sum: 0,
         roas_primary_sources: [],
         roas_warning_codes: [],
         stages: []
@@ -2938,6 +2946,18 @@ function buildAsaProductOverviewRows(params: {
     current.revenue_d7 += Number(row.revenue_d7_7d || 0);
     current.roas_covered_cost += Number(row.roas_covered_cost || 0);
     current.roas_missing_cost += Number(row.roas_missing_cost || 0);
+    const rowAfRoas = row.af_cohort_roas == null ? null : Number(row.af_cohort_roas);
+    const rowMatureCoveredCost = Number(row.roas_covered_cost || 0);
+    const hasStrictAfRoas =
+      row.roas_primary_source === 'af_cohort' &&
+      row.roas_warning_code !== 'af_vs_local_mismatch' &&
+      rowAfRoas != null &&
+      Number.isFinite(rowAfRoas) &&
+      rowMatureCoveredCost > 0;
+    if (hasStrictAfRoas) {
+      current.af_roas_cost += rowMatureCoveredCost;
+      current.af_roas_weighted_sum += rowMatureCoveredCost * rowAfRoas;
+    }
     current.roas_primary_sources.push(row.roas_primary_source);
     current.roas_warning_codes.push(row.roas_warning_code);
     current.stages.push(row.current_stage);
@@ -2952,9 +2972,16 @@ function buildAsaProductOverviewRows(params: {
         coveredCost: row.roas_covered_cost,
         missingCost: row.roas_missing_cost
       });
-      const d7Roas = row.roas_covered_cost > 0 ? row.revenue_d7 / row.roas_covered_cost : 0;
+      const localDerivedRoas = row.roas_covered_cost > 0 ? row.revenue_d7 / row.roas_covered_cost : 0;
+      const afWeightedRoas = row.af_roas_cost > 0 ? row.af_roas_weighted_sum / row.af_roas_cost : null;
       const roasPrimarySource =
-        row.roas_primary_sources.every((source) => source === 'af_cohort') ? 'af_cohort' : 'local_fallback';
+        afWeightedRoas != null &&
+        row.roas_covered_cost > 0 &&
+        row.af_roas_cost + 1e-9 >= row.roas_covered_cost &&
+        row.roas_primary_sources.every((source) => source === 'af_cohort')
+          ? 'af_cohort'
+          : 'local_fallback';
+      const d7Roas = roasPrimarySource === 'af_cohort' ? afWeightedRoas ?? 0 : localDerivedRoas;
       return {
         app_key: row.app_key,
         platform: row.platform,
@@ -3078,7 +3105,7 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
                       installs: row.installs,
                       ecpi: row.ecpi
                     })} ｜ 成熟窗口 D7 ROAS ${formatAsaSummaryRoas({
-                      total_cost: row.total_cost,
+                      total_cost: row.mature_roas_cost,
                       revenue_d7: row.revenue_d7,
                       d7_roas: row.d7_roas,
                       roas_primary_source: row.roas_primary_source,

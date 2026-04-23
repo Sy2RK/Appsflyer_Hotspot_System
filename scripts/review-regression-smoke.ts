@@ -2745,8 +2745,14 @@ async function main(): Promise<void> {
   assert.match(asaKeywordsScript, /ASA 专属多维表格/);
   assert.match(asaKeywordsScript, /AF 官方成熟窗口 D7 ROAS 缺失，当前不展示回退值/);
   assert.match(asaKeywordsScript, /内部成熟回收 D7 ROAS .*仅用于保守判断/);
+  assert.match(asaKeywordsScript, /af_roas_weighted_sum/);
+  assert.match(asaKeywordsScript, /const afWeightedRoas = row\.af_roas_cost > 0 \? row\.af_roas_weighted_sum \/ row\.af_roas_cost : null;/);
+  assert.match(asaKeywordsScript, /const d7Roas = roasPrimarySource === 'af_cohort' \? afWeightedRoas \?\? 0 : localDerivedRoas;/);
+  assert.match(asaKeywordsScript, /total_cost: row\.mature_roas_cost/);
   assert.match(asaKeywordsScript, /product_overview_rows:/);
   assert.match(asaKeywordsScript, /throw new Error\('asa_brief_ios_only'\)/);
+  assert.match(uiAppScript, /const matureRoasCost = Number\(row\.mature_roas_cost \?\? row\.total_cost \?\? 0\);/);
+  assert.match(uiAppScript, /formatAsaD7RoasDisplay\(row\.d7_roas, matureRoasCost, row\.revenue_d7, row\.roas_data_status, row\)/);
   assert.doesNotMatch(asaKeywordsScript, /【关键词概览】/);
   assert.doesNotMatch(asaKeywordsScript, /🛠️ \*\*建议操作\*\*/);
 
