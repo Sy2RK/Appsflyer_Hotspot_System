@@ -86,7 +86,7 @@ export const env = {
   detectorIntervalMs: optionalNumber('DETECTOR_INTERVAL_MS', 5 * 60 * 1000),
   pullerIntervalMs: optionalNumber('PULLER_INTERVAL_MS', 24 * 60 * 60 * 1000),
   pullerReportHour: optionalNumber('PULLER_REPORT_HOUR', 9),
-  pullerBackfillDays: optionalNumber('PULLER_BACKFILL_DAYS', 3),
+	  pullerBackfillDays: optionalNumber('PULLER_BACKFILL_DAYS', 7),
   pullerRunOnBoot: (process.env.PULLER_RUN_ON_BOOT ?? 'false').toLowerCase() === 'true',
   pullerRequestIntervalMs: optionalNumber('PULLER_REQUEST_INTERVAL_MS', 1000),
   pullerRequestTimeoutMs: optionalNumber('PULLER_REQUEST_TIMEOUT_MS', 20 * 1000),
@@ -99,10 +99,10 @@ export const env = {
     optionalNumber('PULLER_REQUEST_TIMEOUT_MS', 20 * 1000)
   ),
   pullerLockTtlMs: optionalNumber('PULLER_LOCK_TTL_MS', 15 * 60 * 1000),
-  pullerSameContentCooldownRecentMs: optionalNumber(
-    'PULLER_SAME_CONTENT_COOLDOWN_RECENT_MS',
-    2 * 60 * 60 * 1000
-  ),
+	  pullerSameContentCooldownRecentMs: optionalNumber(
+	    'PULLER_SAME_CONTENT_COOLDOWN_RECENT_MS',
+	    30 * 60 * 1000
+	  ),
   pullerSameContentCooldownHistoricalMs: optionalNumber(
     'PULLER_SAME_CONTENT_COOLDOWN_HISTORICAL_MS',
     24 * 60 * 60 * 1000
@@ -116,7 +116,7 @@ export const env = {
   budgetAdvisorLookbackDays: optionalNumber('BUDGET_ADVISOR_LOOKBACK_DAYS', 30),
   asaKeywordIntervalMs: optionalNumber('ASA_KEYWORD_INTERVAL_MS', 24 * 60 * 60 * 1000),
   asaKeywordReportHour: optionalNumber('ASA_KEYWORD_REPORT_HOUR', 9),
-  asaKeywordBackfillDays: optionalNumber('ASA_KEYWORD_BACKFILL_DAYS', 14),
+	  asaKeywordBackfillDays: optionalNumber('ASA_KEYWORD_BACKFILL_DAYS', 35),
   asaKeywordRunOnBoot: (process.env.ASA_KEYWORD_RUN_ON_BOOT ?? 'false').toLowerCase() === 'true',
   asaKeywordRequestIntervalMs: optionalNumber('ASA_KEYWORD_REQUEST_INTERVAL_MS', 1200),
   asaKeywordRequestTimeoutMs: optionalNumber('ASA_KEYWORD_REQUEST_TIMEOUT_MS', 20 * 1000),

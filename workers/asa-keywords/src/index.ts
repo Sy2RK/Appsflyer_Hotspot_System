@@ -23,7 +23,12 @@ import { getPullScheduleTarget } from '@shared/utils/runtimeSchedule.js';
 let running = false;
 let lastScheduleMarker = '';
 let lastRetryBlockMarker = '';
+let lastReconcileMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
+const RECONCILE_START_HOUR = 10;
+const RECONCILE_END_HOUR = 18;
+const RECONCILE_INTERVAL_MINUTES = 30;
+const RECONCILE_BACKFILL_DAYS = 7;
 const ASA_KEYWORD_WORKER_NAME = 'worker.asa_keywords';
 const ASA_KEYWORD_JOB_LOCK = 'worker:asa_keywords:cycle';
 const ASA_KEYWORD_JOB_LOCK_TTL_MS = 5 * 60 * 1000;
@@ -36,6 +41,7 @@ const RETRY_POLICY = {
 
 function summarizeAsaKeywordCycleMessage(
   reportDate: string,
+  backfillDays: number,
   result: {
     failed_slice_count: number;
     retryable_failed_slice_count?: number;
@@ -44,19 +50,30 @@ function summarizeAsaKeywordCycleMessage(
 ): string {
   const completed = didAsaKeywordCycleComplete(result);
   if (result.failed_slice_count === 0) {
-    return `定时重算 ASA 关键词链路完成 ${reportDate}，回算 ${env.asaKeywordBackfillDays} 天`;
+    return `定时重算 ASA 关键词链路完成 ${reportDate}，回算 ${backfillDays} 天`;
   }
   if (completed) {
     const terminalFailedCount =
       typeof result.terminal_failed_slice_count === 'number'
         ? result.terminal_failed_slice_count
         : result.failed_slice_count;
-    return `定时重算 ASA 关键词链路完成（${terminalFailedCount} 个切片获取失败，已按降级结果继续） ${reportDate}，回算 ${env.asaKeywordBackfillDays} 天`;
+    return `定时重算 ASA 关键词链路完成（${terminalFailedCount} 个切片获取失败，已按降级结果继续） ${reportDate}，回算 ${backfillDays} 天`;
   }
-  return `定时重算 ASA 关键词链路未完全完成 ${reportDate}，回算 ${env.asaKeywordBackfillDays} 天`;
+  return `定时重算 ASA 关键词链路未完全完成 ${reportDate}，回算 ${backfillDays} 天`;
 }
 
-async function tick(reportDate: string, runMarker: string): Promise<boolean> {
+function buildReconcileRunMarker(dateKey: string, hour: number, minute: number): string | null {
+  if (hour < RECONCILE_START_HOUR || hour >= RECONCILE_END_HOUR) {
+    return null;
+  }
+  const bucketMinute = Math.floor(minute / RECONCILE_INTERVAL_MINUTES) * RECONCILE_INTERVAL_MINUTES;
+  if (minute !== bucketMinute) {
+    return null;
+  }
+  return `${dateKey}|reconcile:${String(hour).padStart(2, '0')}:${String(bucketMinute).padStart(2, '0')}`;
+}
+
+async function tick(reportDate: string, runMarker: string, backfillDays = env.asaKeywordBackfillDays): Promise<boolean> {
   if (running) {
     logger.warn('asa_keyword_cycle_skip_overlap');
     return false;
@@ -92,11 +109,11 @@ async function tick(reportDate: string, runMarker: string): Promise<boolean> {
       return false;
     }
     attemptClaimed = true;
-    const result = await withScheduledWorkerTimeout(
-      ASA_KEYWORD_WORKER_NAME,
-      env.scheduledWorkerMaxRuntimeMs,
-      () => runAsaKeywordCycle(env.asaKeywordBackfillDays, logger)
-    );
+	    const result = await withScheduledWorkerTimeout(
+	      ASA_KEYWORD_WORKER_NAME,
+	      env.scheduledWorkerMaxRuntimeMs,
+	      () => runAsaKeywordCycle(backfillDays, logger)
+	    );
     logger.info('asa_keyword_cycle_result', { report_date: reportDate, ...result });
     const completed = didAsaKeywordCycleComplete(result);
     if (completed) {
@@ -115,10 +132,11 @@ async function tick(reportDate: string, runMarker: string): Promise<boolean> {
         target_type: 'asa_keyword_cycle',
         target_key: reportDate,
         status: summarizeAsaKeywordCycleStatus(result),
-        summary: summarizeAsaKeywordCycleMessage(reportDate, result),
-        detail_json: {
-          report_date: reportDate,
-          completed,
+	        summary: summarizeAsaKeywordCycleMessage(reportDate, backfillDays, result),
+	        detail_json: {
+	          report_date: reportDate,
+	          run_marker: runMarker,
+	          completed,
           ...result
         }
       },
@@ -236,11 +254,33 @@ async function bootstrap(): Promise<void> {
             }
             return;
           }
-          lastRetryBlockMarker = '';
-          await tick(reportDate, runMarker);
-        }
-      }
-    } finally {
+	          lastRetryBlockMarker = '';
+	          await tick(reportDate, runMarker);
+	        }
+	      }
+
+	      const reconcileMarker = buildReconcileRunMarker(dateKey, parts.hour, parts.minute);
+	      if (reconcileMarker && reconcileMarker !== lastReconcileMarker) {
+	        const reportDate = getDefaultPullReadinessReportDate(now, env.timezone);
+	        const readiness = await isPullReportReadyForDownstream(reportDate);
+	        lastReconcileMarker = reconcileMarker;
+	        if (!readiness.ready) {
+	          logger.info('asa_keyword_reconcile_blocked_by_pull_gate', {
+	            report_date: reportDate,
+	            run_marker: reconcileMarker,
+	            gate_status: readiness.status,
+	            reason: readiness.reason
+	          });
+	        } else {
+	          logger.info('asa_keyword_reconcile_started', {
+	            report_date: reportDate,
+	            run_marker: reconcileMarker,
+	            backfill_days: RECONCILE_BACKFILL_DAYS
+	          });
+	          await tick(reportDate, reconcileMarker, RECONCILE_BACKFILL_DAYS);
+	        }
+	      }
+	    } finally {
       setTimeout(() => {
         scheduleLoop().catch((error) => {
           logger.error('asa_keyword_schedule_loop_failed', {

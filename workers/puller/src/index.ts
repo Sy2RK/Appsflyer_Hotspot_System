@@ -16,10 +16,13 @@ import {
 import { getPullScheduleTarget } from '@shared/utils/runtimeSchedule.js';
 
 let running = false;
-let firstCycle = true;
 let lastScheduleMarker = '';
 let lastRetryBlockMarker = '';
+let lastReconcileMarker = '';
 const SCHEDULE_POLL_MS = 30 * 1000;
+const RECONCILE_START_HOUR = 10;
+const RECONCILE_END_HOUR = 18;
+const RECONCILE_INTERVAL_MINUTES = 30;
 const PULLER_WORKER_NAME = 'worker.puller';
 const PULLER_JOB_LOCK = 'worker:puller:tick';
 const PULLER_JOB_LOCK_TTL_MS = 5 * 60 * 1000;
@@ -51,6 +54,17 @@ function didPullCycleComplete(result: { retryable_failed_count?: number; failed_
   return Number(retryableFailedCount) === 0;
 }
 
+function buildReconcileRunMarker(dateKey: string, hour: number, minute: number): string | null {
+  if (hour < RECONCILE_START_HOUR || hour >= RECONCILE_END_HOUR) {
+    return null;
+  }
+  const bucketMinute = Math.floor(minute / RECONCILE_INTERVAL_MINUTES) * RECONCILE_INTERVAL_MINUTES;
+  if (minute !== bucketMinute) {
+    return null;
+  }
+  return `${dateKey}|reconcile:${String(hour).padStart(2, '0')}:${String(bucketMinute).padStart(2, '0')}`;
+}
+
 async function tick(runMarker: string): Promise<boolean> {
   if (running) {
     logger.warn('puller_skip_overlap');
@@ -58,7 +72,7 @@ async function tick(runMarker: string): Promise<boolean> {
   }
 
   running = true;
-  const backfillDays = firstCycle ? env.pullerBackfillDays : 1;
+  const backfillDays = Math.max(1, Math.floor(env.pullerBackfillDays));
   let lockOwnerId = '';
   let stopLockHeartbeat: (() => void) | null = null;
   let attemptClaimed = false;
@@ -147,7 +161,6 @@ async function tick(runMarker: string): Promise<boolean> {
     if (lockOwnerId) {
       await releaseJobLock(PULLER_JOB_LOCK, lockOwnerId);
     }
-    firstCycle = false;
     running = false;
     if (shouldExitAfterTimeout) {
       logger.error('puller_process_exit_after_timeout', {
@@ -207,10 +220,20 @@ async function bootstrap(): Promise<void> {
           }
           return;
         }
-        lastRetryBlockMarker = '';
-        await tick(runMarker);
-      }
-    } finally {
+	        lastRetryBlockMarker = '';
+	        await tick(runMarker);
+	      }
+
+	      const reconcileMarker = buildReconcileRunMarker(dateKey, parts.hour, parts.minute);
+	      if (reconcileMarker && reconcileMarker !== lastReconcileMarker) {
+	        lastReconcileMarker = reconcileMarker;
+	        logger.info('puller_reconcile_started', {
+	          run_marker: reconcileMarker,
+	          backfill_days: Math.max(1, Math.floor(env.pullerBackfillDays))
+	        });
+	        await tick(reconcileMarker);
+	      }
+	    } finally {
       setTimeout(() => {
         scheduleLoop().catch((error) => {
           logger.error('puller_schedule_loop_failed', {

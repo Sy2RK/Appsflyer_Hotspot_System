@@ -17,6 +17,14 @@ import {
 import { sendAlertNotification, sendFeishuInteractiveCardNotification, type NotificationResult } from './notifier.js';
 import { resolveDisplayName, resolveProductViewName } from './displayName.js';
 import { getTzParts } from './schedule.js';
+import { buildAfMetricScopeMeta, type AfMetricScopeMeta } from './afMetricScopes.js';
+import { buildAfOfficialBatchSnapshot, type AfOfficialBatchSnapshot } from './appsflyerOfficialSnapshots.js';
+import { buildDailyReportExpectedComponents } from './appsflyerExpectedComponents.js';
+import {
+  afDashboardCampaignKey,
+  queryAfDashboardDailyCampaignMetrics,
+  type AfDashboardCampaignMetric
+} from './afDashboardMetrics.js';
 import type { AppConfigRecord, DailyBriefRouteRecord, RoasPrimarySource, RoasWarningCode } from '../types/models.js';
 
 interface LoggerLike {
@@ -71,6 +79,7 @@ interface DailyBriefBudgetHighlight {
     scenario_tags?: string[];
   } | null;
   reason_summary?: string;
+  official_dashboard?: AfDashboardCampaignMetric | null;
 }
 
 interface DailyBriefAlertHighlight {
@@ -120,6 +129,8 @@ export interface DailyBriefPreview {
   report_date: string;
   title: string;
   text: string;
+  metric_scope: AfMetricScopeMeta;
+  official_snapshot: AfOfficialBatchSnapshot;
   today_judgment: string;
   anomaly_reminder: string;
   render_mode: 'interactive' | 'text_fallback';
@@ -181,6 +192,7 @@ const DAILY_BRIEF_SEND_LOCK_PREFIX = 'daily_brief:send';
 const DAILY_BRIEF_SEND_LOCK_TTL_MS = 30 * 60 * 1000;
 const DAILY_BRIEF_BUDGET_MIN_CONFIDENCE = 0.8;
 const DAILY_BRIEF_BUDGET_MIN_DELTA_RATIO = 0.25;
+const ASA_MEDIA_SOURCE = 'apple search ads';
 
 function numberValue(raw: unknown): number {
   const value = Number(raw);
@@ -208,6 +220,10 @@ function normalizeMediaSources(mediaSources?: string[]): string[] {
         .sort((a, b) => a.localeCompare(b))
     )
   );
+}
+
+function isAsaMediaSource(mediaSource: string | null | undefined): boolean {
+  return cleanText(mediaSource).toLowerCase() === ASA_MEDIA_SOURCE;
 }
 
 function buildDailyBriefRoutePayload(filters: DailyBriefFilters): {
@@ -383,9 +399,9 @@ function formatRoasPercent(value: number | null | undefined): string {
   return `${(Math.max(0, Number(value || 0)) * 100).toFixed(2)}%`;
 }
 
-function formatBudgetMetricStatus(row: DailyBriefBudgetHighlight): string {
+function formatDecisionMetricStatus(row: DailyBriefBudgetHighlight): string {
   if (row.primary_metric !== 'roas') {
-    return `当前 eCPI ${formatUsd(row.current_ecpi)} ｜ 目标 ${formatUsd(row.target_ecpi)}`;
+    return `决策 eCPI ${formatUsd(row.current_ecpi)} ｜ 目标 ${formatUsd(row.target_ecpi)}`;
   }
   const windowLabel = formatRoasWindowSummary(row);
   const sourceLabel = row.roas_primary_source === 'af_cohort' ? 'AF Cohort 主口径' : '本地回退口径';
@@ -416,6 +432,27 @@ function formatBudgetMetricStatus(row: DailyBriefBudgetHighlight): string {
     return `成熟窗口 ROAS ${formatRoasPercent(row.current_roas)} ｜ ${sourceLabel}${warningSuffix}`;
   }
   return `成熟窗口 ROAS 暂无数据（${windowLabel}）｜${sourceLabel}${warningSuffix}`;
+}
+
+function formatBudgetMetricStatus(row: DailyBriefBudgetHighlight): string {
+  const official = row.official_dashboard;
+  const decisionStatus = formatDecisionMetricStatus(row);
+  if (!official) {
+    return `AF面板 ${row.primary_metric === 'roas' ? 'ROAS-Tool ' : ''}暂无官方快照 ｜ ${decisionStatus}`;
+  }
+
+  // Keep the brief's "current performance" aligned with the AppsFlyer dashboard selected
+  // day. Mature Cohort ROAS and 3/7-day eCPI remain decision references only.
+  const dashboardStatus = [
+    `AF面板 ${official.window_from} 至 ${official.window_to}`,
+    `Cost ${formatUsd(official.cost)}`,
+    `Attributions ${official.attributions.toFixed(0)}`,
+    `eCPI ${formatUsd(official.ecpi)}`
+  ].join(' ｜ ');
+  if (row.primary_metric === 'roas') {
+    return `${dashboardStatus} ｜ D0/D7 ROAS-Tool 待接入官方面板快照 ｜ ${decisionStatus}`;
+  }
+  return `${dashboardStatus} ｜ ${decisionStatus}`;
 }
 
 function trimSentence(value: string, limit = 72): string {
@@ -617,6 +654,9 @@ async function queryPendingBudgetHighlights(reportDate: string, filters: DailyBr
   if (mediaSources.length > 0) {
     values.push(mediaSources);
     clauses.push(`media_source = ANY($${values.length}::text[])`);
+  } else {
+    values.push(ASA_MEDIA_SOURCE);
+    clauses.push(`LOWER(TRIM(media_source)) <> $${values.length}`);
   }
 
   const result = await pgQuery<DailyBriefBudgetHighlight>(
@@ -629,7 +669,10 @@ async function queryPendingBudgetHighlights(reportDate: string, filters: DailyBr
       LIMIT 60`,
     values
   );
-  return result.rows.filter(isSignificantBudgetHighlight).slice(0, DAILY_BRIEF_BUDGET_MAX_ITEMS);
+  return result.rows
+    .filter((row) => mediaSources.length > 0 || !isAsaMediaSource(row.media_source))
+    .filter(isSignificantBudgetHighlight)
+    .slice(0, DAILY_BRIEF_BUDGET_MAX_ITEMS);
 }
 
 async function queryPendingBudgetCounts(reportDate: string, filters: DailyBriefFilters): Promise<Map<string, number>> {
@@ -650,6 +693,9 @@ async function queryPendingBudgetCounts(reportDate: string, filters: DailyBriefF
   if (mediaSources.length > 0) {
     values.push(mediaSources);
     clauses.push(`media_source = ANY($${values.length}::text[])`);
+  } else {
+    values.push(ASA_MEDIA_SOURCE);
+    clauses.push(`LOWER(TRIM(media_source)) <> $${values.length}`);
   }
 
   const result = await pgQuery<{ app_key: string; platform: string; total: string }>(
@@ -937,10 +983,11 @@ function buildDailyBriefInteractiveCard(params: {
   summary: DailyBriefPreview['summary'];
   appRows: Array<DailyBriefAppMetrics & { display_name: string; open_alerts: number; pending_budget_actions: number }>;
   focusProducts: DailyBriefFocusProduct[];
-  anomalyReminder: string;
-  existingSentAt?: string | null;
-  filters: DailyBriefPreview['filters'];
-}): FeishuCardPayload {
+	  anomalyReminder: string;
+	  existingSentAt?: string | null;
+	  filters: DailyBriefPreview['filters'];
+	  officialSnapshot: AfOfficialBatchSnapshot;
+	}): FeishuCardPayload {
   const appOverview =
     params.appRows.length > 0
       ? params.appRows
@@ -964,11 +1011,11 @@ function buildDailyBriefInteractiveCard(params: {
       ? `媒体源过滤：${params.filters.media_sources.join('、')}`
       : '媒体源过滤：全部';
 
-  const elements: Array<Record<string, unknown>> = [
-    {
-      tag: 'div',
-      text: cardMarkdown(`📅 **报告日期**\n${params.reportDate}\n${filterNote}\n详细执行信息请查看非 ASA / ASA 专属多维表格。`)
-    },
+	  const elements: Array<Record<string, unknown>> = [
+	    {
+	      tag: 'div',
+	      text: cardMarkdown(`📅 **报告日期**\n${params.reportDate}\n官方快照：${params.officialSnapshot.snapshot_id}（${params.officialSnapshot.status}，组件 ${params.officialSnapshot.snapshot_count} 个）\n${filterNote}\n详细执行信息请查看非 ASA / ASA 专属多维表格。`)
+	    },
     { tag: 'hr' },
     { tag: 'div', text: cardMarkdown(`⚠️ **异常提醒**\n${params.anomalyReminder}`) },
     { tag: 'hr' },
@@ -1074,8 +1121,23 @@ export async function buildDailyBriefPreview(
   };
   summary.blended_ecpi = summary.total_installs > 0 ? summary.total_cost / summary.total_installs : 0;
 
+  const officialBudgetMetrics = await queryAfDashboardDailyCampaignMetrics({
+    reportDate,
+    appKey: filters.appKey,
+    platform: filters.platform,
+    campaigns: budgetHighlights.map((row) => row.keyword)
+  });
+
   const normalizedBudgetHighlights = budgetHighlights.map((row) => ({
     ...row,
+    official_dashboard:
+      officialBudgetMetrics.get(
+        afDashboardCampaignKey({
+          appKey: row.app_key,
+          platform: row.platform,
+          campaign: row.keyword
+        })
+      ) || null,
     reason_summary: buildBudgetAdjustmentReason(row)
   }));
 
@@ -1091,34 +1153,60 @@ export async function buildDailyBriefPreview(
     alertRows: alertHighlights,
     summary
   });
-  const todayJudgment = buildAnomalyReminder({
-    summary,
-    alertRows: alertHighlights,
-    appRows,
-    focusProducts,
-    appByKey
-  });
-  const title = `${env.dailyBriefTitlePrefix}｜${reportDate}`;
-  const cardPayload = buildDailyBriefInteractiveCard({
-    reportDate,
-    title,
+	  const todayJudgment = buildAnomalyReminder({
+	    summary,
+	    alertRows: alertHighlights,
+	    appRows,
+	    focusProducts,
+	    appByKey
+	  });
+	  const metricScope = buildAfMetricScopeMeta({
+	    metricScope: 'daily_push_d1',
+	    sourceSurface: 'daily_report',
+	    windowFrom: reportDate,
+	    windowTo: reportDate,
+	    timezone: env.timezone,
+	    currency: 'preferred'
+	  });
+	  const officialSnapshot = await buildAfOfficialBatchSnapshot({
+	    metricScope: 'daily_push_d1',
+	    sourceSurface: 'daily_report',
+	    windowFrom: reportDate,
+	    windowTo: reportDate,
+	    timezone: env.timezone,
+	    currency: 'preferred',
+	    appKey: filters.appKey,
+	    platform: filters.platform,
+	    expectedComponents: buildDailyReportExpectedComponents(apps, {
+	      from: reportDate,
+	      to: reportDate,
+	      appKey: filters.appKey,
+	      platform: filters.platform
+	    })
+	  });
+	  const title = `${env.dailyBriefTitlePrefix}｜${reportDate}`;
+	  const cardPayload = buildDailyBriefInteractiveCard({
+	    reportDate,
+	    title,
     summary,
     appRows,
     focusProducts,
     anomalyReminder: todayJudgment,
     existingSentAt: existingDispatch?.status === 'sent' ? existingDispatch.sent_at : null,
-    filters: {
-      app_key: cleanText(filters.appKey) || null,
-      platform: normalizePlatformValue(filters.platform) || null,
-      media_sources: mediaSourcesApplied
-    }
-  });
+	    filters: {
+	      app_key: cleanText(filters.appKey) || null,
+	      platform: normalizePlatformValue(filters.platform) || null,
+	      media_sources: mediaSourcesApplied
+	    },
+	    officialSnapshot
+	  });
 
-  const lines: string[] = [];
-  lines.push(`报告日期：${reportDate}`);
-  if (mediaSourcesApplied.length > 0) {
-    lines.push(`媒体源过滤：${mediaSourcesApplied.join('、')}`);
-  }
+	  const lines: string[] = [];
+	  lines.push(`报告日期：${reportDate}`);
+	  lines.push(`官方快照：${officialSnapshot.snapshot_id}（${officialSnapshot.status}，组件 ${officialSnapshot.snapshot_count} 个）`);
+	  if (mediaSourcesApplied.length > 0) {
+	    lines.push(`媒体源过滤：${mediaSourcesApplied.join('、')}`);
+	  }
   lines.push('');
   lines.push('【异常提醒】');
   lines.push(`- ${todayJudgment}`);
@@ -1156,10 +1244,12 @@ export async function buildDailyBriefPreview(
   }
 
   return {
-    report_date: reportDate,
-    title,
-    text: lines.join('\n'),
-    today_judgment: todayJudgment,
+	    report_date: reportDate,
+	    title,
+	    text: lines.join('\n'),
+	    metric_scope: metricScope,
+	    official_snapshot: officialSnapshot,
+	    today_judgment: todayJudgment,
     anomaly_reminder: todayJudgment,
     render_mode: 'interactive',
     feishu_card_payload: cardPayload,
@@ -1219,11 +1309,13 @@ async function sendSingleDailyBrief(
         title: preview.title,
         text: preview.text,
         feishuCardPayload: preview.feishu_card_payload,
-        extra: {
-          report_date: preview.report_date,
-          report_type: 'daily_brief',
-          route_key: routeKey
-        }
+	        extra: {
+	          report_date: preview.report_date,
+	          report_type: 'daily_brief',
+	          route_key: routeKey,
+	          snapshot_id: preview.official_snapshot.snapshot_id,
+	          metric_scope: preview.metric_scope.metric_scope
+	        }
       },
       channelOverride
     );
@@ -1233,11 +1325,13 @@ async function sendSingleDailyBrief(
           {
             title: preview.title,
             text: preview.text,
-            extra: {
-              report_date: preview.report_date,
-              report_type: 'daily_brief',
-              route_key: routeKey
-            }
+	            extra: {
+	              report_date: preview.report_date,
+	              report_type: 'daily_brief',
+	              route_key: routeKey,
+	              snapshot_id: preview.official_snapshot.snapshot_id,
+	              metric_scope: preview.metric_scope.metric_scope
+	            }
           },
           channelOverride
         );

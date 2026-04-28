@@ -645,7 +645,7 @@ export async function buildMatureRoasContextPack(input: {
   if (!overall && platformSummaries.length === 0) {
     const defaultWindow =
       scope === 'asa'
-        ? buildAsaRoasWindow(reportDate, defaultRecommendationPolicyRule())
+        ? buildAsaRoasWindow(reportDate, null)
         : buildMatureRoasWindow(reportDate, defaultRecommendationPolicyRule());
     summaryLines.push(`- 时间窗口：${defaultWindow.from} 至 ${defaultWindow.to}`);
     summaryLines.push('- 当前窗口暂无成熟价值数据。');

@@ -201,7 +201,7 @@ function createBaseDraft(selection = {}) {
     trafficScope: 'all',
     mediaSources: [],
     excludeRecentDays: '7',
-    decisionWindowDays: '14',
+    decisionWindowDays: '7',
     contextWindowDays: DEFAULT_CONTEXT_WINDOWS.slice(),
     globalTargets: buildThresholdInputValues({}),
     countryTargets: [],
@@ -257,7 +257,7 @@ export function buildPolicyDraftFromRow(row = {}) {
   draft.trafficScope = toTrimmedString(rule.traffic_scope || 'all') || 'all';
   draft.mediaSources = normalizeStringList(rule.media_sources);
   draft.excludeRecentDays = toInputValue(maturityWindow.exclude_recent_days ?? 7);
-  draft.decisionWindowDays = toInputValue(maturityWindow.decision_window_days ?? 14);
+  draft.decisionWindowDays = toInputValue(maturityWindow.decision_window_days ?? 7);
   draft.contextWindowDays = normalizePositiveIntegerList(maturityWindow.context_window_days);
   if (draft.contextWindowDays.length === 0) {
     draft.contextWindowDays = DEFAULT_CONTEXT_WINDOWS.slice();
@@ -352,7 +352,7 @@ export function mergeRecommendationPolicyRule(baseRule = {}, draft = {}) {
   const maturityWindow = isPlainObject(result.maturity_window) ? result.maturity_window : {};
   result.maturity_window = maturityWindow;
   maturityWindow.exclude_recent_days = toNumberOrUndefined(sanitizedDraft.excludeRecentDays) ?? 7;
-  maturityWindow.decision_window_days = toNumberOrUndefined(sanitizedDraft.decisionWindowDays) ?? 14;
+  maturityWindow.decision_window_days = toNumberOrUndefined(sanitizedDraft.decisionWindowDays) ?? 7;
   maturityWindow.context_window_days = normalizePositiveIntegerList(sanitizedDraft.contextWindowDays);
   if (maturityWindow.context_window_days.length === 0) {
     maturityWindow.context_window_days = DEFAULT_CONTEXT_WINDOWS.slice();

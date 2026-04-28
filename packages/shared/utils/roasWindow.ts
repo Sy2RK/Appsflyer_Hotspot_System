@@ -8,7 +8,7 @@ import { shiftDateString } from './businessDate.js';
 import { env } from '../config/env.js';
 
 const DEFAULT_EXCLUDE_RECENT_DAYS = 7;
-const DEFAULT_DECISION_WINDOW_DAYS = 14;
+const D7_ROAS_WINDOW_DAYS = 7;
 
 function getRoasCostCoverageThreshold(): number {
   return env.roasCostCoverageThreshold;
@@ -138,16 +138,8 @@ export function buildMatureRoasWindow(
       ) || 0
     )
   );
-  const decisionWindowDays = Math.max(
-    1,
-    Math.floor(
-      Number(
-        window?.decision_window_days ??
-          fallback.decisionWindowDays ??
-          DEFAULT_DECISION_WINDOW_DAYS
-      ) || 0
-    )
-  );
+  // D7 ROAS must always aggregate exactly seven mature attribution dates.
+  const decisionWindowDays = D7_ROAS_WINDOW_DAYS;
   const to = shiftDateString(reportDate, -excludeRecentDays);
   const from = shiftDateString(to, -(decisionWindowDays - 1));
   return { from, to };

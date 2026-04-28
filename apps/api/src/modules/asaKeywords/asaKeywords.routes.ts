@@ -64,10 +64,12 @@ router.get('/api/asa-keywords', async (req, res, next) => {
 
     return res.json({
       ok: true,
-      data: result.rows,
-      summary: result.summary,
-      summary_window: result.summary_window,
-      meta: {
+	      data: result.rows,
+	      summary: result.summary,
+	      summary_window: result.summary_window,
+	      metric_scope: result.metric_scope,
+	      official_snapshot: result.official_snapshot,
+	      meta: {
         page: result.page,
         pageSize: result.pageSize,
         total: result.total,

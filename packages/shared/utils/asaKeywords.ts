@@ -38,7 +38,8 @@ import {
   resolveRoasPrimarySource,
   resolveRoasCoverageRatio,
   resolveRoasDataStatus,
-  resolveRoasWarningCode
+  resolveRoasWarningCode,
+  type MatureRoasWindow
 } from './roasWindow.js';
 import {
   buildRecommendationPolicyKey,
@@ -54,6 +55,19 @@ import {
   fetchAppsflyerText,
   type AppsflyerRequestFailureKind
 } from './appsflyerRequest.js';
+import {
+  buildAfMetricScopeMeta,
+  classifyAfSyncScope,
+  isAfWindowProvisional,
+  type AfMetricScopeMeta
+} from './afMetricScopes.js';
+import {
+  buildAfContentSignature,
+  buildAfOfficialBatchSnapshot,
+  upsertAfOfficialSnapshot,
+  type AfOfficialBatchSnapshot
+} from './appsflyerOfficialSnapshots.js';
+import { buildAsaMasterExpectedComponents } from './appsflyerExpectedComponents.js';
 import type {
   AppConfigRecord,
   AsaKeywordRecommendationRow,
@@ -241,6 +255,8 @@ export interface AsaKeywordQueryResult {
   rows: AsaKeywordDashboardRow[];
   summary: AsaKeywordSummary;
   summary_window: { from: string; to: string } | null;
+  metric_scope: AfMetricScopeMeta;
+  official_snapshot: AfOfficialBatchSnapshot;
   total: number;
   page: number;
   pageSize: number;
@@ -261,6 +277,8 @@ export interface AsaBriefPreview {
     from: string;
     to: string;
   };
+  metric_scope: AfMetricScopeMeta;
+  official_snapshot: AfOfficialBatchSnapshot;
   current_stage: ProductStage | 'mixed';
   today_judgment: string;
   rows: AsaKeywordDashboardRow[];
@@ -460,6 +478,103 @@ async function queryAsaKeywordSummary(filter: AsaKeywordQueryFilter): Promise<As
   };
 }
 
+async function queryAsaProductLevelMatureRoasSummary(filter: AsaKeywordQueryFilter): Promise<AsaKeywordSummary> {
+  await ensureAsaKeywordMetricsSchema();
+  const summaryFilter = buildAsaSummaryFilter(filter);
+  const summaryRows = await chQuery<AsaKeywordSummary & {
+    spend_row_count?: number;
+    value_row_count?: number;
+    installs_sum?: number;
+    total_cost_sum?: number;
+    purchase_count_sum?: number;
+    revenue_d7_sum?: number;
+  }>(
+    `WITH
+      ${buildLatestAsaSliceRangeCtes(ASA_KEYWORD_METRICS_TABLE, 'date')}
+      SELECT
+        countDistinct(keyword, campaign, adset, platform, app_key) AS keyword_count,
+        sum(installs) AS installs_sum,
+        sum(total_cost) AS total_cost_sum,
+        sum(purchase_count) AS purchase_count_sum,
+        sum(revenue_d7) AS revenue_d7_sum,
+        countIf(total_cost > 0) AS spend_row_count,
+        countIf(roas_source_missing != 1) AS value_row_count
+      FROM (
+        SELECT *
+        FROM ${ASA_KEYWORD_METRICS_TABLE} FINAL
+      ) AS m
+      INNER JOIN latest_slices AS s
+        ON s.app_key = m.app_key
+       AND s.platform = m.platform
+       AND s.date = m.date
+       AND s.snapshot_id = m.snapshot_id
+      ${summaryFilter.query}`,
+    summaryFilter.params
+  );
+  const rawSummary = summaryRows[0];
+  const fallback: AsaKeywordSummary = {
+    keyword_count: 0,
+    installs: 0,
+    total_cost: 0,
+    mature_roas_cost: 0,
+    purchase_count: 0,
+    revenue_d7: 0,
+    ecpi: 0,
+    cpp: 0,
+    d7_roas: 0,
+    af_cohort_roas: null,
+    local_derived_roas: null,
+    roas_primary_source: 'local_fallback',
+    roas_warning_code: 'none',
+    roas_deviation_ratio: null,
+    roas_data_status: 'unavailable',
+    roas_window_from: filter.from ?? null,
+    roas_window_to: filter.to ?? null,
+    roas_coverage_ratio: 0
+  };
+  if (!rawSummary) {
+    return fallback;
+  }
+  const totalCost = Number(rawSummary.total_cost_sum || rawSummary.total_cost || 0);
+  const installs = Number(rawSummary.installs_sum || rawSummary.installs || 0);
+  const purchaseCount = Number(rawSummary.purchase_count_sum || rawSummary.purchase_count || 0);
+  const revenueD7 = Number(rawSummary.revenue_d7_sum || rawSummary.revenue_d7 || 0);
+  const hasRows = Number(rawSummary.keyword_count || 0) > 0;
+  const hasSpend = totalCost > 0 || Number(rawSummary.spend_row_count || 0) > 0;
+  const hasProductLevelValue = Number(rawSummary.value_row_count || 0) > 0;
+  if (!hasRows || !hasSpend || !hasProductLevelValue) {
+    return {
+      ...fallback,
+      keyword_count: Number(rawSummary.keyword_count || 0),
+      installs,
+      total_cost: totalCost,
+      mature_roas_cost: totalCost,
+      roas_data_status: hasSpend ? 'unavailable' : 'complete'
+    };
+  }
+  const productLevelRoas = totalCost > 0 ? revenueD7 / totalCost : 0;
+  return {
+    keyword_count: Number(rawSummary.keyword_count || 0),
+    installs,
+    total_cost: totalCost,
+    mature_roas_cost: totalCost,
+    purchase_count: purchaseCount,
+    revenue_d7: revenueD7,
+    ecpi: installs > 0 ? totalCost / installs : 0,
+    cpp: purchaseCount > 0 ? totalCost / purchaseCount : 0,
+    d7_roas: productLevelRoas,
+    af_cohort_roas: productLevelRoas,
+    local_derived_roas: null,
+    roas_primary_source: 'af_cohort',
+    roas_warning_code: 'none',
+    roas_deviation_ratio: null,
+    roas_data_status: 'complete',
+    roas_window_from: filter.from ?? null,
+    roas_window_to: filter.to ?? null,
+    roas_coverage_ratio: 1
+  };
+}
+
 export async function queryAsaKeywordMatureSummary(input: {
   appKey: string;
   platform?: string;
@@ -483,6 +598,7 @@ const ASA_SLICE_SNAPSHOT_TABLE = 'asa_slice_snapshots';
 const ASA_KEYWORD_BRIEF_SEND_LOCK_PREFIX = 'asa_keyword_brief:send';
 const ASA_KEYWORD_BRIEF_SEND_LOCK_TTL_MS = 30 * 60 * 1000;
 const ASA_FETCH_REVIEW_RETRY_DELAY_MS = 30 * 1000;
+const ASA_D7_ROAS_DECISION_WINDOW_DAYS = 7;
 let ensureAsaKeywordMetricsSchemaPromise: Promise<void> | null = null;
 
 async function ensureAsaKeywordMetricsSchema(): Promise<void> {
@@ -991,10 +1107,10 @@ async function fetchMasterKeywordMetrics(appId: string, appKey: string, platform
     : Array.isArray((payload as { data?: unknown[] })?.data)
       ? (payload as { data: unknown[] }).data
       : [];
-  return rows
-    .filter((row): row is Record<string, unknown> => !!row && typeof row === 'object')
-    .filter((row) => firstNonEmptyObject(row, ['Media Source', 'media_source', 'pid']).toLowerCase() === MASTER_MEDIA_SOURCE)
-    .map((row) => ({
+	  return rows
+	    .filter((row): row is Record<string, unknown> => !!row && typeof row === 'object')
+	    .filter((row) => firstNonEmptyObject(row, ['Media Source', 'media_source', 'pid']).toLowerCase() === MASTER_MEDIA_SOURCE)
+	    .map((row) => ({
       date,
       app_key: appKey,
       platform,
@@ -1004,8 +1120,86 @@ async function fetchMasterKeywordMetrics(appId: string, appKey: string, platform
       installs: toNumber(firstNonEmptyObject(row, ['Installs', 'installs'])),
       total_cost: toNumber(firstNonEmptyObject(row, ['Cost', 'cost'])),
       average_ecpi: toNumber(firstNonEmptyObject(row, ['Average eCPI', 'average_ecpi']))
-    }))
-    .filter((row) => row.keyword.length > 0);
+	    }))
+	    .filter((row) => row.keyword.length > 0);
+	}
+
+async function recordAsaMasterOfficialSnapshot(input: {
+  app: AppConfigRecord;
+  platform: string;
+  appId: string;
+  date: string;
+  snapshotId: number;
+  masterMetrics: AsaMasterMetricRow[];
+  metricRows: AsaKeywordDailyMetricInsertRow[];
+  logger?: LoggerLike;
+}): Promise<void> {
+  const totals = input.metricRows.reduce(
+    (current, row) => {
+      current.installs += Number(row.installs || 0);
+      current.total_cost += Number(row.total_cost || 0);
+      return current;
+    },
+    { installs: 0, total_cost: 0 }
+  );
+  const isProvisional = isAfWindowProvisional(input.date);
+
+  try {
+    await upsertAfOfficialSnapshot({
+      snapshotId: `asa_master:${input.app.app_key}:${input.platform}:${input.date}:${input.snapshotId}`,
+      metricScope: classifyAfSyncScope(input.date),
+      sourceSurface: 'master_pivot',
+      sourceApi: 'master_api_v4',
+      appKey: input.app.app_key,
+      platform: input.platform,
+      appId: input.appId,
+      windowFrom: input.date,
+      windowTo: input.date,
+      timezone: 'preferred',
+      currency: 'preferred',
+      queryParams: {
+        from: input.date,
+        to: input.date,
+        groupings: 'pid,c,af_adset,af_keywords',
+        kpis: 'cost,installs,average_ecpi',
+        pid: 'Apple Search Ads',
+        timezone: 'preferred',
+        currency: 'preferred',
+        format: 'json'
+      },
+      rowCount: input.masterMetrics.length,
+      contentSignature: buildAfContentSignature(
+        input.masterMetrics
+          .map((row) => ({
+            keyword: row.keyword,
+            campaign: row.campaign,
+            adset: row.adset,
+            installs: row.installs,
+            total_cost: row.total_cost,
+            average_ecpi: row.average_ecpi
+          }))
+          .sort((left, right) =>
+            `${left.keyword}|${left.campaign}|${left.adset}`.localeCompare(`${right.keyword}|${right.campaign}|${right.adset}`)
+          )
+      ),
+      status: isProvisional ? 'provisional' : undefined,
+      isProvisional,
+      metadataJson: {
+        clickhouse_snapshot_id: input.snapshotId,
+        installs: totals.installs,
+        total_cost: totals.total_cost,
+        ecpi: totals.installs > 0 ? totals.total_cost / totals.installs : 0
+      }
+    });
+  } catch (error) {
+    input.logger?.warn?.('asa_master_official_snapshot_record_failed', {
+      app_key: input.app.app_key,
+      platform: input.platform,
+      date: input.date,
+      snapshot_id: input.snapshotId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 async function fetchAsaSliceInputsWithRetry(
@@ -1441,7 +1635,10 @@ export function buildAsaRoasWindow(
   reportDate: string,
   policy: RecommendationPolicyRuleJson | null
 ): { from: string; to: string } {
-  return buildMatureRoasWindow(reportDate, policy, { excludeRecentDays: 7, decisionWindowDays: 14 });
+  return buildMatureRoasWindow(reportDate, policy, {
+    excludeRecentDays: 7,
+    decisionWindowDays: ASA_D7_ROAS_DECISION_WINDOW_DAYS
+  });
 }
 
 export function buildAsaContextWindow(
@@ -2397,19 +2594,29 @@ export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLi
       const countryMetricRows = aggregateAsaCountryMetrics(installRows);
       const snapshotId = createAsaSnapshotId();
 
-      await replaceAsaSlice({
-        appKey: target.app.app_key,
-        platform: target.platform,
-        date,
+	      await replaceAsaSlice({
+	        appKey: target.app.app_key,
+	        platform: target.platform,
+	        date,
         snapshotId,
         installRows,
         eventRows,
         metricRows,
-        countryMetricRows,
-        logger
-      });
+	        countryMetricRows,
+	        logger
+	      });
+	      await recordAsaMasterOfficialSnapshot({
+	        app: target.app,
+	        platform: target.platform,
+	        appId: target.appId,
+	        date,
+	        snapshotId,
+	        masterMetrics,
+	        metricRows,
+	        logger
+	      });
 
-      installRowCount += installRows.length;
+	      installRowCount += installRows.length;
       eventRowCount += eventRows.length;
       metricRowCount += metricRows.length;
       if (env.asaKeywordRequestIntervalMs > 0 || env.asaMasterApiRequestIntervalMs > 0) {
@@ -2493,8 +2700,8 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
     from: roasWindow.from,
     to: roasWindow.to
   });
-  const summary: AsaKeywordSummary = {
-    ...baseSummary,
+	  const summary: AsaKeywordSummary = {
+	    ...baseSummary,
     purchase_count: matureSummary.purchase_count,
     mature_roas_cost: matureSummary.mature_roas_cost,
     revenue_d7: matureSummary.revenue_d7,
@@ -2506,12 +2713,41 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
     roas_warning_code: matureSummary.roas_warning_code,
     roas_deviation_ratio: matureSummary.roas_deviation_ratio,
     roas_data_status: matureSummary.roas_data_status,
-    roas_window_from: roasWindow.from,
-    roas_window_to: roasWindow.to,
-    roas_coverage_ratio: matureSummary.roas_coverage_ratio
-  };
+	    roas_window_from: roasWindow.from,
+	    roas_window_to: roasWindow.to,
+	    roas_coverage_ratio: matureSummary.roas_coverage_ratio
+	  };
+	  const dashboardWindow = {
+	    from: filter.from ?? roasWindow.from,
+	    to: filter.to ?? roasWindow.to
+	  };
+	  const metricScope = buildAfMetricScopeMeta({
+	    metricScope: 'dashboard_selected_window',
+	    sourceSurface: 'master_pivot',
+	    windowFrom: dashboardWindow.from,
+	    windowTo: dashboardWindow.to,
+	    timezone: 'preferred',
+	    currency: 'preferred'
+	  });
+	  const appsForSnapshot = await listApps();
+	  const officialSnapshot = await buildAfOfficialBatchSnapshot({
+	    metricScope: 'dashboard_selected_window',
+	    sourceSurface: 'master_pivot',
+	    windowFrom: dashboardWindow.from,
+	    windowTo: dashboardWindow.to,
+	    timezone: 'preferred',
+	    currency: 'preferred',
+	    appKey: filter.appKey,
+	    platform: filter.platform || 'ios',
+	    expectedComponents: buildAsaMasterExpectedComponents(appsForSnapshot, {
+	      from: dashboardWindow.from,
+	      to: dashboardWindow.to,
+	      appKey: filter.appKey,
+	      platform: filter.platform || 'ios'
+	    })
+	  });
 
-  const rows: AsaKeywordDashboardRow[] = stateRows.map((row) => {
+	  const rows: AsaKeywordDashboardRow[] = stateRows.map((row) => {
     const reco = recoMap.get(`${row.app_key}|${row.platform}|${row.keyword}|${row.campaign}|${row.adset}`);
     return {
       ...row,
@@ -2523,12 +2759,14 @@ export async function queryAsaKeywordDashboard(filter: AsaKeywordQueryFilter): P
     };
   });
 
-  return {
-    rows,
-    summary,
-    summary_window: roasWindow,
-    total: stateResult.total,
-    page: stateResult.page,
+	  return {
+	    rows,
+	    summary,
+	    summary_window: roasWindow,
+	    metric_scope: metricScope,
+	    official_snapshot: officialSnapshot,
+	    total: stateResult.total,
+	    page: stateResult.page,
     pageSize,
     totalPages: stateResult.totalPages
   };
@@ -2709,45 +2947,48 @@ function formatAsaSummaryRoas(input: {
 }): string {
   const formatAsaRoasPercent = (value: number | null | undefined) => `${(Number(value || 0) * 100).toFixed(2)}%`;
   const status = String(input.roas_data_status || 'unavailable');
-  const strictAfDisplay =
-    input.roas_primary_source === 'af_cohort' && input.roas_warning_code !== 'af_vs_local_mismatch';
+  const hasAfDisplay = input.roas_primary_source === 'af_cohort';
   const hiddenReason =
-    input.roas_warning_code === 'af_vs_local_mismatch'
-      ? 'AF 官方成熟窗口 D7 ROAS 与本地派生偏差较大，当前不展示数值'
-      : input.roas_primary_source !== 'af_cohort'
-        ? 'AF 官方成熟窗口 D7 ROAS 缺失，当前不展示回退值'
-        : '';
+    input.roas_primary_source !== 'af_cohort'
+      ? 'AF 官方成熟窗口 D7 ROAS 缺失，当前不展示回退值'
+      : '';
+  const mismatchNote =
+    input.roas_warning_code === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : '';
+  const noRevenueNote = hasCostWithoutD7Revenue(input) ? '；成熟窗口未观察到 D7 收入' : '';
+  const withNotes = (value: string, baseNote = '') => {
+    const note = `${baseNote}${noRevenueNote}${mismatchNote}`;
+    return note ? `${value}（${note.replace(/^；/, '')}）` : value;
+  };
   if (status === 'pending') {
+    if (hasAfDisplay && Number(input.total_cost || 0) > 0) {
+      return withNotes(formatAsaRoasPercent(input.d7_roas), '覆盖率较低，数据仍在补齐');
+    }
     return '待补齐（AF 成熟窗口数据缺失）';
   }
   if (status === 'partial') {
     if (Number(input.total_cost || 0) <= 0) return '-';
-    if (!strictAfDisplay) return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
+    if (!hasAfDisplay) return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
     const value = formatAsaRoasPercent(input.d7_roas);
-    return hasCostWithoutD7Revenue(input)
-      ? `${value}（覆盖率达阈值；成熟窗口未观察到 D7 收入）`
-      : `${value}（覆盖率达阈值）`;
+    return withNotes(value, '覆盖率达阈值');
   }
   if (status === 'partial_low') {
     if (Number(input.total_cost || 0) <= 0) return '-';
-    if (!strictAfDisplay) return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
+    if (!hasAfDisplay) return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
     const value = formatAsaRoasPercent(input.d7_roas);
-    return hasCostWithoutD7Revenue(input)
-      ? `${value}（覆盖率偏低；成熟窗口未观察到 D7 收入）`
-      : `${value}（覆盖率偏低）`;
+    return withNotes(value, '覆盖率偏低');
   }
   if (status === 'unavailable') {
     return Number(input.total_cost || 0) > 0 ? '暂无成熟数据' : '-';
   }
   if (input.total_cost == null) {
-    return strictAfDisplay ? formatAsaRoasPercent(input.d7_roas) : hiddenReason || '-';
+    return hasAfDisplay ? withNotes(formatAsaRoasPercent(input.d7_roas)) : hiddenReason || '-';
   }
   if (Number(input.total_cost || 0) <= 0) return '-';
-  if (!strictAfDisplay) {
+  if (!hasAfDisplay) {
     return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
   }
   const value = formatAsaRoasPercent(input.d7_roas);
-  return hasCostWithoutD7Revenue(input) ? `${value}（成熟窗口未观察到 D7 收入）` : `${value}`;
+  return withNotes(value);
 }
 
 function metricSummaryLine(
@@ -3004,6 +3245,35 @@ function buildAsaProductOverviewRows(params: {
     .sort((left, right) => right.total_cost - left.total_cost || right.installs - left.installs || left.display_name.localeCompare(right.display_name));
 }
 
+async function hydrateAsaProductOverviewRoasRows(
+  rows: AsaBriefProductOverviewRow[],
+  summaryWindow: MatureRoasWindow
+): Promise<AsaBriefProductOverviewRow[]> {
+  return Promise.all(
+    rows.map(async (row) => {
+      const matureSummary = await queryAsaProductLevelMatureRoasSummary({
+        appKey: row.app_key,
+        platform: row.platform,
+        from: summaryWindow.from,
+        to: summaryWindow.to
+      });
+      if (matureSummary.keyword_count <= 0 && matureSummary.mature_roas_cost <= 0) {
+        return row;
+      }
+      return {
+        ...row,
+        mature_roas_cost: matureSummary.mature_roas_cost,
+        purchase_count: matureSummary.purchase_count,
+        revenue_d7: matureSummary.revenue_d7,
+        d7_roas: matureSummary.d7_roas,
+        roas_primary_source: matureSummary.roas_primary_source,
+        roas_warning_code: matureSummary.roas_warning_code,
+        roas_data_status: matureSummary.roas_data_status
+      };
+    })
+  );
+}
+
 export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Promise<AsaBriefPreview> {
   const [result, apps] = await Promise.all([
     queryAllAsaKeywordDashboardRowsForBrief({
@@ -3013,11 +3283,35 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
       to: filters.reportDate,
       page: 1,
       pageSize: 500
-    }),
-    listApps()
-  ]);
-  const summaryWindow = result.summary_window ?? buildAsaRoasWindow(filters.reportDate, null);
-  const briefSummary: AsaKeywordSummary = result.summary;
+	    }),
+	    listApps()
+	  ]);
+	  const summaryWindow = result.summary_window ?? buildAsaRoasWindow(filters.reportDate, null);
+	  const metricScope = buildAfMetricScopeMeta({
+	    metricScope: 'daily_push_d1',
+	    sourceSurface: 'master_pivot',
+	    windowFrom: filters.reportDate,
+	    windowTo: filters.reportDate,
+	    timezone: 'preferred',
+	    currency: 'preferred'
+	  });
+	  const officialSnapshot = await buildAfOfficialBatchSnapshot({
+	    metricScope: 'daily_push_d1',
+	    sourceSurface: 'master_pivot',
+	    windowFrom: filters.reportDate,
+	    windowTo: filters.reportDate,
+	    timezone: 'preferred',
+	    currency: 'preferred',
+	    appKey: filters.appKey,
+	    platform: filters.platform || 'ios',
+	    expectedComponents: buildAsaMasterExpectedComponents(apps, {
+	      from: filters.reportDate,
+	      to: filters.reportDate,
+	      appKey: filters.appKey,
+	      platform: filters.platform || 'ios'
+	    })
+	  });
+	  const briefSummary: AsaKeywordSummary = result.summary;
   const appByKey = new Map(apps.map((app) => [app.app_key, app]));
   const eligibleAppKeys = new Set(asaTargets(apps).map((target) => target.app.app_key));
   const rows = result.rows.filter((row) => eligibleAppKeys.has(row.app_key));
@@ -3041,16 +3335,20 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
   const uniqueStages = Array.from(new Set(rows.map((row) => row.current_stage)));
   const currentStage = uniqueStages.length === 1 ? uniqueStages[0] : 'mixed';
   const todayJudgment = buildAsaTodayJudgment(currentStage, result.summary, actionRows);
-  const productOverviewRows = buildAsaProductOverviewRows({
-    rows,
-    actionRows,
-    appByKey
-  }).slice(0, 8);
+  const productOverviewRows = await hydrateAsaProductOverviewRoasRows(
+    buildAsaProductOverviewRows({
+      rows,
+      actionRows,
+      appByKey
+    }).slice(0, 8),
+    summaryWindow
+  );
   const title = `ASA 产品简报｜${filters.reportDate}`;
-  const lines = [
-    `报告日期：${filters.reportDate}`,
-    `仅覆盖已配置 iOS 端的产品`,
-    `成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}`,
+	  const lines = [
+	    `报告日期：${filters.reportDate}`,
+	    `官方快照：${officialSnapshot.snapshot_id}（${officialSnapshot.status}，组件 ${officialSnapshot.snapshot_count} 个）`,
+	    `仅覆盖已配置 iOS 端的产品`,
+	    `成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}`,
     '',
     '【产品概览】',
     ...(productOverviewRows.length > 0
@@ -3087,8 +3385,8 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
       {
         tag: 'div',
         text: {
-          tag: 'lark_md',
-          content: `📅 **报告日期**\n${filters.reportDate}\n仅覆盖已配置 iOS 端的产品\n成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}\n详细关键词执行信息请查看 ASA 专属多维表格。`
+	          tag: 'lark_md',
+	          content: `📅 **报告日期**\n${filters.reportDate}\n官方快照：${officialSnapshot.snapshot_id}（${officialSnapshot.status}，组件 ${officialSnapshot.snapshot_count} 个）\n仅覆盖已配置 iOS 端的产品\n成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}\n详细关键词执行信息请查看 ASA 专属多维表格。`
         }
       },
       { tag: 'hr' },
@@ -3130,11 +3428,13 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
   };
 
   return {
-    report_date: filters.reportDate,
-    title,
-    summary: briefSummary,
-    summary_window: summaryWindow,
-    current_stage: currentStage,
+	    report_date: filters.reportDate,
+	    title,
+	    summary: briefSummary,
+	    summary_window: summaryWindow,
+	    metric_scope: metricScope,
+	    official_snapshot: officialSnapshot,
+	    current_stage: currentStage,
     today_judgment: todayJudgment,
     rows,
     action_rows: actionRows,

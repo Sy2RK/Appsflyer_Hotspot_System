@@ -209,7 +209,7 @@ function normalizeMaturityWindow(value: unknown): RecommendationPolicyMaturityWi
 
   return {
     exclude_recent_days: Math.floor(toPositiveNumber(raw.exclude_recent_days, 7, 0, 60)),
-    decision_window_days: Math.floor(toPositiveNumber(raw.decision_window_days, 14, 1, 60)),
+    decision_window_days: Math.floor(toPositiveNumber(raw.decision_window_days, 7, 1, 60)),
     context_window_days:
       contextWindowDays.length > 0 ? Array.from(new Set(contextWindowDays)).sort((a, b) => a - b) : DEFAULT_CONTEXT_WINDOW_DAYS
   };
@@ -366,7 +366,7 @@ export function validateRecommendationPolicyRule(value: unknown): Recommendation
   if (!Number.isFinite(Number(maturityWindow.exclude_recent_days ?? 7)) || Number(maturityWindow.exclude_recent_days ?? 7) < 0) {
     throw new RecommendationPolicyValidationError('invalid_window', 'exclude_recent_days 必须是大于等于 0 的数字');
   }
-  if (!Number.isFinite(Number(maturityWindow.decision_window_days ?? 14)) || Number(maturityWindow.decision_window_days ?? 14) <= 0) {
+  if (!Number.isFinite(Number(maturityWindow.decision_window_days ?? 7)) || Number(maturityWindow.decision_window_days ?? 7) <= 0) {
     throw new RecommendationPolicyValidationError('invalid_window', 'decision_window_days 必须是大于 0 的数字');
   }
   if (

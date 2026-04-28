@@ -66,6 +66,12 @@ import {
 } from '../packages/shared/utils/recommendationPolicies.js';
 import { evaluateScheduledWorkerRunDecision } from '../packages/shared/utils/scheduledWorkerRun.js';
 import { getSevenDayLaterTodayDateString } from '../packages/shared/utils/sevenDayLaterData.js';
+import {
+  buildAfMetricScopeMeta,
+  classifyAfSyncScope,
+  compatibleSnapshotScopes,
+  daysBackFromBusinessToday
+} from '../packages/shared/utils/afMetricScopes.js';
 import type { RecommendationExecutionFeedbackRecord } from '../packages/shared/types/models.js';
 import type { ScheduledWorkerRunRecord } from '../packages/shared/utils/repositories.js';
 
@@ -76,10 +82,28 @@ function buildBitableResult(overrides: Partial<BitableExportRunResult>): Bitable
     report_date: '2026-03-26',
     table_id: 'tbl_demo',
     table_name: '投放执行表_2026-03-26',
-    table_name_prefix: '投放执行表',
-    table_url: 'https://example.com',
-    selected_fields: [],
-    deleted_count: 0,
+	    table_name_prefix: '投放执行表',
+	    table_url: 'https://example.com',
+	    selected_fields: [],
+	    official_snapshot: {
+	      snapshot_id: 'af_batch_test',
+	      metric_scope: 'daily_push_d1',
+	      source_surface: 'daily_report',
+	      window_from: '2026-03-26',
+	      window_to: '2026-03-26',
+	      timezone: 'Asia/Shanghai',
+	      currency: 'preferred',
+	      status: 'ready',
+	      is_provisional: false,
+	      snapshot_count: 1,
+	      expected_component_count: 1,
+	      missing_component_count: 0,
+	      missing_components: [],
+	      source_updated_at: null,
+	      fetched_at: '2026-03-27T02:00:00.000Z',
+	      component_snapshot_ids: ['af_component_test']
+	    },
+	    deleted_count: 0,
     record_count: 1,
     export_status: 'success',
     export_error: null,
@@ -114,6 +138,40 @@ function buildExistingFeedback(): RecommendationExecutionFeedbackRecord {
     updated_at: '2026-03-27T00:01:00.000Z'
   };
 }
+
+const afScopeNow = new Date('2026-04-24T02:00:00.000Z');
+assert.equal(daysBackFromBusinessToday('2026-04-23', afScopeNow, 'Asia/Shanghai'), 1);
+assert.equal(classifyAfSyncScope('2026-04-23', afScopeNow, 'Asia/Shanghai'), 'recent_unstable_window');
+assert.equal(classifyAfSyncScope('2026-04-10', afScopeNow, 'Asia/Shanghai'), 'retro_window');
+assert.deepEqual(compatibleSnapshotScopes('daily_push_d1'), [
+  'dashboard_selected_window',
+  'daily_push_d1',
+  'recent_unstable_window',
+  'retro_window'
+]);
+assert.equal(
+  buildAfMetricScopeMeta({
+    metricScope: 'dashboard_selected_window',
+    sourceSurface: 'master_pivot',
+    windowFrom: '2026-03-25',
+    windowTo: '2026-04-23',
+    timezone: 'preferred',
+    currency: 'preferred',
+    isProvisional: false
+  }).scope_definition.dashboard_comparable,
+  true
+);
+assert.equal(
+  buildAfMetricScopeMeta({
+    metricScope: 'daily_push_d1',
+    sourceSurface: 'master_pivot',
+    windowFrom: '2026-04-23',
+    windowTo: '2026-04-23',
+    timezone: 'preferred',
+    currency: 'preferred'
+  }).timezone,
+  'preferred'
+);
 
 function buildScheduledWorkerRun(
   overrides: Partial<ScheduledWorkerRunRecord> = {}
@@ -548,7 +606,7 @@ async function main(): Promise<void> {
   });
   const defaultAsaDecisionWindow = buildAsaDecisionWindow('2026-04-02', null);
   assert.deepEqual(defaultAsaDecisionWindow, {
-    from: '2026-03-13',
+    from: '2026-03-20',
     to: '2026-03-26'
   });
   const asaContextWindow = buildAsaContextWindow('2026-03-31', validatedPolicy);
@@ -565,12 +623,17 @@ async function main(): Promise<void> {
     }
   });
   assert.deepEqual(asaRoasWindow, {
-    from: '2026-03-20',
+    from: '2026-03-18',
     to: '2026-03-24'
+  });
+  const defaultAsaRoasWindow = buildAsaRoasWindow('2026-04-22', null);
+  assert.deepEqual(defaultAsaRoasWindow, {
+    from: '2026-04-09',
+    to: '2026-04-15'
   });
   const matureBudgetRoasWindow = buildMatureRoasWindow('2026-04-02', null);
   assert.deepEqual(matureBudgetRoasWindow, {
-    from: '2026-03-13',
+    from: '2026-03-20',
     to: '2026-03-26'
   });
   assert.equal(
@@ -2743,12 +2806,19 @@ async function main(): Promise<void> {
   assert.match(asaKeywordsScript, /仅覆盖已配置 iOS 端的产品/);
   assert.match(asaKeywordsScript, /成熟窗口 D7 ROAS/);
   assert.match(asaKeywordsScript, /ASA 专属多维表格/);
+  assert.match(asaKeywordsScript, /const ASA_D7_ROAS_DECISION_WINDOW_DAYS = 7;/);
   assert.match(asaKeywordsScript, /AF 官方成熟窗口 D7 ROAS 缺失，当前不展示回退值/);
   assert.match(asaKeywordsScript, /内部成熟回收 D7 ROAS .*仅用于保守判断/);
   assert.match(asaKeywordsScript, /af_roas_weighted_sum/);
   assert.match(asaKeywordsScript, /const afWeightedRoas = row\.af_roas_cost > 0 \? row\.af_roas_weighted_sum \/ row\.af_roas_cost : null;/);
   assert.match(asaKeywordsScript, /const d7Roas = roasPrimarySource === 'af_cohort' \? afWeightedRoas \?\? 0 : localDerivedRoas;/);
   assert.match(asaKeywordsScript, /total_cost: row\.mature_roas_cost/);
+  assert.match(asaKeywordsScript, /hydrateAsaProductOverviewRoasRows/);
+  assert.match(asaKeywordsScript, /async function queryAsaProductLevelMatureRoasSummary/);
+  assert.match(asaKeywordsScript, /sum\(revenue_d7\) AS revenue_d7_sum/);
+  assert.match(asaKeywordsScript, /const productLevelRoas = totalCost > 0 \? revenueD7 \/ totalCost : 0;/);
+  assert.match(asaKeywordsScript, /const matureSummary = await queryAsaProductLevelMatureRoasSummary/);
+  assert.match(asaKeywordsScript, /AF 与本地派生偏差较大，以 AF 官方为准/);
   assert.match(asaKeywordsScript, /product_overview_rows:/);
   assert.match(asaKeywordsScript, /throw new Error\('asa_brief_ios_only'\)/);
   assert.match(uiAppScript, /const matureRoasCost = Number\(row\.mature_roas_cost \?\? row\.total_cost \?\? 0\);/);
@@ -2989,6 +3059,14 @@ async function main(): Promise<void> {
   const budgetWorkerScript = readFileSync('workers/budget-advisor/src/index.ts', 'utf8');
   assert.match(budgetWorkerScript, /const hasAppFailures = result\.failed_count > 0;/);
   assert.match(budgetWorkerScript, /await failScheduledWorkerRun\(BUDGET_ADVISOR_WORKER_NAME, runMarker, appFailureSummary\);/);
+
+  const pullerScript = readFileSync('packages/shared/utils/puller.ts', 'utf8');
+  assert.match(pullerScript, /url\.searchParams\.set\('timezone', String\(timezone \|\| env\.timezone\)\.trim\(\) \|\| env\.timezone\);/);
+  assert.match(pullerScript, /buildPullUrl\(params\.appKey, params\.pullAppId, params\.date, params\.timezone\)/);
+
+  const pullerWorkerScript = readFileSync('workers/puller/src/index.ts', 'utf8');
+  assert.match(pullerWorkerScript, /const backfillDays = Math\.max\(1, Math\.floor\(env\.pullerBackfillDays\)\);/);
+  assert.doesNotMatch(pullerWorkerScript, /firstCycle/);
 
   const budgetAdvisorScript = readFileSync('packages/shared/utils/budgetAdvisor.ts', 'utf8');
   assert.match(budgetAdvisorScript, /expireStalePendingBudgetRecommendationsForDate/);

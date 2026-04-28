@@ -11,8 +11,9 @@ import {
   ensureAsaKeywordRoasSchema,
   deleteBitableExportRecordRefsByRecordIds,
   getBitableExportConfig,
-  getBitableExportDailyTable,
-  listBitableExportConfigs,
+	  getBitableExportDailyTable,
+	  listApps,
+	  listBitableExportConfigs,
   listBitableExportDailyTables,
   listBitableExportRecordRefs,
   listRecommendationExecutionFeedbacksByRecommendations,
@@ -32,6 +33,16 @@ import {
   querySevenDayLaterDataForLookupRows,
   SEVEN_DAY_LATER_FIELD_LABEL
 } from './sevenDayLaterData.js';
+import { buildAfOfficialBatchSnapshot, type AfOfficialBatchSnapshot } from './appsflyerOfficialSnapshots.js';
+import {
+  buildAsaMasterExpectedComponents,
+  buildDailyReportExpectedComponents
+} from './appsflyerExpectedComponents.js';
+import {
+  afDashboardCampaignKey,
+  queryAfDashboardDailyCampaignMetrics,
+  type AfDashboardCampaignMetric
+} from './afDashboardMetrics.js';
 
 interface LoggerLike {
   info?: (message: string, meta?: Record<string, unknown>) => void;
@@ -155,8 +166,9 @@ export interface BitableExportRunResult {
   table_name: string;
   table_name_prefix: string;
   table_url: string;
-  selected_fields: string[];
-  deleted_count: number;
+	  selected_fields: string[];
+	  official_snapshot: AfOfficialBatchSnapshot;
+	  deleted_count: number;
   record_count: number;
   export_status: 'success' | 'partial_success' | 'failed';
   export_error?: string | null;
@@ -222,6 +234,7 @@ const LEGACY_SOURCE_TYPE: BitableExportSourceType = 'delivery_actions';
 const NON_ASA_SOURCE_TYPE: BitableExportSourceType = 'delivery_actions_non_asa';
 const ASA_SOURCE_TYPE: BitableExportSourceType = 'delivery_actions_asa';
 const ACTIVE_SOURCE_TYPES = [NON_ASA_SOURCE_TYPE, ASA_SOURCE_TYPE] as const;
+const ASA_MEDIA_SOURCE = 'apple search ads';
 const ACTION_TABLE_NAME_BASE = String(env.feishuBitableActionTableName || '投放执行表').trim() || '投放执行表';
 const RECENT_DAILY_TABLE_LIMIT = 7;
 const ITEM_NAME_FIELD_LABEL = '投放项名称';
@@ -1040,6 +1053,77 @@ function formatBudgetCurrentValue(row: Record<string, unknown>): string {
   return `eCPI $${Number(row.current_ecpi || 0).toFixed(2)}`;
 }
 
+function formatAfDashboardCurrentValue(params: {
+  reportDate: string;
+  metric: AfDashboardCampaignMetric | null;
+  decisionReference: string;
+  primaryMetric: string;
+}): string {
+  const windowLabel = `${params.reportDate} 至 ${params.reportDate}`;
+  if (!params.metric) {
+    return `AF面板 ${windowLabel}：暂无官方快照 / 决策参考：${params.decisionReference}`;
+  }
+
+  const base = [
+    `AF面板 ${windowLabel}`,
+    `Cost $${params.metric.cost.toFixed(2)}`,
+    `Attributions ${params.metric.attributions.toFixed(0)}`,
+    `eCPI $${params.metric.ecpi.toFixed(2)}`
+  ].join(' / ');
+
+  // AppsFlyer daily_report_v5 is aligned with the dashboard cost/eCPI rows, but it does
+  // not expose the dashboard-only D0/D7 ROAS-Tool columns shown in AppsFlyer UI.
+  // Until a same-surface ROAS-Tool snapshot is ingested, never substitute mature Cohort ROAS
+  // as the official dashboard ROAS value.
+  if (params.primaryMetric === 'roas') {
+    return `${base} / D0/D7 ROAS-Tool 待接入官方面板快照 / 决策参考：${params.decisionReference}`;
+  }
+  return `${base} / 决策参考：${params.decisionReference}`;
+}
+
+async function alignBudgetRowsToAfDashboard(
+  reportDate: string,
+  rows: DeliveryActionRow[]
+): Promise<DeliveryActionRow[]> {
+  const budgetRows = rows.filter((row) => row.recommendation_type === 'budget');
+  if (budgetRows.length === 0) {
+    return rows;
+  }
+
+  const metrics = await queryAfDashboardDailyCampaignMetrics({
+    reportDate,
+    campaigns: budgetRows.map((row) => row.item_name)
+  });
+
+  return rows.map((row) => {
+    if (row.recommendation_type !== 'budget') {
+      return row;
+    }
+    const metric =
+      metrics.get(
+        afDashboardCampaignKey({
+          appKey: row.app_key,
+          platform: row.platform_raw,
+          campaign: row.item_name
+        })
+      ) || null;
+
+    return {
+      ...row,
+      current_value: formatAfDashboardCurrentValue({
+        reportDate,
+        metric,
+        decisionReference: row.current_value,
+        primaryMetric: row.primary_metric.startsWith('ROAS') ? 'roas' : 'ecpi'
+      }),
+      cost_reference: metric ? metric.cost : row.cost_reference,
+      volume_reference: metric
+        ? `AF面板安装 ${metric.attributions.toFixed(0)} / 点击 ${metric.clicks.toFixed(0)}`
+        : row.volume_reference
+    };
+  });
+}
+
 function formatBudgetTargetValue(row: Record<string, unknown>): string {
   if (String(row.primary_metric || '') === 'roas') {
     const targetRoas = Number(row.target_roas || 0);
@@ -1166,10 +1250,11 @@ async function queryBudgetActionRows(reportDate: string, options: BitableExportR
         AND ks.keyword = br.keyword
         AND ks.match_type = br.match_type
       WHERE br.date = $1::date
+        AND LOWER(TRIM(br.media_source)) <> $2
         ${statusClause}
       ORDER BY br.updated_at DESC,
       br.id DESC`,
-    [reportDate]
+    [reportDate, ASA_MEDIA_SOURCE]
   );
 
   return result.rows.map((row) => {
@@ -1315,10 +1400,11 @@ async function queryRowsForSource(
 ): Promise<{ rows: DeliveryActionRow[]; breakdown: { campaign_actions: number; asa_actions: number } }> {
   if (sourceType === NON_ASA_SOURCE_TYPE) {
     const campaignRows = await queryBudgetActionRows(reportDate, options);
+    const alignedRows = await alignBudgetRowsToAfDashboard(reportDate, campaignRows);
     return {
-      rows: campaignRows,
+      rows: alignedRows,
       breakdown: {
-        campaign_actions: campaignRows.length,
+        campaign_actions: alignedRows.length,
         asa_actions: 0
       }
     };
@@ -1857,9 +1943,10 @@ function buildNotifyCard(result: BitableExportRunResult): Record<string, unknown
         : result.notify.ok
           ? '表格已更新为最新执行清单，适合投放同学直接查看和处理。'
           : result.notify.error || '群通知失败';
-  const breakdownLines = [
-    `**总条数**：${result.record_count}`,
-    result.breakdown.campaign_actions > 0 || result.source_type === NON_ASA_SOURCE_TYPE
+	  const breakdownLines = [
+	    `**总条数**：${result.record_count}`,
+	    `**官方快照**：${result.official_snapshot.snapshot_id}（${result.official_snapshot.status}，组件 ${result.official_snapshot.snapshot_count} 个）`,
+	    result.breakdown.campaign_actions > 0 || result.source_type === NON_ASA_SOURCE_TYPE
       ? `**非 ASA 执行项**：${result.breakdown.campaign_actions}`
       : '',
     result.breakdown.asa_actions > 0 || result.source_type === ASA_SOURCE_TYPE
@@ -2041,9 +2128,31 @@ export async function runBitableExport(
       await reorderActionFields(appToken, sourceType, table.table_id, selectedFields, logger);
     }
 
-    const { rows, breakdown } = await queryRowsForSource(sourceType, reportDate, options);
-    const sevenDayLaterMap = await querySevenDayLaterDataForLookupRows(
-      rows.map((row) => ({
+	    const { rows, breakdown } = await queryRowsForSource(sourceType, reportDate, options);
+	    const sourceSurface = sourceType === ASA_SOURCE_TYPE ? 'master_pivot' : 'daily_report';
+	    const apps = await listApps();
+	    const officialSnapshot = await buildAfOfficialBatchSnapshot({
+	      metricScope: 'daily_push_d1',
+	      sourceSurface,
+	      windowFrom: reportDate,
+	      windowTo: reportDate,
+	      timezone: sourceSurface === 'master_pivot' ? 'preferred' : env.timezone,
+	      currency: 'preferred',
+	      platform: sourceType === ASA_SOURCE_TYPE ? 'ios' : undefined,
+	      expectedComponents:
+	        sourceType === ASA_SOURCE_TYPE
+	          ? buildAsaMasterExpectedComponents(apps, {
+	              from: reportDate,
+	              to: reportDate,
+	              platform: 'ios'
+	            })
+	          : buildDailyReportExpectedComponents(apps, {
+	              from: reportDate,
+	              to: reportDate
+	            })
+	    });
+	    const sevenDayLaterMap = await querySevenDayLaterDataForLookupRows(
+	      rows.map((row) => ({
         recommendation_type: row.recommendation_type,
         recommendation_id: row.recommendation_id,
         report_date: row.report_date,
@@ -2055,10 +2164,10 @@ export async function runBitableExport(
         campaign: row.campaign,
         adset: row.adset
       }))
-    );
-    const persistedFeedback = await buildPersistedFeedbackMap(sourceType, rows);
-    const snapshotId = `${reportDate}:${Date.now()}:${sourceType}`;
-    const rowsWithFeedback = rows
+	    );
+	    const persistedFeedback = await buildPersistedFeedbackMap(sourceType, rows);
+	    const snapshotId = officialSnapshot.snapshot_id;
+	    const rowsWithFeedback = rows
       .map((row) => {
         const syncKey = syncKeyForRow(row);
         return {
@@ -2142,10 +2251,11 @@ export async function runBitableExport(
       report_date: reportDate,
       table_id: table.table_id,
       table_name: table.name,
-      table_name_prefix: tableNamePrefix,
-      table_url: baseTableUrl(table.table_id),
-      selected_fields: selectedFields,
-      deleted_count: deletedCount,
+	      table_name_prefix: tableNamePrefix,
+	      table_url: baseTableUrl(table.table_id),
+	      selected_fields: selectedFields,
+	      official_snapshot: officialSnapshot,
+	      deleted_count: deletedCount,
       record_count: recordPayloads.length,
       export_status: cleanupError ? ('partial_success' as const) : ('success' as const),
       export_error: cleanupError,

@@ -4197,7 +4197,7 @@ function applyRecommendationPolicyDraftToInputs(draft) {
   el.recommendationPolicyDecisionModeSelect.value = draft.decisionMode || 'deterministic';
   el.recommendationPolicyTrafficScopeSelect.value = draft.trafficScope || 'all';
   el.recommendationPolicyExcludeRecentInput.value = String(draft.excludeRecentDays ?? '7');
-  el.recommendationPolicyDecisionWindowInput.value = String(draft.decisionWindowDays ?? '14');
+  el.recommendationPolicyDecisionWindowInput.value = String(draft.decisionWindowDays ?? '7');
   el.recommendationPolicyEcpiMaxInput.value = String(draft.globalTargets?.ecpi_max || '');
   el.recommendationPolicyRoasMinInput.value = String(draft.globalTargets?.roas_min || '');
   el.recommendationPolicyRoasGoodInput.value = String(draft.globalTargets?.roas_good || '');
@@ -4239,7 +4239,7 @@ function collectRecommendationPolicyDraftFromInputs() {
   baseDraft.decisionMode = String(el.recommendationPolicyDecisionModeSelect?.value || 'deterministic').trim() || 'deterministic';
   baseDraft.trafficScope = String(el.recommendationPolicyTrafficScopeSelect?.value || 'all').trim() || 'all';
   baseDraft.excludeRecentDays = String(el.recommendationPolicyExcludeRecentInput?.value || '7').trim() || '7';
-  baseDraft.decisionWindowDays = String(el.recommendationPolicyDecisionWindowInput?.value || '14').trim() || '14';
+  baseDraft.decisionWindowDays = String(el.recommendationPolicyDecisionWindowInput?.value || '7').trim() || '7';
   baseDraft.globalTargets = {
     ecpi_max: String(el.recommendationPolicyEcpiMaxInput?.value || '').trim(),
     roas_min: String(el.recommendationPolicyRoasMinInput?.value || '').trim(),
@@ -6531,13 +6531,10 @@ function normalizeRoasCoverageRatio(value, roasDataStatus) {
 }
 
 function isStrictAsaRoasValueVisible(primarySource, warningCode) {
-  return String(primarySource || '') === 'af_cohort' && String(warningCode || '') !== 'af_vs_local_mismatch';
+  return String(primarySource || '') === 'af_cohort';
 }
 
 function hiddenAsaRoasReason(primarySource, warningCode) {
-  if (String(warningCode || '') === 'af_vs_local_mismatch') {
-    return 'AF 官方成熟窗口 D7 ROAS 与本地派生偏差较大，当前不展示数值';
-  }
   if (String(primarySource || '') !== 'af_cohort') {
     return 'AF 官方成熟窗口 D7 ROAS 缺失，当前不展示回退值';
   }
@@ -6792,6 +6789,9 @@ function formatAsaD7RoasDisplay(value, totalCost, revenueD7, roasDataStatus, sou
   const strictVisible = isStrictAsaRoasValueVisible(primarySource, warningCode);
   const hiddenReason = hiddenAsaRoasReason(primarySource, warningCode);
   if (status === 'pending') {
+    if (strictVisible && Number(totalCost || 0) > 0) {
+      return `${formatRoasPercent(value)}（覆盖率较低，数据仍在补齐${warningCode === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : ''}）`;
+    }
     return '待补齐（AF 成熟窗口数据缺失）';
   }
   if (status === 'partial') {
@@ -6801,7 +6801,7 @@ function formatAsaD7RoasDisplay(value, totalCost, revenueD7, roasDataStatus, sou
     if (!strictVisible) {
       return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
     }
-    return `${formatRoasPercent(value)}（按已覆盖成本计算）`;
+    return `${formatRoasPercent(value)}（按已覆盖成本计算${warningCode === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : ''}）`;
   }
   if (status === 'partial_low') {
     if (Number(totalCost || 0) <= 0) {
@@ -6810,7 +6810,7 @@ function formatAsaD7RoasDisplay(value, totalCost, revenueD7, roasDataStatus, sou
     if (!strictVisible) {
       return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
     }
-    return `${formatRoasPercent(value)}（覆盖率偏低，仅供参考）`;
+    return `${formatRoasPercent(value)}（覆盖率偏低，仅供参考${warningCode === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : ''}）`;
   }
   if (status === 'unavailable') {
     return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
@@ -6832,6 +6832,12 @@ function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7, roasDataS
   const strictVisible = isStrictAsaRoasValueVisible(primarySource, warningCode);
   const hiddenReason = hiddenAsaRoasReason(primarySource, warningCode);
   if (status === 'pending') {
+    if (strictVisible && Number(totalCost || 0) > 0) {
+      const base = `${formatRoasPercent(value)}（覆盖率较低，数据仍在补齐${warningCode === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : ''}）${sourceText ? `｜${sourceText}` : ''}`;
+      return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
+        ? `${base}（成熟窗口未观察到D7收入）`
+        : base;
+    }
     return '待补齐（AF 成熟窗口数据缺失）';
   }
   if (status === 'partial') {
@@ -6841,7 +6847,7 @@ function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7, roasDataS
     if (!strictVisible) {
       return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
     }
-    const base = `${formatRoasPercent(value)}（按已覆盖成本计算）${sourceText ? `｜${sourceText}` : ''}`;
+    const base = `${formatRoasPercent(value)}（按已覆盖成本计算${warningCode === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : ''}）${sourceText ? `｜${sourceText}` : ''}`;
     return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
       ? `${base}（成熟窗口未观察到D7收入）`
       : base;
@@ -6853,7 +6859,7 @@ function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7, roasDataS
     if (!strictVisible) {
       return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
     }
-    const base = `${formatRoasPercent(value)}（覆盖率偏低，仅供参考）${sourceText ? `｜${sourceText}` : ''}`;
+    const base = `${formatRoasPercent(value)}（覆盖率偏低，仅供参考${warningCode === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : ''}）${sourceText ? `｜${sourceText}` : ''}`;
     return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
       ? `${base}（成熟窗口未观察到D7收入）`
       : base;

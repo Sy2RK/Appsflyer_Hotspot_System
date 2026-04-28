@@ -16,6 +16,8 @@ import {
   fetchAppsflyerText,
   type AppsflyerRequestFailureKind
 } from './appsflyerRequest.js';
+import { classifyAfSyncScope, isAfWindowProvisional } from './afMetricScopes.js';
+import { upsertAfOfficialSnapshot } from './appsflyerOfficialSnapshots.js';
 
 interface CsvRow {
   [key: string]: string;
@@ -134,6 +136,7 @@ interface PullReviewCandidate {
   pullAppId: string;
   date: string;
   platform: string;
+  timezone: string;
 }
 
 interface PullSliceScope {
@@ -651,24 +654,67 @@ async function sleepMs(durationMs: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, safeDuration));
 }
 
-function buildPullUrl(appKey: string, pullAppId: string, date: string): string {
+function buildPullUrl(appKey: string, pullAppId: string, date: string, timezone = env.timezone): string {
   const endpoint =
     process.env.APPSFLYER_PULL_ENDPOINT_TEMPLATE
-      ?.replace('{app_key}', appKey)
-      .replace('{app_id}', pullAppId) ??
-    `https://hq1.appsflyer.com/api/agg-data/export/app/${pullAppId}/daily_report/v5`;
+      ?.replace('{app_key}', encodeURIComponent(appKey))
+      .replace('{app_id}', encodeURIComponent(pullAppId)) ??
+    `https://hq1.appsflyer.com/api/agg-data/export/app/${encodeURIComponent(pullAppId)}/daily_report/v5`;
 
-  const sep = endpoint.includes('?') ? '&' : '?';
-  return `${endpoint}${sep}from=${date}&to=${date}`;
+  const url = new URL(endpoint);
+  url.searchParams.set('from', date);
+  url.searchParams.set('to', date);
+  url.searchParams.set('timezone', String(timezone || env.timezone).trim() || env.timezone);
+  return url.toString();
+}
+
+async function recordPullOfficialSnapshot(params: {
+  appKey: string;
+  pullAppId: string;
+  date: string;
+  platform: string;
+  timezone: string;
+  rowCount: number;
+  contentSignature: string;
+  status?: 'failed';
+  error?: string | null;
+}): Promise<void> {
+  const isProvisional = isAfWindowProvisional(params.date);
+  await upsertAfOfficialSnapshot({
+    metricScope: classifyAfSyncScope(params.date),
+    sourceSurface: 'daily_report',
+    sourceApi: PULL_SOURCE_REPORT,
+    appKey: params.appKey,
+    platform: params.platform,
+    appId: params.pullAppId,
+    windowFrom: params.date,
+    windowTo: params.date,
+    timezone: params.timezone,
+    currency: 'preferred',
+    queryParams: {
+      from: params.date,
+      to: params.date,
+      timezone: params.timezone
+    },
+    rowCount: params.rowCount,
+    contentSignature: params.contentSignature,
+    status: params.status ?? (isProvisional ? 'provisional' : undefined),
+    isProvisional,
+    error: params.error ?? null,
+    metadataJson: {
+      source_report: PULL_SOURCE_REPORT
+    }
+  });
 }
 
 async function pullAppDaily(
   appKey: string,
   pullAppId: string,
   date: string,
-  platformHint: string
+  platformHint: string,
+  timezone = env.timezone
 ): Promise<{ rows: number; metricsRows: number; signature: string }> {
-  const url = buildPullUrl(appKey, pullAppId, date);
+  const url = buildPullUrl(appKey, pullAppId, date, timezone);
   const csv = await fetchAppsflyerText(url, {
     headers: {
       Authorization: `Bearer ${env.pullToken}`
@@ -692,9 +738,10 @@ async function executePullAttempt(params: {
   pullAppId: string;
   date: string;
   platform: string;
+  timezone: string;
 }): Promise<PullAttemptResult> {
   const guard = await getPullContentGuard(params.appKey, params.platform, params.date, PULL_SOURCE_REPORT);
-  const url = buildPullUrl(params.appKey, params.pullAppId, params.date);
+  const url = buildPullUrl(params.appKey, params.pullAppId, params.date, params.timezone);
 
   try {
     const csv = await fetchAppsflyerText(url, {
@@ -714,19 +761,28 @@ async function executePullAttempt(params: {
     const signature = buildPullContentSignature(pullRows);
     const metricRows = toDailyMetricRows(pullRows, Date.now());
 
-    if (guard?.content_signature && guard.content_signature === signature) {
-      const nextAllowedAt = nextAllowedAtForReportDate(params.date);
-      await upsertPullContentGuard({
+	    if (guard?.content_signature && guard.content_signature === signature) {
+	      const nextAllowedAt = nextAllowedAtForReportDate(params.date);
+	      await upsertPullContentGuard({
         app_key: params.appKey,
         platform: params.platform,
         report_date: params.date,
         source_report: PULL_SOURCE_REPORT,
         content_signature: signature,
         last_status: 'skipped_same_content_cooldown',
-        last_error: null,
-        next_allowed_at: nextAllowedAt
-      });
-      return {
+	        last_error: null,
+	        next_allowed_at: nextAllowedAt
+	      });
+	      await recordPullOfficialSnapshot({
+	        appKey: params.appKey,
+	        pullAppId: params.pullAppId,
+	        date: params.date,
+	        platform: params.platform,
+	        timezone: params.timezone,
+	        rowCount: pullRows.length,
+	        contentSignature: signature
+	      });
+	      return {
         ok: true,
         status: 'skipped_same_content_cooldown',
         rows: 0,
@@ -737,18 +793,27 @@ async function executePullAttempt(params: {
       };
     }
 
-    await replacePullDailySlice(
-      {
-        appKey: params.appKey,
-        date: params.date,
-        platform: params.platform
-      },
-      pullRows,
-      metricRows
-    );
-    await upsertPullContentGuard({
-      app_key: params.appKey,
-      platform: params.platform,
+	    await replacePullDailySlice(
+	      {
+	        appKey: params.appKey,
+	        date: params.date,
+	        platform: params.platform
+	      },
+	      pullRows,
+	      metricRows
+	    );
+	    await recordPullOfficialSnapshot({
+	      appKey: params.appKey,
+	      pullAppId: params.pullAppId,
+	      date: params.date,
+	      platform: params.platform,
+	      timezone: params.timezone,
+	      rowCount: pullRows.length,
+	      contentSignature: signature
+	    });
+	    await upsertPullContentGuard({
+	      app_key: params.appKey,
+	      platform: params.platform,
       report_date: params.date,
       source_report: PULL_SOURCE_REPORT,
       content_signature: signature,
@@ -777,17 +842,28 @@ async function executePullAttempt(params: {
             immediateRetryable: true,
             scheduledRetryable: true
           });
-    await upsertPullContentGuard({
-      app_key: params.appKey,
-      platform: params.platform,
+	    await upsertPullContentGuard({
+	      app_key: params.appKey,
+	      platform: params.platform,
       report_date: params.date,
       source_report: PULL_SOURCE_REPORT,
       content_signature: guard?.content_signature ?? '',
       last_status: 'failed',
       last_error: errorText,
-      next_allowed_at: null
-    });
-    return {
+	      next_allowed_at: null
+	    });
+	    await recordPullOfficialSnapshot({
+	      appKey: params.appKey,
+	      pullAppId: params.pullAppId,
+	      date: params.date,
+	      platform: params.platform,
+	      timezone: params.timezone,
+	      rowCount: 0,
+	      contentSignature: guard?.content_signature ?? '',
+	      status: 'failed',
+	      error: errorText
+	    }).catch(() => undefined);
+	    return {
       ok: false,
       status: 'ok',
       rows: 0,
@@ -851,6 +927,7 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
 
     for (const app of apps) {
       const targets = buildPullTargets(app);
+      const appTimezone = String(app.timezone || env.timezone).trim() || env.timezone;
       if (targets.length === 0) {
         details.push({
           app_key: app.app_key,
@@ -925,7 +1002,8 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
             appKey: app.app_key,
             pullAppId: target.pullAppId,
             date,
-            platform
+            platform,
+            timezone: appTimezone
           });
 
           if (attempt.ok) {
@@ -992,7 +1070,8 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
                 appKey: app.app_key,
                 pullAppId: target.pullAppId,
                 date,
-                platform
+                platform,
+                timezone: appTimezone
               });
             }
             logError(logger, 'puller_app_day_failed', {
@@ -1023,7 +1102,8 @@ export async function runPullCycle(backfillDays: number, logger?: PullLogger): P
           appKey: candidate.appKey,
           pullAppId: candidate.pullAppId,
           date: candidate.date,
-          platform: candidate.platform
+          platform: candidate.platform,
+          timezone: candidate.timezone
         });
         const detail = details[candidate.detailIndex];
         if (!detail) {
