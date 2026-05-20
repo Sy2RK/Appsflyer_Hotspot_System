@@ -9,6 +9,7 @@ export type AiContextPackTemplateId =
   | 'media_source'
   | 'country'
   | 'campaign'
+  | 'dashboard_d7_roas'
   | 'mature_window'
   | 'platform_media_source'
   | 'action_status'
@@ -166,8 +167,9 @@ function formatDimensionLabel(templateId: AiContextPackTemplateId): string {
       return '国家';
     case 'campaign':
       return '活动';
+    case 'dashboard_d7_roas':
     case 'mature_window':
-      return '成熟窗口';
+      return 'AF Dashboard D7 ROAS';
     case 'platform_media_source':
       return '平台 / 媒体源';
     case 'action_status':
@@ -578,9 +580,10 @@ async function buildBudgetSummaryPack(spec: AiContextPackSpec): Promise<AiBuiltC
 }
 
 async function buildRoasSummaryPack(spec: AiContextPackSpec): Promise<AiBuiltContextPack> {
-  if (spec.templateId !== 'mature_window') {
+  if (spec.templateId !== 'dashboard_d7_roas' && spec.templateId !== 'mature_window') {
     throw new Error('invalid_roas_template');
   }
+  const templateId = spec.templateId === 'mature_window' ? 'dashboard_d7_roas' : spec.templateId;
   const pack = await buildMatureRoasContextPack({
     appKey: spec.appKey,
     scope: normalizeRoasScope(spec.scope),
@@ -589,7 +592,7 @@ async function buildRoasSummaryPack(spec: AiContextPackSpec): Promise<AiBuiltCon
   });
   return {
     type: 'roas_summary',
-    templateId: spec.templateId,
+    templateId,
     title: pack.title,
     summaryMarkdown: pack.summaryMarkdown,
     structured: pack.structured,
@@ -660,12 +663,8 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         to_char(avg(current_ecpi), 'FM999999990.00') AS avg_ecpi,
         to_char(avg(current_cpp), 'FM999999990.00') AS avg_cpp,
         to_char(
-          coalesce(
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END), 0)
-          ),
+          sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
+            / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
           'FM999999990.00'
         ) AS avg_roas
       FROM asa_keyword_states
@@ -682,12 +681,8 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         to_char(sum(installs_7d), 'FM999999999999990.00') AS installs_7d,
         to_char(avg(current_ecpi), 'FM999999990.00') AS avg_ecpi,
         to_char(
-          coalesce(
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END), 0)
-          ),
+          sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
+            / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
           'FM999999990.00'
         ) AS avg_roas
       FROM asa_keyword_states
@@ -703,12 +698,8 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         to_char(sum(installs_7d), 'FM999999999999990.00') AS installs_7d,
         to_char(avg(current_ecpi), 'FM999999990.00') AS avg_ecpi,
         to_char(
-          coalesce(
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END), 0)
-          ),
+          sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
+            / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
           'FM999999990.00'
         ) AS avg_roas
       FROM asa_keyword_states
@@ -724,12 +715,8 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         to_char(sum(installs_7d), 'FM999999999999990.00') AS installs_7d,
         to_char(avg(current_ecpi), 'FM999999990.00') AS avg_ecpi,
         to_char(
-          coalesce(
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END), 0)
-          ),
+          sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
+            / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
           'FM999999990.00'
         ) AS avg_roas
       FROM asa_keyword_states

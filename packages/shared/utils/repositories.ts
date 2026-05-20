@@ -353,15 +353,27 @@ export async function ensureBudgetRecommendationsSchema(): Promise<void> {
       );
       await pgQuery(
         `ALTER TABLE budget_recommendations
-            ADD COLUMN IF NOT EXISTS roas_primary_source TEXT NOT NULL DEFAULT 'local_fallback'`
+            ADD COLUMN IF NOT EXISTS roas_primary_source TEXT NOT NULL DEFAULT 'af_cohort'`
       );
       await pgQuery(
         `ALTER TABLE budget_recommendations
-            ADD COLUMN IF NOT EXISTS roas_warning_code TEXT NOT NULL DEFAULT 'none'`
+            ADD COLUMN IF NOT EXISTS roas_warning_code TEXT NOT NULL DEFAULT 'af_missing'`
       );
       await pgQuery(
         `ALTER TABLE budget_recommendations
             ADD COLUMN IF NOT EXISTS roas_deviation_ratio DOUBLE PRECISION`
+      );
+      await pgQuery(
+        `ALTER TABLE budget_recommendations
+            ALTER COLUMN roas_primary_source SET DEFAULT 'af_cohort',
+            ALTER COLUMN roas_warning_code SET DEFAULT 'af_missing'`
+      );
+      await pgQuery(
+        `UPDATE budget_recommendations
+            SET roas_warning_code = 'af_missing'
+          WHERE roas_primary_source = 'af_cohort'
+            AND roas_warning_code = 'none'
+            AND af_cohort_roas IS NULL`
       );
     })()
       .then(() => undefined)
@@ -410,15 +422,27 @@ export async function ensureAsaKeywordRoasSchema(): Promise<void> {
       );
       await pgQuery(
         `ALTER TABLE asa_keyword_states
-            ADD COLUMN IF NOT EXISTS roas_primary_source TEXT NOT NULL DEFAULT 'local_fallback'`
+            ADD COLUMN IF NOT EXISTS roas_primary_source TEXT NOT NULL DEFAULT 'af_cohort'`
       );
       await pgQuery(
         `ALTER TABLE asa_keyword_states
-            ADD COLUMN IF NOT EXISTS roas_warning_code TEXT NOT NULL DEFAULT 'none'`
+            ADD COLUMN IF NOT EXISTS roas_warning_code TEXT NOT NULL DEFAULT 'af_missing'`
       );
       await pgQuery(
         `ALTER TABLE asa_keyword_states
             ADD COLUMN IF NOT EXISTS roas_deviation_ratio DOUBLE PRECISION`
+      );
+      await pgQuery(
+        `ALTER TABLE asa_keyword_states
+            ALTER COLUMN roas_primary_source SET DEFAULT 'af_cohort',
+            ALTER COLUMN roas_warning_code SET DEFAULT 'af_missing'`
+      );
+      await pgQuery(
+        `UPDATE asa_keyword_states
+            SET roas_warning_code = 'af_missing'
+          WHERE roas_primary_source = 'af_cohort'
+            AND roas_warning_code = 'none'
+            AND af_cohort_roas IS NULL`
       );
       await pgQuery(
         `ALTER TABLE asa_keyword_recommendations
@@ -442,15 +466,27 @@ export async function ensureAsaKeywordRoasSchema(): Promise<void> {
       );
       await pgQuery(
         `ALTER TABLE asa_keyword_recommendations
-            ADD COLUMN IF NOT EXISTS roas_primary_source TEXT NOT NULL DEFAULT 'local_fallback'`
+            ADD COLUMN IF NOT EXISTS roas_primary_source TEXT NOT NULL DEFAULT 'af_cohort'`
       );
       await pgQuery(
         `ALTER TABLE asa_keyword_recommendations
-            ADD COLUMN IF NOT EXISTS roas_warning_code TEXT NOT NULL DEFAULT 'none'`
+            ADD COLUMN IF NOT EXISTS roas_warning_code TEXT NOT NULL DEFAULT 'af_missing'`
       );
       await pgQuery(
         `ALTER TABLE asa_keyword_recommendations
             ADD COLUMN IF NOT EXISTS roas_deviation_ratio DOUBLE PRECISION`
+      );
+      await pgQuery(
+        `ALTER TABLE asa_keyword_recommendations
+            ALTER COLUMN roas_primary_source SET DEFAULT 'af_cohort',
+            ALTER COLUMN roas_warning_code SET DEFAULT 'af_missing'`
+      );
+      await pgQuery(
+        `UPDATE asa_keyword_recommendations
+            SET roas_warning_code = 'af_missing'
+          WHERE roas_primary_source = 'af_cohort'
+            AND roas_warning_code = 'none'
+            AND af_cohort_roas IS NULL`
       );
     })()
       .then(() => undefined)
@@ -1589,8 +1625,8 @@ export async function upsertBudgetRecommendation(
       input.current_roas ?? null,
       input.af_cohort_roas ?? null,
       input.local_derived_roas ?? null,
-      input.roas_primary_source ?? 'local_fallback',
-      input.roas_warning_code ?? 'none',
+      input.roas_primary_source ?? 'af_cohort',
+      input.roas_warning_code ?? (input.af_cohort_roas == null ? 'af_missing' : 'none'),
       input.roas_deviation_ratio ?? null,
       input.target_roas ?? null,
       input.roas_window_from ?? null,
@@ -2870,8 +2906,8 @@ export async function upsertAsaKeywordState(input: {
       input.current_d7_roas,
       input.af_cohort_roas ?? null,
       input.local_derived_roas ?? null,
-      input.roas_primary_source ?? 'local_fallback',
-      input.roas_warning_code ?? 'none',
+      input.roas_primary_source ?? 'af_cohort',
+      input.roas_warning_code ?? (input.af_cohort_roas == null ? 'af_missing' : 'none'),
       input.roas_deviation_ratio ?? null,
       input.roas_window_from ?? null,
       input.roas_window_to ?? null,
@@ -3018,8 +3054,8 @@ export async function upsertAsaKeywordRecommendation(input: {
       input.current_d7_roas,
       input.af_cohort_roas ?? null,
       input.local_derived_roas ?? null,
-      input.roas_primary_source ?? 'local_fallback',
-      input.roas_warning_code ?? 'none',
+      input.roas_primary_source ?? 'af_cohort',
+      input.roas_warning_code ?? (input.af_cohort_roas == null ? 'af_missing' : 'none'),
       input.roas_deviation_ratio ?? null,
       input.roas_window_from ?? null,
       input.roas_window_to ?? null,

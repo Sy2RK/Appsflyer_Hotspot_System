@@ -54,8 +54,8 @@
   - 当用户问“ROAS / 回收 / D7 ROAS”，且语义更接近日报 / 简报口径时，Agent 会优先使用 `roas.get_summary`
     - 通用每日简报 / 预算建议走 `scope=budget`
     - ASA 简报 / ASA 看板走 `scope=asa`
-    - 回答中应明确写出 `报告日期` 与 `成熟窗口 from ~ to`
-    - 这不是最新单日实时 ROAS，而是成熟窗口聚合值
+    - 回答中应明确写出 `报告日期` 与 `官方 D7 ROAS 窗口 from ~ to`
+    - 这是 AppsFlyer Cohort API `roas` KPI，对报告日 `D` 使用 `D-6` 至 `D`
 - 图片上传
   - 最多 4 张
   - 支持 `png/jpeg/webp`
@@ -84,16 +84,16 @@
 
 ## ASA 关键词管理补充
 
-- `CPP` 与 `D7 ROAS` 不是最新单日即时值，而是按成熟窗口汇总后的摘要值
+- `D7 ROAS` 不是本地 revenue/cost 派生值，而是 AF Cohort API `roas` KPI 的官方 D7 rolling window
 - 当前所有用户可见的 `ROAS / D7 ROAS` 均统一显示为百分比
   - 例如存储层的 `1.5` 会显示成 `150.00%`
 - 页面会根据 `roas_data_status` 区分 5 种状态：
-  - `complete`：成熟窗口数据完整，可直接使用
-  - `partial`：成熟窗口覆盖率达到阈值，但仍有缺口；当前值按已覆盖成本计算
-  - `partial_low`：成熟窗口覆盖率偏低，当前值仅供参考，不直接驱动动作
-  - `pending`：成熟窗口覆盖率仍不足，UI 会显示“待补齐（源数据缺失）”
-  - `unavailable`：当前还没有可用于判断的成熟窗口
-- 因此即便部分 keyword 已经拿到收入事件，只要成熟窗口总覆盖率还没达到阈值，摘要卡里的 `CPP / D7 ROAS` 仍可能统一显示“待补齐（源数据缺失）”
+  - `complete`：官方 D7 窗口数据完整，可直接使用
+  - `partial`：官方 D7 窗口覆盖率达到阈值，但仍有缺口
+  - `partial_low`：官方 D7 窗口覆盖率偏低，当前值仅供参考，不直接驱动动作
+  - `pending`：官方 D7 窗口覆盖率仍不足，UI 会显示“待补齐（源数据缺失）”
+  - `unavailable`：当前还没有可用于判断的 AF Cohort 官方快照
+- 因此即便部分 keyword 已经有事件收入，只要 AF Cohort `roas` 快照覆盖率还没达到阈值，摘要卡里的 `D7 ROAS` 仍可能显示“待补齐（源数据缺失）”
 
 ### 工具面板结构
 

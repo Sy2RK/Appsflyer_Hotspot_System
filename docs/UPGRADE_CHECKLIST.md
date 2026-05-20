@@ -31,7 +31,7 @@
 11. 新增应用级预算 / ASA 规则配置表 `recommendation_policy_configs`
 12. 新增价值与国家切片事实表：`keyword_value_daily_metrics`、`asa_keyword_country_daily_metrics`
 13. `keyword-engine` 的 `D7 ROAS` 价值回收已切换为 AppsFlyer Cohort API 源数据，并用 `revenue_source_missing` 标记数据缺口
-14. 全系统 `D7 ROAS` 统一改为“Cohort API 源数据 + 成熟窗口”口径，并显式输出 `roas_window_* / roas_data_status`
+14. 全系统 `D7 ROAS` 统一改为“AF Cohort API roas KPI + 官方 D7 rolling window”口径，并显式输出 `roas_window_* / roas_data_status`
 15. `Guru Ads Agent` 改为多模型结构，支持 Qwen / OpenRouter / OpenAI 可选 provider
 
 结论：

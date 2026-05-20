@@ -141,9 +141,9 @@ FEISHU_BITABLE_ENABLED=false
 DAILY_BRIEF_ENABLED=false
 ASA_DAILY_BRIEF_ENABLED=false
 
-QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_BASE_URL=https://openrouter.ai/api/v1
 QWEN_API_KEY=
-QWEN_MODEL=qwen3.6-plus
+QWEN_MODEL=qwen/qwen3.6-plus
 
 MCP_INTERNAL_TOKEN=<random-long-token>
 HOTSPOT_DOMAIN=hotspot.example.com

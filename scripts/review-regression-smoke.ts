@@ -40,9 +40,10 @@ import {
 import { env } from '../packages/shared/config/env.js';
 import { GURU_MCP_TOOL_NAMES, resolveGuruMcpToolForContextPack } from '../packages/shared/utils/guruMcp.js';
 import {
-  buildMatureRoasWindow,
+  buildOfficialD7RoasWindow,
   isRoasDataDisplayableStatus,
   isRoasDataUsableStatus,
+  parseAfCohortD7RoasRate,
   resolveRoasDataStatus
 } from '../packages/shared/utils/roasWindow.js';
 import {
@@ -623,19 +624,26 @@ async function main(): Promise<void> {
     }
   });
   assert.deepEqual(asaRoasWindow, {
-    from: '2026-03-18',
-    to: '2026-03-24'
+    from: '2026-03-25',
+    to: '2026-03-31'
   });
   const defaultAsaRoasWindow = buildAsaRoasWindow('2026-04-22', null);
   assert.deepEqual(defaultAsaRoasWindow, {
-    from: '2026-04-09',
-    to: '2026-04-15'
+    from: '2026-04-16',
+    to: '2026-04-22'
   });
-  const matureBudgetRoasWindow = buildMatureRoasWindow('2026-04-02', null);
-  assert.deepEqual(matureBudgetRoasWindow, {
-    from: '2026-03-20',
-    to: '2026-03-26'
+  const officialD7RoasWindow = buildOfficialD7RoasWindow('2026-04-29');
+  assert.deepEqual(officialD7RoasWindow, {
+    from: '2026-04-23',
+    to: '2026-04-29'
   });
+  assert.deepEqual(buildOfficialD7RoasWindow('2026-04-26'), {
+    from: '2026-04-20',
+    to: '2026-04-26'
+  });
+  assert.equal(parseAfCohortD7RoasRate({ roas_rate_day_6: '104.82' }), 104.82);
+  assert.equal(parseAfCohortD7RoasRate({ roas_rate_day_6: '', roas_rate_day_7: '17.62' }), 17.62);
+  assert.equal(parseAfCohortD7RoasRate({ roas_rate_day_6: '' }), null);
   assert.equal(
     resolveRoasDataStatus({
       hasWindowRows: true,
@@ -769,14 +777,18 @@ async function main(): Promise<void> {
       purchase_count: 2,
       revenue_d7: 60,
       d7_roas: 1.5,
-      revenue_source_missing: 0
+      revenue_source_missing: 0,
+      af_cohort_roas: 1.5,
+      af_cohort_roas_missing: 0
     },
     {
       total_cost: 20,
       purchase_count: 0,
       revenue_d7: 0,
       d7_roas: 0,
-      revenue_source_missing: 1
+      revenue_source_missing: 1,
+      af_cohort_roas: 0,
+      af_cohort_roas_missing: 1
     }
   ]);
   assert.equal(partialValueCoverage.coverageMissing, true);
@@ -802,14 +814,18 @@ async function main(): Promise<void> {
       purchase_count: 4,
       revenue_d7: 100,
       d7_roas: 1.25,
-      revenue_source_missing: 0
+      revenue_source_missing: 0,
+      af_cohort_roas: 1.25,
+      af_cohort_roas_missing: 0
     },
     {
       total_cost: 20,
       purchase_count: 0,
       revenue_d7: 0,
       d7_roas: 0,
-      revenue_source_missing: 1
+      revenue_source_missing: 1,
+      af_cohort_roas: 0,
+      af_cohort_roas_missing: 1
     }
   ]);
   assert.equal(thresholdValueCoverage.currentRoas, 1.25);
@@ -833,7 +849,9 @@ async function main(): Promise<void> {
       purchase_count: 2,
       revenue_d7: 60,
       d7_roas: 1.5,
-      revenue_source_missing: 0
+      revenue_source_missing: 0,
+      af_cohort_roas: 1.5,
+      af_cohort_roas_missing: 0
     }
   ]);
   assert.equal(completeValueCoverage.coverageMissing, false);
@@ -847,14 +865,18 @@ async function main(): Promise<void> {
       purchase_count: 4,
       revenue_d7: 200,
       d7_roas: 99,
-      revenue_source_missing: 0
+      revenue_source_missing: 0,
+      af_cohort_roas: 1.5,
+      af_cohort_roas_missing: 0
     },
     {
       total_cost: 50,
       purchase_count: 2,
       revenue_d7: 25,
       d7_roas: 77,
-      revenue_source_missing: 0
+      revenue_source_missing: 0,
+      af_cohort_roas: 1.5,
+      af_cohort_roas_missing: 0
     }
   ]);
   assert.equal(revenueBasedCoverage.currentRoas, 1.5);
@@ -1034,10 +1056,16 @@ async function main(): Promise<void> {
 
   const cohortWindows = buildKeywordValueCohortWindows('2026-03-01', '2026-04-08', '2026-04-08');
   assert.deepEqual(cohortWindows, [
-    { from: '2026-03-01', to: '2026-03-31' },
-    { from: '2026-04-01', to: '2026-04-01' }
+    { from: '2026-03-01', to: '2026-03-07' },
+    { from: '2026-03-08', to: '2026-03-14' },
+    { from: '2026-03-15', to: '2026-03-21' },
+    { from: '2026-03-22', to: '2026-03-28' },
+    { from: '2026-03-29', to: '2026-04-04' },
+    { from: '2026-04-05', to: '2026-04-08' }
   ]);
-  assert.deepEqual(buildKeywordValueCohortWindows('2026-04-02', '2026-04-08', '2026-04-08'), []);
+  assert.deepEqual(buildKeywordValueCohortWindows('2026-04-02', '2026-04-08', '2026-04-08'), [
+    { from: '2026-04-02', to: '2026-04-08' }
+  ]);
 
   const mergedValueRevenueRows = mergeKeywordValueRevenueRows([
     [
@@ -1213,17 +1241,24 @@ async function main(): Promise<void> {
   assert.ok(contextPrompt.prompt.includes('上下文包一'));
   assert.ok(!contextPrompt.prompt.includes('结构化摘要'));
   assert.ok(contextPrompt.warnings.some((item) => /截短|跳过/.test(item)));
+  const openAiCompatibleToolNames = [
+    'apps_list',
+    'metrics_get_trend',
+    'roas_get_summary',
+    'budget_get_summary',
+    'asa_keywords_get_summary'
+  ];
   assert.deepEqual(
     buildAiChatToolDefinitionsForModel('openai_gpt54').map((item) => item.function.name),
-    ['apps_list', 'metrics_get_trend', 'roas_get_summary', 'budget_get_summary', 'asa_keywords_get_summary']
+    openAiCompatibleToolNames
   );
   assert.deepEqual(
     buildAiChatToolDefinitionsForModel('openrouter_kimi_k25').map((item) => item.function.name),
-    ['apps_list', 'metrics_get_trend', 'roas_get_summary', 'budget_get_summary', 'asa_keywords_get_summary']
+    openAiCompatibleToolNames
   );
   assert.deepEqual(
     buildAiChatToolDefinitionsForModel('qwen').map((item) => item.function.name),
-    Object.values(GURU_MCP_TOOL_NAMES)
+    openAiCompatibleToolNames
   );
   assert.equal(normalizeGuruToolName('budget_get_summary'), GURU_MCP_TOOL_NAMES.budgetGetSummary);
   assert.equal(normalizeGuruToolName('roas_get_summary'), GURU_MCP_TOOL_NAMES.roasGetSummary);
@@ -1585,15 +1620,15 @@ async function main(): Promise<void> {
       callGuruMcpTool: async (toolName, args) => {
         matureRoasToolCallsCaptured.push({ toolName, args });
         return {
-          title: '成熟窗口 ROAS',
+          title: 'AF Dashboard D7 ROAS',
           summary_markdown:
-            '### 成熟窗口 ROAS\n- 报告日期：2026-04-08\n- 时间窗口：2026-04-01 至 2026-04-07\n- 当前 ROAS：123.00%',
+            '### AF Dashboard D7 ROAS\n- 报告日期：2026-04-08\n- 时间窗口：2026-04-02 至 2026-04-08\n- 当前 ROAS：123.00%',
           structured: {
             reportDate: '2026-04-08',
             summary: {
               roasWindow: {
-                from: '2026-04-01',
-                to: '2026-04-07'
+                from: '2026-04-02',
+                to: '2026-04-08'
               },
               currentRoas: 1.23
             }
@@ -1636,7 +1671,7 @@ async function main(): Promise<void> {
           };
         }
         return {
-          content: '结论：按 2026-04-08 报告日期、成熟窗口 2026-04-01 至 2026-04-07，ROAS 为 123.00%。',
+          content: '结论：按 2026-04-08 报告日期、官方 D7 ROAS 窗口 2026-04-02 至 2026-04-08，ROAS 为 123.00%。',
           toolCalls: [],
           usage: null,
           raw: {},
@@ -1651,8 +1686,8 @@ async function main(): Promise<void> {
   assert.equal(matureRoasToolCallsCaptured[0]?.args.scope, 'budget');
   assert.equal(matureRoasToolCallsCaptured[0]?.args.platform, 'ios');
   assert.equal(matureRoasToolCallsCaptured[0]?.args.reportDate, '2026-04-08');
-  assert.equal(matureRoasToolCallsCaptured[0]?.args.templateId, 'mature_window');
-  assert.match(matureRoasSystemPrompt, /必须明确写出“报告日期”和“成熟窗口 from 至 to”/);
+  assert.equal(matureRoasToolCallsCaptured[0]?.args.templateId, 'dashboard_d7_roas');
+  assert.match(matureRoasSystemPrompt, /必须明确写出“报告日期”和“官方 D7 ROAS 窗口 from 至 to”/);
 
   const asaRoasToolCallsCaptured: Array<{ toolName: string; args: Record<string, unknown> }> = [];
   let asaRoasStepIndex = 0;
@@ -1682,9 +1717,9 @@ async function main(): Promise<void> {
       callGuruMcpTool: async (toolName, args) => {
         asaRoasToolCallsCaptured.push({ toolName, args });
         return {
-          title: '成熟窗口 ROAS',
+          title: 'AF Dashboard D7 ROAS',
           summary_markdown:
-            '### 成熟窗口 ROAS\n- 报告日期：2026-04-08\n- 时间窗口：2026-04-01 至 2026-04-07\n- 当前 ROAS：111.00%',
+            '### AF Dashboard D7 ROAS\n- 报告日期：2026-04-08\n- 时间窗口：2026-04-02 至 2026-04-08\n- 当前 ROAS：111.00%',
           structured: {},
           row_count: 1,
           truncated: false,
@@ -1721,7 +1756,7 @@ async function main(): Promise<void> {
           };
         }
         return {
-          content: '结论：按 ASA 简报口径，昨天的成熟窗口 ROAS 为 111.00%。',
+          content: '结论：按 ASA 简报口径，昨天的 AF Dashboard D7 ROAS 为 111.00%。',
           toolCalls: [],
           usage: null,
           raw: {},
@@ -2315,7 +2350,7 @@ async function main(): Promise<void> {
             ? 'moonshotai/kimi-k2.5'
             : input.modelId === 'openai_gpt54'
               ? 'gpt-5.4'
-              : 'qwen3.6-plus',
+              : 'qwen/qwen3.6-plus',
         model_label:
           input.modelId === 'openrouter_kimi_k25'
             ? 'Kimi-K2.5 (OpenRouter)'
@@ -2327,7 +2362,7 @@ async function main(): Promise<void> {
             ? 'openrouter'
             : input.modelId === 'openai_gpt54'
               ? 'openai'
-              : 'dashscope',
+              : 'openrouter',
         reply: 'ok',
         agent_action: 'answer',
         page_trace: [],
@@ -2346,9 +2381,9 @@ async function main(): Promise<void> {
       {
         id: 'qwen',
         label: 'Qwen 3.6-Plus',
-        provider: 'dashscope',
-        provider_label: 'DashScope',
-        model: 'qwen3.6-plus',
+        provider: 'openrouter',
+        provider_label: 'OpenRouter',
+        model: 'qwen/qwen3.6-plus',
         supports_images: true,
         supports_thinking: true
       },
@@ -2385,9 +2420,9 @@ async function main(): Promise<void> {
           {
             id: 'qwen',
             label: 'Qwen 3.6-Plus',
-            provider: 'dashscope',
-            provider_label: 'DashScope',
-            model: 'qwen3.6-plus',
+            provider: 'openrouter',
+            provider_label: 'OpenRouter',
+            model: 'qwen/qwen3.6-plus',
             supports_images: true,
             supports_thinking: true
           },
@@ -2610,9 +2645,9 @@ async function main(): Promise<void> {
       {
         id: 'qwen',
         label: 'Qwen 3.6-Plus',
-        provider: 'dashscope',
-        provider_label: 'DashScope',
-        model: 'qwen3.6-plus',
+        provider: 'openrouter',
+        provider_label: 'OpenRouter',
+        model: 'qwen/qwen3.6-plus',
         supports_images: true,
         supports_thinking: true
       }
@@ -2631,9 +2666,9 @@ async function main(): Promise<void> {
           {
             id: 'qwen',
             label: 'Qwen 3.6-Plus',
-            provider: 'dashscope',
-            provider_label: 'DashScope',
-            model: 'qwen3.6-plus',
+            provider: 'openrouter',
+            provider_label: 'OpenRouter',
+            model: 'qwen/qwen3.6-plus',
             supports_images: true,
             supports_thinking: true
           }
@@ -2668,9 +2703,9 @@ async function main(): Promise<void> {
       {
         id: 'qwen',
         label: 'Qwen 3.6-Plus',
-        provider: 'dashscope',
-        provider_label: 'DashScope',
-        model: 'qwen3.6-plus',
+        provider: 'openrouter',
+        provider_label: 'OpenRouter',
+        model: 'qwen/qwen3.6-plus',
         supports_images: true,
         supports_thinking: true
       }
@@ -2754,8 +2789,8 @@ async function main(): Promise<void> {
   const bitableExportScript = readFileSync('packages/shared/utils/bitableExport.ts', 'utf8');
   assert.match(bitableExportScript, /function formatRoasPercent\(value: unknown\): string/);
   assert.match(bitableExportScript, /目标 ROAS \$\{formatRoasPercent\(targetRoas\)\}/);
-  assert.match(bitableExportScript, /成熟窗口 ROAS \$\{formatRoasPercent\(currentRoas\)\}/);
-  assert.match(bitableExportScript, /ROAS \$\{formatRoasPercent\(row\.current_d7_roas\)\}/);
+  assert.match(bitableExportScript, /AF面板 D7 ROAS \$\{formatRoasPercent\(currentRoas\)\}/);
+  assert.match(bitableExportScript, /AF面板 D7 ROAS \$\{formatRoasPercent\(row\.current_d7_roas\)\}/);
   assert.match(bitableExportScript, /const ITEM_NAME_FIELD_LABEL = '投放项名称'/);
   assert.match(
     bitableExportScript,
@@ -2799,26 +2834,27 @@ async function main(): Promise<void> {
 
   const asaKeywordsScript = readFileSync('packages/shared/utils/asaKeywords.ts', 'utf8');
   assert.match(asaKeywordsScript, /revenue_source_complete: kpi === 'revenue'/);
-  assert.match(asaKeywordsScript, /af_cohort_roas: kpi === 'roas' \? normalizeAfCohortRoasRate/);
+  assert.match(asaKeywordsScript, /const roasRate = kpi === 'roas' \? parseAfCohortD7RoasRate\(row\) : null/);
+  assert.match(asaKeywordsScript, /af_cohort_roas_complete: roasRate != null/);
   assert.match(asaKeywordsScript, /if\(covered_roas_cost_sum > 0, covered_revenue_d7_sum \/ covered_roas_cost_sum, 0\) AS d7_roas/);
   assert.match(asaKeywordsScript, /return eligibleRows\.reduce\(\(sum, row\) => sum \+ Number\(row\.revenue_d7 \|\| 0\), 0\) \/ totalCost;/);
   assert.match(asaKeywordsScript, /【产品概览】/);
   assert.match(asaKeywordsScript, /仅覆盖已配置 iOS 端的产品/);
-  assert.match(asaKeywordsScript, /成熟窗口 D7 ROAS/);
+  assert.match(asaKeywordsScript, /AF面板 D7 ROAS/);
   assert.match(asaKeywordsScript, /ASA 专属多维表格/);
-  assert.match(asaKeywordsScript, /const ASA_D7_ROAS_DECISION_WINDOW_DAYS = 7;/);
-  assert.match(asaKeywordsScript, /AF 官方成熟窗口 D7 ROAS 缺失，当前不展示回退值/);
-  assert.match(asaKeywordsScript, /内部成熟回收 D7 ROAS .*仅用于保守判断/);
+  assert.match(asaKeywordsScript, /buildOfficialD7RoasWindow\(reportDate\)/);
+  assert.match(asaKeywordsScript, /AF Cohort ROAS 暂无官方快照，当前不展示非官方替代值/);
+  assert.match(asaKeywordsScript, /官方 D7 ROAS 窗口：\$\{roasWindowLabel\}/);
   assert.match(asaKeywordsScript, /af_roas_weighted_sum/);
   assert.match(asaKeywordsScript, /const afWeightedRoas = row\.af_roas_cost > 0 \? row\.af_roas_weighted_sum \/ row\.af_roas_cost : null;/);
-  assert.match(asaKeywordsScript, /const d7Roas = roasPrimarySource === 'af_cohort' \? afWeightedRoas \?\? 0 : localDerivedRoas;/);
+  assert.match(asaKeywordsScript, /d7_roas: afWeightedRoas \?\? 0/);
   assert.match(asaKeywordsScript, /total_cost: row\.mature_roas_cost/);
   assert.match(asaKeywordsScript, /hydrateAsaProductOverviewRoasRows/);
   assert.match(asaKeywordsScript, /async function queryAsaProductLevelMatureRoasSummary/);
   assert.match(asaKeywordsScript, /sum\(revenue_d7\) AS revenue_d7_sum/);
-  assert.match(asaKeywordsScript, /const productLevelRoas = totalCost > 0 \? revenueD7 \/ totalCost : 0;/);
+  assert.match(asaKeywordsScript, /const productLevelRoas = afCost > 0 \? Number\(rawSummary\.af_weighted_roas_sum \|\| 0\) \/ afCost : 0;/);
   assert.match(asaKeywordsScript, /const matureSummary = await queryAsaProductLevelMatureRoasSummary/);
-  assert.match(asaKeywordsScript, /AF 与本地派生偏差较大，以 AF 官方为准/);
+  assert.match(asaKeywordsScript, /当前不展示非官方替代值/);
   assert.match(asaKeywordsScript, /product_overview_rows:/);
   assert.match(asaKeywordsScript, /throw new Error\('asa_brief_ios_only'\)/);
   assert.match(uiAppScript, /const matureRoasCost = Number\(row\.mature_roas_cost \?\? row\.total_cost \?\? 0\);/);
@@ -2842,7 +2878,7 @@ async function main(): Promise<void> {
 
   const dailyBriefScript = readFileSync('packages/shared/utils/dailyBrief.ts', 'utf8');
   assert.match(dailyBriefScript, /function formatRoasPercent\(value: number \| null \| undefined\): string/);
-  assert.match(dailyBriefScript, /成熟窗口 ROAS \$\{formatRoasPercent\(row\.current_roas\)\} ｜ 目标 \$\{formatRoasPercent\(row\.target_roas\)\}/);
+  assert.match(dailyBriefScript, /AF面板 D7 ROAS \$\{formatRoasPercent\(row\.current_roas\)\}/);
   assert.match(dailyBriefScript, /【异常提醒】/);
   assert.match(dailyBriefScript, /【重点关注产品】/);
   assert.match(dailyBriefScript, /anomaly_reminder:/);

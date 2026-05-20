@@ -243,14 +243,14 @@ function createGuruMcpServer(requestId?: string): McpServer {
   server.registerTool(
     GURU_MCP_TOOL_NAMES.roasGetSummary,
     {
-      title: '成熟窗口 ROAS',
-      description: '按指定简报口径读取成熟窗口 D7 ROAS 摘要，并返回明确的时间窗口。',
+      title: 'AF Dashboard D7 ROAS',
+      description: '按 AF Cohort API roas KPI 读取官方 D7 ROAS 摘要，并返回 D-6 至 D rolling window。',
       annotations: {
         readOnlyHint: true
       },
       inputSchema: {
         appKey: z.string().min(1),
-        templateId: z.enum(['mature_window']).optional(),
+        templateId: z.enum(['dashboard_d7_roas', 'mature_window']).optional(),
         scope: z.enum(['budget', 'asa']).optional(),
         platform: z.string().optional(),
         reportDate: z.string().optional()
@@ -269,7 +269,7 @@ function createGuruMcpServer(requestId?: string): McpServer {
             await buildAiContextPack({
               type: 'roas_summary',
               ...args,
-              templateId: args.templateId ?? 'mature_window'
+              templateId: args.templateId ?? 'dashboard_d7_roas'
             })
           )
       )

@@ -6,16 +6,12 @@ import { chQuery } from './clickhouse.js';
 import {
   buildRecommendationPolicyKey,
   buildRecommendationPolicyMap,
-  defaultRecommendationPolicyRule,
   normalizeRecommendationPolicyRule
 } from './recommendationPolicies.js';
 import { listRecommendationPolicyConfigs } from './repositories.js';
 import {
-  buildMatureRoasWindow,
-  calculateRoasDeviationRatio,
+  buildOfficialD7RoasWindow,
   isRoasDataDisplayableStatus,
-  resolveRoasPrimarySource,
-  resolveRoasWarningCode,
   resolveRoasCoverageRatio,
   resolveRoasDataStatus
 } from './roasWindow.js';
@@ -76,21 +72,21 @@ function formatPlatformLabel(platform?: string | null): string {
 
 function formatRoasStatus(status: RoasDataStatus, coverageRatio: number, hasData: boolean): string {
   if (!hasData) {
-    return '当前窗口暂无成熟价值数据';
+    return '当前窗口暂无 AF Cohort ROAS 数据';
   }
   if (status === 'complete') {
     return `数据完整（覆盖率 ${formatRatio(coverageRatio)}）`;
   }
   if (status === 'partial') {
-    return `数据可采纳（覆盖率 ${formatRatio(coverageRatio)}，按已覆盖成本计算）`;
+    return `AF Cohort ROAS 部分覆盖（覆盖率 ${formatRatio(coverageRatio)}）`;
   }
   if (status === 'partial_low') {
-    return `数据仅供参考（覆盖率 ${formatRatio(coverageRatio)}）`;
+    return `AF Cohort ROAS 覆盖率偏低（覆盖率 ${formatRatio(coverageRatio)}）`;
   }
   if (status === 'pending') {
-    return `回收待补齐（覆盖率 ${formatRatio(coverageRatio)}）`;
+    return `AF Cohort ROAS 回流中（覆盖率 ${formatRatio(coverageRatio)}）`;
   }
-  return `暂无可用回收数据（覆盖率 ${formatRatio(coverageRatio)}）`;
+  return `暂无可用 AF Cohort ROAS（覆盖率 ${formatRatio(coverageRatio)}）`;
 }
 
 interface MatureRoasAggregateRow {
@@ -117,7 +113,7 @@ export interface MatureRoasTopSource {
   currentRoas: number | null;
   afCohortRoas: number | null;
   localDerivedRoas: number | null;
-  roasPrimarySource: 'af_cohort' | 'local_fallback';
+  roasPrimarySource: 'af_cohort';
   roasWarningCode: 'none' | 'af_missing' | 'af_vs_local_mismatch' | 'af_grain_unavailable';
   roasDeviationRatio: number | null;
 }
@@ -141,7 +137,7 @@ export interface MatureRoasPlatformSummary {
   currentRoas: number | null;
   afCohortRoas: number | null;
   localDerivedRoas: number | null;
-  roasPrimarySource: 'af_cohort' | 'local_fallback';
+  roasPrimarySource: 'af_cohort';
   roasWarningCode: 'none' | 'af_missing' | 'af_vs_local_mismatch' | 'af_grain_unavailable';
   roasDeviationRatio: number | null;
   hasData: boolean;
@@ -189,7 +185,7 @@ function resolveBudgetPolicyWindow(
   policyRecord: RecommendationPolicyConfigRecord | null
 ): { policy: RecommendationPolicyRuleJson | null; from: string; to: string } {
   const policy = policyRecord ? normalizeRecommendationPolicyRule(policyRecord.rule_json) : null;
-  const window = buildMatureRoasWindow(reportDate, policy);
+  const window = buildOfficialD7RoasWindow(reportDate);
   return {
     policy,
     from: window.from,
@@ -208,8 +204,8 @@ async function queryMatureRoasAggregate(input: {
         count() AS row_count,
         sum(installs) AS installs_sum,
         sum(total_cost) AS total_cost_sum,
-        sumIf(total_cost, revenue_source_missing != 1) AS covered_cost_sum,
-        sumIf(total_cost, revenue_source_missing = 1) AS missing_cost_sum,
+        sumIf(total_cost, af_cohort_roas_missing != 1) AS covered_cost_sum,
+        sumIf(total_cost, af_cohort_roas_missing = 1) AS missing_cost_sum,
         sumIf(total_cost, af_cohort_roas_missing != 1) AS af_covered_cost_sum,
         sumIf(total_cost * af_cohort_roas, af_cohort_roas_missing != 1) AS af_weighted_roas_sum,
         sumIf(revenue_d7, revenue_source_missing != 1) AS covered_revenue_d7_sum,
@@ -251,8 +247,8 @@ async function queryTopMediaSources(input: {
         ifNull(nullIf(media_source, ''), 'unknown') AS media_source,
         sum(installs) AS installs_sum,
         sum(total_cost) AS total_cost_sum,
-        sumIf(total_cost, revenue_source_missing != 1) AS covered_cost_sum,
-        sumIf(total_cost, revenue_source_missing = 1) AS missing_cost_sum,
+        sumIf(total_cost, af_cohort_roas_missing != 1) AS covered_cost_sum,
+        sumIf(total_cost, af_cohort_roas_missing = 1) AS missing_cost_sum,
         sumIf(total_cost, af_cohort_roas_missing != 1) AS af_covered_cost_sum,
         sumIf(total_cost * af_cohort_roas, af_cohort_roas_missing != 1) AS af_weighted_roas_sum,
         sumIf(revenue_d7, revenue_source_missing != 1) AS covered_revenue_d7_sum
@@ -279,9 +275,7 @@ async function queryTopMediaSources(input: {
     const afCoveredCost = Number(row.af_covered_cost_sum || 0);
     const afCohortRoas = afCoveredCost > 0 ? Number(row.af_weighted_roas_sum || 0) / afCoveredCost : null;
     const localDerivedRoas = coveredCost > 0 ? revenueD7 / coveredCost : null;
-    const roasPrimarySource = resolveRoasPrimarySource({ afCohortRoas, localDerivedRoas });
-    const roasWarningCode = resolveRoasWarningCode({ afCohortRoas, localDerivedRoas });
-    const roasDeviationRatio = calculateRoasDeviationRatio(afCohortRoas, localDerivedRoas);
+    const roasWarningCode = afCohortRoas == null ? 'af_missing' : 'none';
     const hasData = totalCost > 0 || coveredCost > 0 || missingCost > 0 || revenueD7 > 0;
     const coverageRatio = resolveRoasCoverageRatio({ coveredCost, missingCost });
     const roasDataStatus = resolveRoasDataStatus({
@@ -299,17 +293,12 @@ async function queryTopMediaSources(input: {
       installs: Number(row.installs_sum || 0),
       roasDataStatus,
       coverageRatio,
-      currentRoas:
-        roasPrimarySource === 'af_cohort'
-          ? afCohortRoas
-          : isRoasDataDisplayableStatus(roasDataStatus)
-            ? localDerivedRoas
-            : null,
+      currentRoas: afCohortRoas,
       afCohortRoas,
       localDerivedRoas,
-      roasPrimarySource,
+      roasPrimarySource: 'af_cohort',
       roasWarningCode,
-      roasDeviationRatio
+      roasDeviationRatio: null
     };
   });
 }
@@ -351,9 +340,7 @@ async function buildBudgetPlatformSummary(input: {
     isRoasDataDisplayableStatus(roasDataStatus) && aggregate.covered_cost > 0
       ? aggregate.covered_revenue_d7 / aggregate.covered_cost
       : null;
-  const roasPrimarySource = resolveRoasPrimarySource({ afCohortRoas, localDerivedRoas });
-  const roasWarningCode = resolveRoasWarningCode({ afCohortRoas, localDerivedRoas });
-  const roasDeviationRatio = calculateRoasDeviationRatio(afCohortRoas, localDerivedRoas);
+  const roasWarningCode = afCohortRoas == null ? 'af_missing' : 'none';
   return {
     platform: platform || null,
     reportDate: input.reportDate,
@@ -371,16 +358,12 @@ async function buildBudgetPlatformSummary(input: {
     coverageRatio,
     roasDataStatus,
     currentRoas:
-      roasPrimarySource === 'af_cohort'
-        ? afCohortRoas
-        : isRoasDataDisplayableStatus(roasDataStatus)
-          ? localDerivedRoas
-          : null,
+      afCohortRoas,
     afCohortRoas,
     localDerivedRoas,
-    roasPrimarySource,
+    roasPrimarySource: 'af_cohort',
     roasWarningCode,
-    roasDeviationRatio,
+    roasDeviationRatio: null,
     hasData,
     topMediaSources
   };
@@ -451,17 +434,12 @@ async function buildAsaPlatformSummary(input: {
     purchaseCount: Number(summary.purchase_count || 0),
     coverageRatio,
     roasDataStatus: summary.roas_data_status,
-    currentRoas:
-      (summary.roas_primary_source === 'af_cohort' ? summary.af_cohort_roas : summary.local_derived_roas) != null
-        ? Number(summary.roas_primary_source === 'af_cohort' ? summary.af_cohort_roas : summary.local_derived_roas)
-        : isRoasDataDisplayableStatus(summary.roas_data_status) && coveredCost > 0
-          ? Number(summary.revenue_d7 || 0) / coveredCost
-          : null,
+    currentRoas: summary.af_cohort_roas != null ? Number(summary.af_cohort_roas) : null,
     afCohortRoas: summary.af_cohort_roas,
     localDerivedRoas: summary.local_derived_roas,
-    roasPrimarySource: summary.roas_primary_source,
-    roasWarningCode: summary.roas_warning_code,
-    roasDeviationRatio: summary.roas_deviation_ratio,
+    roasPrimarySource: 'af_cohort',
+    roasWarningCode: summary.af_cohort_roas == null ? 'af_missing' : 'none',
+    roasDeviationRatio: null,
     hasData,
     topMediaSources: []
   };
@@ -484,7 +462,7 @@ function buildTopMediaSourcesLine(rows: MatureRoasTopSource[]): string {
 function buildPlatformSummaryLine(row: MatureRoasPlatformSummary): string {
   return `- ${formatPlatformLabel(row.platform)}：时间窗口 ${row.roasWindow.from} 至 ${row.roasWindow.to}；ROAS ${formatRoas(
     row.currentRoas
-  )}；来源 ${row.roasPrimarySource === 'af_cohort' ? 'AF Cohort' : 'Fallback'}；成本 ${formatUsd(row.totalCost)}；D7 收入 ${formatUsd(row.revenueD7)}；状态 ${formatRoasStatus(
+  )}；来源 AF Cohort；成本 ${formatUsd(row.totalCost)}；诊断收入 ${formatUsd(row.revenueD7)}；状态 ${formatRoasStatus(
     row.roasDataStatus,
     row.coverageRatio,
     row.hasData
@@ -609,36 +587,32 @@ export async function buildMatureRoasContextPack(input: {
   });
 
   const summaryLines = [
-    '### 成熟窗口 ROAS',
+    '### AF Dashboard D7 ROAS',
     `- 应用：${appKey}${hasText(input.platform) ? ` / ${formatPlatformLabel(input.platform)}` : ''}`,
     `- 报告日期：${reportDate}`,
-    scope === 'asa'
-      ? '- 口径：与 ASA 简报 / ASA 看板一致的成熟窗口 D7 ROAS，不是当日实时 ROAS。'
-      : '- 口径：与每日简报 / 预算建议一致的成熟窗口 D7 ROAS，不是当日实时 ROAS。'
+    '- 口径：Metabase / AF Dashboard D7 ROI，窗口为报告日 D 的 D-6 至 D。'
   ];
 
   if (overall) {
     summaryLines.push(`- 时间窗口：${overall.roasWindow.from} 至 ${overall.roasWindow.to}`);
     summaryLines.push(
-      `- 当前 ROAS：${formatRoas(overall.currentRoas)}；成本 ${formatUsd(overall.totalCost)}；D7 收入 ${formatUsd(
+      `- 当前 ROAS：${formatRoas(overall.currentRoas)}；成本 ${formatUsd(overall.totalCost)}；诊断收入 ${formatUsd(
         overall.revenueD7
-      )}；购买 ${overall.purchaseCount.toFixed(0)}；来源 ${overall.roasPrimarySource === 'af_cohort' ? 'AF Cohort' : 'Fallback'}`
+      )}；购买 ${overall.purchaseCount.toFixed(0)}；来源 AF Cohort`
     );
     if (overall.roasWarningCode !== 'none') {
       summaryLines.push(
         `- ROAS 说明：${
-          overall.roasWarningCode === 'af_missing'
-            ? 'AF Cohort 缺失，当前已回退到本地派生值。'
-            : overall.roasWarningCode === 'af_vs_local_mismatch'
-              ? 'AF 与本地派生 ROAS 偏差较大，当前主展示仍为 AF Cohort，并建议暂停自动动作。'
-              : '当前粒度无 AF 官方 ROAS，已回退到本地派生值。'
+              overall.roasWarningCode === 'af_missing'
+            ? 'AF Cohort roas KPI 缺失，当前不展示非官方替代值。'
+            : '当前粒度无 AF 官方 ROAS。'
         }`
       );
     }
     summaryLines.push(`- 数据状态：${formatRoasStatus(overall.roasDataStatus, overall.coverageRatio, overall.hasData)}`);
     summaryLines.push(buildTopMediaSourcesLine(overall.topMediaSources));
   } else {
-    summaryLines.push('- 当前应用跨平台成熟窗口不一致，未合并成单一 ROAS；请按平台解读。');
+    summaryLines.push('- 当前应用跨平台官方 D7 ROAS 窗口不一致，未合并成单一 ROAS；请按平台解读。');
     summaryLines.push(...platformSummaries.map((row) => buildPlatformSummaryLine(row)));
   }
 
@@ -646,9 +620,9 @@ export async function buildMatureRoasContextPack(input: {
     const defaultWindow =
       scope === 'asa'
         ? buildAsaRoasWindow(reportDate, null)
-        : buildMatureRoasWindow(reportDate, defaultRecommendationPolicyRule());
+        : buildOfficialD7RoasWindow(reportDate);
     summaryLines.push(`- 时间窗口：${defaultWindow.from} 至 ${defaultWindow.to}`);
-    summaryLines.push('- 当前窗口暂无成熟价值数据。');
+    summaryLines.push('- 当前窗口暂无 AF Cohort ROAS 数据。');
   }
 
   const structured = {
@@ -702,7 +676,7 @@ export async function buildMatureRoasContextPack(input: {
   } satisfies Record<string, unknown>;
 
   return {
-    title: '成熟窗口 ROAS',
+    title: 'AF Dashboard D7 ROAS',
     summaryMarkdown: summaryLines.join('\n'),
     structured,
     rowCount:

@@ -89,7 +89,7 @@ function formatAsaSevenDayText(
   installs: number,
   totalCost: number,
   purchaseCount: number,
-  revenueD7: number,
+  _revenueD7: number,
   d7Roas: number,
   roasDataStatus: RoasDataStatus
 ): string {
@@ -101,46 +101,40 @@ function formatAsaSevenDayText(
         ? purchaseCount > 0
           ? `${formatUsd(cpp)}（覆盖率达阈值，按已覆盖成本计算）`
           : totalCost > 0
-            ? '—（覆盖率达阈值，但成熟窗口无购买）'
+            ? '—（覆盖率达阈值，但官方 D7 窗口无购买）'
             : '-'
         : roasDataStatus === 'partial_low'
           ? purchaseCount > 0
             ? `${formatUsd(cpp)}（覆盖率偏低，仅供参考）`
             : totalCost > 0
-              ? '—（覆盖率偏低，成熟窗口无购买）'
+              ? '—（覆盖率偏低，但官方 D7 窗口无购买）'
               : '-'
           : roasDataStatus === 'unavailable'
             ? totalCost > 0
-              ? '暂无成熟数据'
+              ? '暂无 AF Cohort ROAS 快照'
               : '-'
         : purchaseCount > 0
           ? formatUsd(cpp)
           : totalCost > 0
-            ? '—（成熟窗口无购买）'
+            ? '—（官方 D7 窗口无购买）'
             : '-';
   const roasText =
     roasDataStatus === 'pending'
       ? '待补齐（源数据缺失）'
       : roasDataStatus === 'partial'
         ? totalCost > 0
-          ? revenueD7 > 0
-            ? `${formatRoasPercent(d7Roas)}（覆盖率达阈值，按已覆盖成本计算）`
-            : `${formatRoasPercent(d7Roas)}（覆盖率达阈值，按已覆盖成本计算；成熟窗口未观察到D7收入）`
+          ? `${formatRoasPercent(d7Roas)}（AF Cohort 官方快照部分覆盖）`
           : '-'
         : roasDataStatus === 'partial_low'
           ? totalCost > 0
-            ? revenueD7 > 0
-              ? `${formatRoasPercent(d7Roas)}（覆盖率偏低，仅供参考）`
-              : `${formatRoasPercent(d7Roas)}（覆盖率偏低，仅供参考；成熟窗口未观察到D7收入）`
+            ? `${formatRoasPercent(d7Roas)}（AF Cohort 覆盖率偏低，仅供参考）`
             : '-'
           : roasDataStatus === 'unavailable'
             ? totalCost > 0
-              ? '暂无成熟数据'
+              ? '暂无 AF Cohort ROAS 快照'
               : '-'
       : totalCost > 0
-        ? revenueD7 > 0
-          ? formatRoasPercent(d7Roas)
-          : `${formatRoasPercent(d7Roas)}（成熟窗口未观察到D7收入）`
+        ? formatRoasPercent(d7Roas)
         : '-';
   return `D+7 ${targetDate}｜安装 ${installs.toFixed(0)}｜花费 ${formatUsd(totalCost)}｜CPP ${cppText}｜购买 ${purchaseCount.toFixed(0)}｜ROAS ${roasText}`;
 }
@@ -279,11 +273,11 @@ async function loadAsaSevenDayMetrics(lookups: SevenDayLaterLookupRow[]): Promis
            campaign,
            adset,
            sum(toFloat64(installs)) AS installs_sum,
-           sumIf(toFloat64(total_cost), toFloat64(total_cost) > 0 AND toUInt8(roas_source_missing) != 1) AS covered_total_cost_sum,
-           sumIf(toFloat64(total_cost), toFloat64(total_cost) > 0 AND toUInt8(roas_source_missing) = 1) AS missing_total_cost_sum,
+           sumIf(toFloat64(total_cost), toFloat64(total_cost) > 0 AND toUInt8(af_cohort_roas_missing) != 1) AS covered_total_cost_sum,
+           sumIf(toFloat64(total_cost), toFloat64(total_cost) > 0 AND toUInt8(af_cohort_roas_missing) = 1) AS missing_total_cost_sum,
            sumIf(toFloat64(purchase_count), toFloat64(total_cost) > 0 AND toUInt8(roas_source_missing) != 1) AS covered_purchase_count_sum,
            sumIf(toFloat64(revenue_d7), toFloat64(total_cost) > 0 AND toUInt8(roas_source_missing) != 1) AS covered_revenue_d7_sum,
-           sumIf(toFloat64(d7_roas) * toFloat64(total_cost), toFloat64(total_cost) > 0 AND toUInt8(roas_source_missing) != 1) AS covered_weighted_roas_cost_sum,
+           sumIf(toFloat64(af_cohort_roas) * toFloat64(total_cost), toFloat64(total_cost) > 0 AND toUInt8(af_cohort_roas_missing) != 1) AS covered_weighted_roas_cost_sum,
            countIf(toFloat64(total_cost) > 0) AS spend_row_count
           FROM asa_keyword_daily_metrics_v2 FINAL
          WHERE date IN (${targetDates.map(escapeSqlLiteral).join(', ')})

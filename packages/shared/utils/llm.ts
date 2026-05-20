@@ -114,7 +114,7 @@ function fallbackExplain(input: BudgetLlmInput): LlmExplainResult {
         ? presetActionItems
         : executionActionItems.length > 0
           ? executionActionItems
-          : ['先复核数据成熟度，再决定是否执行当前动作。', '执行后连续观察 2-3 天，确认成本与回收没有异常。'],
+          : ['先复核 AF Cohort ROAS 官方快照，再决定是否执行当前动作。', '执行后连续观察 2-3 天，确认成本与回收没有异常。'],
     scenario_tags: scenarioTags
   };
 }
@@ -238,7 +238,7 @@ export async function explainBudgetRecommendationWithLlm(input: BudgetLlmInput):
     ]
   };
 
-  if (enableThinking) {
+  if (enableThinking && !env.qwen.baseUrl.includes('openrouter.ai')) {
     body.extra_body = { enable_thinking: true };
   }
 

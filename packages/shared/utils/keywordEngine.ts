@@ -10,7 +10,9 @@ import { extractKeywordFromCampaign, evaluateKeywordLifecycle } from './keyword.
 import type { AppConfigRecord, KeywordExtractRuleRecord, KeywordLifecycleStateRow } from '../types/models.js';
 import { env } from '../config/env.js';
 import { getDateStringInTimezone, getPreviousDateString, shiftDateString } from './businessDate.js';
-import { normalizeAfCohortRoasRate } from './roasWindow.js';
+import { normalizeAfCohortRoasRate, parseAfCohortD7RoasRate } from './roasWindow.js';
+import { isAfWindowProvisional } from './afMetricScopes.js';
+import { upsertAfOfficialSnapshot } from './appsflyerOfficialSnapshots.js';
 
 export interface KeywordEngineLogger {
   info: (message: string, context?: Record<string, unknown>) => void;
@@ -31,6 +33,7 @@ interface PullAggRow {
   total_cost: string;
   average_ecpi: string;
   source_report: string;
+  raw_json: string;
 }
 
 interface CsvRow {
@@ -148,11 +151,10 @@ export interface KeywordEngineCycleResult {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-// D7 revenue can continue to mature for up to 7 days after install, so
-// rolling runs only need to rescan a short trailing install window.
-const KEYWORD_VALUE_FACT_ROLLING_LOOKBACK_DAYS = 8;
-const KEYWORD_VALUE_COHORT_MATURITY_DAYS = 7;
-const KEYWORD_VALUE_COHORT_MAX_QUERY_DAYS = 31;
+// Dashboard D7 ROAS follows the AF Dashboard-compatible rolling attribution
+// window. AppsFlyer mode uses Cohort API; Metabase mode uses Dashboard D7 ROI.
+const KEYWORD_VALUE_FACT_ROLLING_LOOKBACK_DAYS = 7;
+const KEYWORD_VALUE_COHORT_MAX_QUERY_DAYS = 7;
 let ensureKeywordValueFactSchemaPromise: Promise<void> | null = null;
 
 async function ensureKeywordValueFactSchema(): Promise<void> {
@@ -347,21 +349,19 @@ function buildKeywordValueCohortBody(window: DateWindow, kpi: 'revenue' | 'roas'
 export function buildKeywordValueCohortWindows(
   valueFrom: string,
   valueTo: string,
-  reportDate: string,
+  _reportDate: string,
   maxChunkDays = KEYWORD_VALUE_COHORT_MAX_QUERY_DAYS
 ): DateWindow[] {
-  const matureTo = shiftDateString(reportDate, -KEYWORD_VALUE_COHORT_MATURITY_DAYS);
-  const boundedTo = compareDateStrings(valueTo, matureTo) <= 0 ? valueTo : matureTo;
-  if (compareDateStrings(valueFrom, boundedTo) > 0) {
+  if (compareDateStrings(valueFrom, valueTo) > 0) {
     return [];
   }
 
   const chunkDays = Math.max(1, Math.floor(maxChunkDays));
   const windows: DateWindow[] = [];
   let cursor = valueFrom;
-  while (compareDateStrings(cursor, boundedTo) <= 0) {
+  while (compareDateStrings(cursor, valueTo) <= 0) {
     const candidateTo = shiftDateString(cursor, chunkDays - 1);
-    const chunkTo = compareDateStrings(candidateTo, boundedTo) <= 0 ? candidateTo : boundedTo;
+    const chunkTo = compareDateStrings(candidateTo, valueTo) <= 0 ? candidateTo : valueTo;
     windows.push({ from: cursor, to: chunkTo });
     cursor = shiftDateString(chunkTo, 1);
   }
@@ -470,7 +470,8 @@ async function queryPullRows(appKey: string, from: string, to: string): Promise<
         toString(argMax(clicks, ingest_time)) AS clicks,
         toString(argMax(total_cost, ingest_time)) AS total_cost,
         toString(argMax(average_ecpi, ingest_time)) AS average_ecpi,
-        argMax(source_report, ingest_time) AS source_report
+        argMax(source_report, ingest_time) AS source_report,
+        argMax(raw_json, ingest_time) AS raw_json
       FROM (
         SELECT
           date,
@@ -485,6 +486,7 @@ async function queryPullRows(appKey: string, from: string, to: string): Promise<
           total_cost,
           average_ecpi,
           source_report,
+          raw_json,
           ingest_time
         FROM pull_aggregate_daily
         WHERE app_key = {app_key:String}
@@ -501,29 +503,171 @@ async function queryPullRows(appKey: string, from: string, to: string): Promise<
   );
 }
 
+function parseJsonObject(value: string): Record<string, unknown> {
+  const text = String(value || '').trim();
+  if (!text) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseMetabaseDashboardRate(value: unknown): number | null {
+  if (value == null || value === '') {
+    return null;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  }
+  const text = String(value).trim();
+  if (!text || text.toLowerCase() === 'n/a' || text === '-') {
+    return null;
+  }
+  const parsed = Number(text.replace(/[,$%\s]/g, ''));
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return text.includes('%') ? parsed / 100 : parsed;
+}
+
+function buildMetabaseKeywordValueRevenueRows(rows: PullAggRow[]): KeywordValueRevenueAggRow[] {
+  const aggregate = new Map<
+    string,
+    {
+      row: KeywordValueRevenueAggRow;
+      coveredCost: number;
+      missingCost: number;
+    }
+  >();
+
+  for (const sourceRow of rows) {
+    const raw = parseJsonObject(sourceRow.raw_json);
+    const d7Roas = parseMetabaseDashboardRate(raw.d7_roas);
+    const totalCost = toNumber(sourceRow.total_cost);
+    const key = buildKeywordValueSourceKey({
+      install_date: sourceRow.report_date,
+      platform: sourceRow.platform,
+      media_source: sourceRow.media_source,
+      country: sourceRow.country,
+      campaign: sourceRow.campaign
+    });
+    const current =
+      aggregate.get(key) ??
+      {
+        row: {
+          install_date: sourceRow.report_date,
+          app_key: sourceRow.app_key,
+          platform: sourceRow.platform,
+          media_source: sourceRow.media_source,
+          country: sourceRow.country,
+          campaign: sourceRow.campaign,
+          raw_event_count: 0,
+          purchase_count: toNumber(String(raw.paid_users ?? '0')),
+          revenue_d7: 0,
+          af_cohort_roas: 0,
+          revenue_source_complete: false,
+          af_cohort_roas_complete: false
+        },
+        coveredCost: 0,
+        missingCost: 0
+      };
+
+    current.row.purchase_count += aggregate.has(key) ? toNumber(String(raw.paid_users ?? '0')) : 0;
+    if (totalCost > 0 && d7Roas != null) {
+      current.coveredCost += totalCost;
+      current.row.revenue_d7 += totalCost * d7Roas;
+    } else if (totalCost > 0) {
+      current.missingCost += totalCost;
+    }
+    if (!aggregate.has(key)) {
+      aggregate.set(key, current);
+    }
+  }
+
+  return Array.from(aggregate.values()).map((item) => ({
+    ...item.row,
+    af_cohort_roas: item.coveredCost > 0 ? item.row.revenue_d7 / item.coveredCost : 0,
+    revenue_source_complete: item.coveredCost > 0 && item.missingCost === 0,
+    af_cohort_roas_complete: item.coveredCost > 0 && item.missingCost === 0
+  }));
+}
+
 function parseKeywordValueCohortRows(
   appKey: string,
   platform: string,
   rows: CsvRow[],
   kpi: 'revenue' | 'roas'
 ): KeywordValueRevenueAggRow[] {
-  return rows.map((row) => ({
-    install_date: String(row.date || '').trim(),
-    app_key: appKey,
-    platform: platform.toLowerCase(),
-    media_source: String(row.pid || 'unknown').trim() || 'unknown',
-    country: String(row.geo || 'unknown').trim() || 'unknown',
-    campaign: String(row.c || 'unknown').trim() || 'unknown',
-    raw_event_count: kpi === 'revenue' ? toNumber(row.revenue_count_day_7 || '0') : 0,
-    purchase_count: kpi === 'revenue' ? toNumber(row.revenue_count_day_7 || '0') : 0,
-    revenue_d7: kpi === 'revenue' ? toNumber(row.revenue_sum_day_7 || '0') : 0,
-    af_cohort_roas: kpi === 'roas' ? normalizeAfCohortRoasRate(toNumber(row.roas_rate_day_7 || '0')) : 0,
-    // Treat revenue rows as the authoritative sign that D7 value data is available.
-    // AppsFlyer roas_rate_day_7 can diverge in unit/granularity from revenue_sum_day_7,
-    // so we no longer mark a row "complete" based on the roas-only payload.
-    revenue_source_complete: kpi === 'revenue',
-    af_cohort_roas_complete: kpi === 'roas'
-  }));
+  return rows.map((row) => {
+    const roasRate = kpi === 'roas' ? parseAfCohortD7RoasRate(row) : null;
+    return {
+      install_date: String(row.date || '').trim(),
+      app_key: appKey,
+      platform: platform.toLowerCase(),
+      media_source: String(row.pid || 'unknown').trim() || 'unknown',
+      country: String(row.geo || 'unknown').trim() || 'unknown',
+      campaign: String(row.c || 'unknown').trim() || 'unknown',
+      raw_event_count: kpi === 'revenue' ? toNumber(row.revenue_count_day_7 || '0') : 0,
+      purchase_count: kpi === 'revenue' ? toNumber(row.revenue_count_day_7 || '0') : 0,
+      revenue_d7: kpi === 'revenue' ? toNumber(row.revenue_sum_day_7 || '0') : 0,
+      af_cohort_roas: roasRate == null ? 0 : normalizeAfCohortRoasRate(roasRate),
+      revenue_source_complete: kpi === 'revenue',
+      af_cohort_roas_complete: roasRate != null
+    };
+  });
+}
+
+async function recordKeywordValueCohortRoasSnapshot(input: {
+  app: AppConfigRecord;
+  platform: string;
+  appId: string;
+  window: DateWindow;
+  rowCount: number;
+  logger?: KeywordEngineLogger;
+}): Promise<void> {
+  try {
+    await upsertAfOfficialSnapshot({
+      metricScope: 'dashboard_d7_roas',
+      sourceSurface: 'cohort_api',
+      sourceApi: 'cohort_api',
+      appKey: input.app.app_key,
+      platform: input.platform,
+      appId: input.appId,
+      windowFrom: input.window.from,
+      windowTo: input.window.to,
+      timezone: 'preferred',
+      currency: 'preferred',
+      queryParams: {
+        cohort_type: 'user_acquisition',
+        from: input.window.from,
+        to: input.window.to,
+        aggregation_type: 'cumulative',
+        preferred_timezone: true,
+        preferred_currency: true,
+        groupings: ['date', 'pid', 'c', 'geo'],
+        kpis: ['roas']
+      },
+      rowCount: input.rowCount,
+      isProvisional: isAfWindowProvisional(input.window.to),
+      metadataJson: {
+        metric: 'd7_roas',
+        source: 'AppsFlyer Cohort API roas KPI (legacy AppsFlyer source)'
+      }
+    });
+  } catch (error) {
+    logWarn(input.logger, 'keyword_engine_cohort_roas_snapshot_record_failed', {
+      app_key: input.app.app_key,
+      platform: input.platform,
+      app_id: input.appId,
+      from: input.window.from,
+      to: input.window.to,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 async function queryKeywordValueCohortRows(
@@ -568,12 +712,19 @@ async function queryKeywordValueCohortRows(
         method: 'POST',
         body: buildKeywordValueCohortBody(window, 'roas')
       });
-      mergedRows.push(
-        ...mergeKeywordValueRevenueRows([
-          parseKeywordValueCohortRows(app.app_key, platform, parseCsv(revenueCsv), 'revenue'),
-          parseKeywordValueCohortRows(app.app_key, platform, parseCsv(roasCsv), 'roas')
-        ])
-      );
+      const windowRows = mergeKeywordValueRevenueRows([
+        parseKeywordValueCohortRows(app.app_key, platform, parseCsv(revenueCsv), 'revenue'),
+        parseKeywordValueCohortRows(app.app_key, platform, parseCsv(roasCsv), 'roas')
+      ]);
+      mergedRows.push(...windowRows);
+      await recordKeywordValueCohortRoasSnapshot({
+        app,
+        platform,
+        appId,
+        window,
+        rowCount: windowRows.filter((row) => row.af_cohort_roas_complete).length,
+        logger
+      });
     } catch (error) {
       failedWindows.push({ window, error });
       logWarn(logger, 'keyword_engine_value_metrics_cohort_window_failed', {
@@ -1142,29 +1293,35 @@ export async function runKeywordEngineCycle(
         }
       }
 
-      const cohortWindows = buildKeywordValueCohortWindows(valueFrom, valueTo, to);
-      const valuePlatforms = new Set(valuePullRows.map((row) => String(row.platform || 'unknown').toLowerCase()));
       const cohortValueRows: KeywordValueRevenueAggRow[] = [];
-      const cohortTargets: Array<{ platform: string; appId: string }> = [];
-      if (app.ios_pull_app_id && valuePlatforms.has('ios')) {
-        cohortTargets.push({ platform: 'ios', appId: app.ios_pull_app_id });
-      }
-      if (app.android_pull_app_id && valuePlatforms.has('android')) {
-        cohortTargets.push({ platform: 'android', appId: app.android_pull_app_id });
-      }
-      for (const target of cohortTargets) {
-        try {
-          cohortValueRows.push(...(await queryKeywordValueCohortRows(app, target.platform, target.appId, cohortWindows, logger)));
-        } catch (error) {
-          logWarn(logger, 'keyword_engine_value_metrics_cohort_failed', {
-            app_key: app.app_key,
-            platform: target.platform,
-            app_id: target.appId,
-            value_from: valueFrom,
-            value_to: valueTo,
-            mature_windows: cohortWindows.length,
-            error: error instanceof Error ? error.message : String(error)
-          });
+      if (env.adsDailySource === 'metabase') {
+        // Metabase mode already writes AF Dashboard-compatible D7 ROI into
+        // pull_aggregate_daily.raw_json; do not call AppsFlyer Cohort API.
+        cohortValueRows.push(...buildMetabaseKeywordValueRevenueRows(valuePullRows));
+      } else {
+        const cohortWindows = buildKeywordValueCohortWindows(valueFrom, valueTo, to);
+        const valuePlatforms = new Set(valuePullRows.map((row) => String(row.platform || 'unknown').toLowerCase()));
+        const cohortTargets: Array<{ platform: string; appId: string }> = [];
+        if (app.ios_pull_app_id && valuePlatforms.has('ios')) {
+          cohortTargets.push({ platform: 'ios', appId: app.ios_pull_app_id });
+        }
+        if (app.android_pull_app_id && valuePlatforms.has('android')) {
+          cohortTargets.push({ platform: 'android', appId: app.android_pull_app_id });
+        }
+        for (const target of cohortTargets) {
+          try {
+            cohortValueRows.push(...(await queryKeywordValueCohortRows(app, target.platform, target.appId, cohortWindows, logger)));
+          } catch (error) {
+            logWarn(logger, 'keyword_engine_value_metrics_cohort_failed', {
+              app_key: app.app_key,
+              platform: target.platform,
+              app_id: target.appId,
+              value_from: valueFrom,
+              value_to: valueTo,
+              official_roas_windows: cohortWindows.length,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
         }
       }
 
@@ -1173,7 +1330,7 @@ export async function runKeywordEngineCycle(
           app_key: app.app_key,
           value_from: valueFrom,
           value_to: valueTo,
-          cohort_window_count: cohortWindows.length
+          source: env.adsDailySource === 'metabase' ? 'metabase_dashboard_d7_roi' : 'appsflyer_cohort_api'
         });
       }
       const valueRows = buildKeywordValueRows(app.app_key, valuePullRows, cohortValueRows, version, rulesByApp);

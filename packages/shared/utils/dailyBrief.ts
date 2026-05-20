@@ -392,7 +392,7 @@ function formatRoasWindowSummary(row: Pick<DailyBriefBudgetHighlight, 'roas_wind
   if (from && to) {
     return `${from} 至 ${to}`;
   }
-  return '成熟窗口';
+  return '官方 D7 窗口';
 }
 
 function formatRoasPercent(value: number | null | undefined): string {
@@ -404,34 +404,30 @@ function formatDecisionMetricStatus(row: DailyBriefBudgetHighlight): string {
     return `决策 eCPI ${formatUsd(row.current_ecpi)} ｜ 目标 ${formatUsd(row.target_ecpi)}`;
   }
   const windowLabel = formatRoasWindowSummary(row);
-  const sourceLabel = row.roas_primary_source === 'af_cohort' ? 'AF Cohort 主口径' : '本地回退口径';
-  const warningSuffix =
-    row.roas_warning_code === 'af_missing'
-      ? '（AF Cohort 缺失，当前为本地派生值）'
-      : row.roas_warning_code === 'af_vs_local_mismatch'
-        ? '（AF 与本地派生偏差较大，已禁止自动动作）'
-        : row.roas_warning_code === 'af_grain_unavailable'
-          ? '（当前粒度无 AF 官方 ROAS，已回退本地派生值）'
-          : '';
+  const missingLabel = `AF Cohort ROAS 暂无官方快照（${windowLabel}）`;
   if (row.roas_data_status === 'pending' || row.metric_mode === 'roas_pending_revenue') {
-    return `成熟窗口 ROAS 待补齐（${windowLabel}）｜${sourceLabel}${warningSuffix}`;
+    return `${missingLabel}｜Metabase / AF Dashboard 口径`;
   }
   if (row.roas_data_status === 'partial') {
-    return `成熟窗口 ROAS ${row.current_roas != null ? formatRoasPercent(row.current_roas) : '可采纳'}（覆盖率达阈值，按已覆盖成本计算）｜${sourceLabel}${warningSuffix}`;
+    return row.current_roas != null
+      ? `AF面板 D7 ROAS ${formatRoasPercent(row.current_roas)}（${windowLabel} / Metabase / AF Dashboard 口径，部分覆盖）`
+      : `${missingLabel}｜Metabase / AF Dashboard 口径`;
   }
   if (row.roas_data_status === 'partial_low') {
-    return `成熟窗口 ROAS ${row.current_roas != null ? formatRoasPercent(row.current_roas) : '可采纳'}（覆盖率偏低，仅供参考）｜${sourceLabel}${warningSuffix}`;
+    return row.current_roas != null
+      ? `AF面板 D7 ROAS ${formatRoasPercent(row.current_roas)}（${windowLabel} / Metabase / AF Dashboard 口径，覆盖率偏低）`
+      : `${missingLabel}｜Metabase / AF Dashboard 口径`;
   }
   if (row.roas_data_status === 'unavailable') {
-    return `成熟窗口 ROAS 暂无数据（${windowLabel}）｜${sourceLabel}${warningSuffix}`;
+    return `${missingLabel}｜Metabase / AF Dashboard 口径`;
   }
   if (row.current_roas != null && row.target_roas != null) {
-    return `成熟窗口 ROAS ${formatRoasPercent(row.current_roas)} ｜ 目标 ${formatRoasPercent(row.target_roas)} ｜ ${sourceLabel}${warningSuffix}`;
+    return `AF面板 D7 ROAS ${formatRoasPercent(row.current_roas)}（${windowLabel} / Metabase / AF Dashboard 口径）｜目标 ${formatRoasPercent(row.target_roas)}`;
   }
   if (row.current_roas != null) {
-    return `成熟窗口 ROAS ${formatRoasPercent(row.current_roas)} ｜ ${sourceLabel}${warningSuffix}`;
+    return `AF面板 D7 ROAS ${formatRoasPercent(row.current_roas)}（${windowLabel} / Metabase / AF Dashboard 口径）`;
   }
-  return `成熟窗口 ROAS 暂无数据（${windowLabel}）｜${sourceLabel}${warningSuffix}`;
+  return `${missingLabel}｜Metabase / AF Dashboard 口径`;
 }
 
 function formatBudgetMetricStatus(row: DailyBriefBudgetHighlight): string {
@@ -441,17 +437,14 @@ function formatBudgetMetricStatus(row: DailyBriefBudgetHighlight): string {
     return `AF面板 ${row.primary_metric === 'roas' ? 'ROAS-Tool ' : ''}暂无官方快照 ｜ ${decisionStatus}`;
   }
 
-  // Keep the brief's "current performance" aligned with the AppsFlyer dashboard selected
-  // day. Mature Cohort ROAS and 3/7-day eCPI remain decision references only.
+  // eCPI follows AppsFlyer's User Acquisition dashboard: Cost / Attributions.
+  // ROAS follows the dashboard D7 column via Metabase / AF Dashboard D7 ROI over D-6..D.
   const dashboardStatus = [
     `AF面板 ${official.window_from} 至 ${official.window_to}`,
     `Cost ${formatUsd(official.cost)}`,
     `Attributions ${official.attributions.toFixed(0)}`,
     `eCPI ${formatUsd(official.ecpi)}`
   ].join(' ｜ ');
-  if (row.primary_metric === 'roas') {
-    return `${dashboardStatus} ｜ D0/D7 ROAS-Tool 待接入官方面板快照 ｜ ${decisionStatus}`;
-  }
   return `${dashboardStatus} ｜ ${decisionStatus}`;
 }
 
@@ -478,36 +471,35 @@ function buildBudgetAdjustmentReason(row: DailyBriefBudgetHighlight): string {
 
   if (row.primary_metric === 'roas') {
     const windowLabel = formatRoasWindowSummary(row);
-    const sourceLabel = row.roas_primary_source === 'af_cohort' ? 'AF Cohort 主口径' : '本地回退口径';
     if (row.roas_warning_code === 'af_missing' || row.roas_warning_code === 'af_grain_unavailable') {
-      return `成熟窗口（${windowLabel}）当前优先使用 ${sourceLabel}；由于 AF 官方 ROAS 缺失，当前仅能回退到本地派生值，自动动作已降级为保持。`;
+      return `官方 D7 窗口（${windowLabel}）暂无 AF Cohort ROAS 快照，当前不使用非官方 ROAS 替代。`;
     }
     if (row.roas_warning_code === 'af_vs_local_mismatch') {
-      return `成熟窗口（${windowLabel}）当前以 AF Cohort 为主口径，但 AF 与本地派生值偏差较大，为避免误动作，本轮已自动降级为保持。`;
+      return `官方 D7 窗口（${windowLabel}）以 AF Cohort ROAS 为准，其他诊断值不进入主展示。`;
     }
     if (row.roas_data_status === 'pending' || row.metric_mode === 'roas_pending_revenue') {
-      return `成熟窗口（${windowLabel}）内的 Cohort 回收数据仍在补齐，当前主口径为 ${sourceLabel}，先保持预算并继续观察 eCPI 与执行动作结果。`;
+      return `官方 D7 窗口（${windowLabel}）Cohort ROAS 仍在回流，先保持预算并继续观察 eCPI 与执行动作结果。`;
     }
     if (row.roas_data_status === 'partial') {
-      return `成熟窗口（${windowLabel}）内的 Cohort 覆盖率已达可采纳阈值，当前 ROAS 按已覆盖成本计算，建议结合执行动作继续观察缺口是否补齐。`;
+      return `官方 D7 窗口（${windowLabel}）已有 AF Cohort ROAS，建议结合执行动作继续观察后续修正。`;
     }
     if (row.roas_data_status === 'partial_low') {
-      return `成熟窗口（${windowLabel}）内的 Cohort 覆盖率偏低，当前 ROAS 仅供参考，建议结合执行动作继续观察数据回流。`;
+      return `官方 D7 窗口（${windowLabel}）AF Cohort ROAS 覆盖率偏低，建议谨慎解读并等待回刷。`;
     }
     if (row.roas_data_status === 'unavailable') {
-      return `当前成熟窗口（${windowLabel}）暂无可用于判断的 Cohort 回收数据，先观察成本、安装与 eCPI，再等待成熟窗口补齐。`;
+      return `官方 D7 窗口（${windowLabel}）暂无 AF Cohort ROAS，先观察 Cost、Attributions 与 eCPI。`;
     }
     if (row.current_roas != null && row.target_roas != null) {
       if (row.action === 'increase') {
-        return `成熟窗口（${windowLabel}）内 ROAS 高于目标，可在维持回收约束下继续小步放量。`;
+        return `官方 D7 ROAS（${windowLabel}）高于目标，可在维持回收约束下继续小步放量。`;
       }
       if (row.action === 'decrease') {
-        return `成熟窗口（${windowLabel}）内 ROAS 低于目标，继续维持当前预算会拖累整体回收效率。`;
+        return `官方 D7 ROAS（${windowLabel}）低于目标，继续维持当前预算会拖累整体回收效率。`;
       }
       if (row.action === 'pause') {
-        return `成熟窗口（${windowLabel}）内 ROAS 明显不达标，继续投放的边际回收偏弱，建议先暂停观察。`;
+        return `官方 D7 ROAS（${windowLabel}）明显不达标，继续投放的边际回收偏弱，建议先暂停观察。`;
       }
-      return `成熟窗口（${windowLabel}）内 ROAS 暂未形成明确方向，建议继续观察并等待下一轮成熟回收。`;
+      return `官方 D7 ROAS（${windowLabel}）暂未形成明确方向，建议继续观察下一轮回刷。`;
     }
   }
 

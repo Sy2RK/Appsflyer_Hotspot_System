@@ -19,6 +19,8 @@ export interface MatureRoasWindow {
   to: string;
 }
 
+export type OfficialD7RoasWindow = MatureRoasWindow;
+
 const ROAS_DEVIATION_RATIO_THRESHOLD = 0.2;
 const ROAS_DEVIATION_ABSOLUTE_THRESHOLD = 0.15;
 
@@ -38,6 +40,24 @@ export function normalizeAfCohortRoasRate(value: number | null | undefined): num
     return 0;
   }
   return raw / 100;
+}
+
+function parseAfCohortNumber(value: unknown): number | null {
+  if (value == null) {
+    return null;
+  }
+  const normalized = String(value).replace(/[%,$]/g, '').trim();
+  if (!normalized) {
+    return null;
+  }
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+export function parseAfCohortD7RoasRate(row: Record<string, unknown>): number | null {
+  // AF dashboard "D7" over a 7-day rolling date range is returned as day_6
+  // because cohort day_0 is the attribution date itself.
+  return parseAfCohortNumber(row.roas_rate_day_6) ?? parseAfCohortNumber(row.roas_rate_day_7);
 }
 
 function hasRoasValue(value: number | null | undefined): boolean {
@@ -78,10 +98,8 @@ export function resolveRoasPrimarySource(input: {
   afCohortRoas?: number | null;
   localDerivedRoas?: number | null;
 }): RoasPrimarySource {
-  if (hasRoasValue(input.afCohortRoas)) {
-    return 'af_cohort';
-  }
-  return 'local_fallback';
+  void input;
+  return 'af_cohort';
 }
 
 export function resolveRoasWarningCode(input: {
@@ -111,7 +129,7 @@ export function shouldHoldForRoasProtection(input: {
   if (input.primarySource !== 'af_cohort') {
     return true;
   }
-  return input.warningCode === 'af_vs_local_mismatch';
+  return input.warningCode !== 'none';
 }
 
 export function isRoasDataUsableStatus(status: RoasDataStatus | null | undefined): boolean {
@@ -142,6 +160,12 @@ export function buildMatureRoasWindow(
   const decisionWindowDays = D7_ROAS_WINDOW_DAYS;
   const to = shiftDateString(reportDate, -excludeRecentDays);
   const from = shiftDateString(to, -(decisionWindowDays - 1));
+  return { from, to };
+}
+
+export function buildOfficialD7RoasWindow(reportDate: string): OfficialD7RoasWindow {
+  const to = reportDate;
+  const from = shiftDateString(to, -(D7_ROAS_WINDOW_DAYS - 1));
   return { from, to };
 }
 

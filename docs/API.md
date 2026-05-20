@@ -70,9 +70,9 @@ Response:
       {
         "id": "qwen",
         "label": "Qwen 3.6-Plus",
-        "provider": "dashscope",
-        "provider_label": "DashScope",
-        "model": "qwen3.6-plus",
+        "provider": "openrouter",
+        "provider_label": "OpenRouter",
+        "model": "qwen/qwen3.6-plus",
         "supports_images": true,
         "supports_thinking": true
       },
@@ -160,12 +160,12 @@ Response:
   - `roas.get_summary`
   - `budget.get_summary`
   - `asa_keywords.get_summary`
-- `roas.get_summary` 用于查询指定简报口径的成熟窗口 D7 ROAS 摘要
+- `roas.get_summary` 用于查询 AF Dashboard D7 ROAS 摘要
   - `scope=budget`：每日简报 / 预算建议口径
   - `scope=asa`：ASA 简报 / ASA 看板口径
   - 返回结果会显式包含 `reportDate` 与 `summary.roasWindow.from / to`
-  - 该口径不是“当日实时 ROAS”，而是按策略成熟窗口聚合后的 D7 ROAS
-  - 若同一应用跨平台成熟窗口不一致，且请求未指定 `platform`，工具可能只返回 `platformBreakdown`，不强行给出单一汇总 ROAS
+  - 该口径来自 AppsFlyer Cohort API `roas` KPI；对报告日 `D` 使用 `D-6` 至 `D`
+  - 若同一应用跨平台官方 D7 窗口不一致，且请求未指定 `platform`，工具可能只返回 `platformBreakdown`，不强行给出单一汇总 ROAS
 - 手动附加的数据包优先于自动查询；命中同一查询时会优先复用手动数据包结果
 - 若 MCP 工具或上下文包查询超时，最终会收敛为 `ai_chat_timeout` 或业务可读 warning，而不是原始协议错误串
 - `Kimi-K2.5 (OpenRouter)` 即使在模型列表中可见，特定账号或地区下仍可能返回 provider 侧限制错误
@@ -448,18 +448,18 @@ Request:
 - `keyword / campaign / adset / 收入事件`：来自 AppsFlyer Raw Data
 - `cost / installs / average_ecpi`：来自 AppsFlyer Master API
 - ASA 主粒度：`keyword + campaign + adset`
-- `D7 ROAS / CPP`：统一使用 Cohort API 源数据 + 成熟窗口口径
+- `D7 ROAS`：统一使用 AppsFlyer Cohort API `roas` KPI + 官方 D7 rolling window
 - 返回中的 `roas_data_status` 用于区分：
-  - `complete`：成熟窗口 Cohort 数据完整
-  - `partial`：成熟窗口内仍有 Cohort 缺口，但覆盖率已达到可采纳阈值（当前 80%）；此时 `ROAS / CPP` 按已覆盖成本计算
-  - `partial_low`：成熟窗口覆盖率偏低但仍有部分 Cohort 数据；当前值仅供参考，不直接驱动动作
-  - `pending`：成熟窗口内存在 Cohort 源数据缺口，且覆盖率低于 80%
-  - `unavailable`：当前还没有可用于判断的成熟窗口数据
+  - `complete`：官方 D7 窗口 Cohort ROAS 数据完整
+  - `partial`：官方 D7 窗口仍有 Cohort ROAS 缺口，但覆盖率已达到可采纳阈值（当前 80%）
+  - `partial_low`：官方 D7 窗口覆盖率偏低但仍有部分 Cohort ROAS 数据；当前值仅供参考，不直接驱动动作
+  - `pending`：官方 D7 窗口内存在 Cohort ROAS 缺口，且覆盖率低于 80%
+  - `unavailable`：当前还没有可用于判断的 AF Cohort 官方快照
 
 返回：
 - `data`: ASA 关键词状态列表
 - `summary`: `keyword_count / installs / total_cost / ecpi / cpp / d7_roas`
-- `summary_window`: ASA 简报与看板摘要使用的成熟窗口
+- `summary_window`: ASA 简报与看板摘要使用的官方 D7 ROAS 窗口
 - `meta`: 分页信息
 
 返回字段补充：

@@ -18,6 +18,12 @@ import {
 } from './appsflyerRequest.js';
 import { classifyAfSyncScope, isAfWindowProvisional } from './afMetricScopes.js';
 import { upsertAfOfficialSnapshot } from './appsflyerOfficialSnapshots.js';
+import {
+  fetchMetabaseCampaignMetrics,
+  METABASE_DAILY_SOURCE_REPORT,
+  recordMetabaseOfficialSnapshot,
+  type MetabaseAdsMetricRow
+} from './metabaseAds.js';
 
 interface CsvRow {
   [key: string]: string;
@@ -110,6 +116,7 @@ export interface PullLogger {
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const PULL_SOURCE_REPORT = 'daily_report_v5';
+const PULL_DAILY_METRIC_SOURCE = 'pull_daily_report_v5';
 const PULL_CYCLE_LOCK_NAME = 'pull_daily_report_v5_cycle';
 const PULL_REVIEW_RETRY_DELAY_MS = 30 * 1000;
 const NON_BLOCKING_READINESS_STATUSES = new Set<PullCycleDetail['status']>([
@@ -143,6 +150,8 @@ interface PullSliceScope {
   appKey: string;
   date: string;
   platform: string;
+  pullSourceReports?: string[];
+  metricSources?: string[];
 }
 
 function buildPullTargets(app: {
@@ -345,11 +354,14 @@ async function replacePullDailySlice(
   pullRows: PullAggregateDailyRow[],
   metricRows: DailyMetricRow[]
 ): Promise<void> {
+  const pullSourceReports = scope.pullSourceReports ?? [PULL_SOURCE_REPORT];
+  const metricSources = scope.metricSources ?? [PULL_DAILY_METRIC_SOURCE, PULL_SOURCE_REPORT];
   const mutationParams = {
     date: scope.date,
     app_key: scope.appKey,
     platform: scope.platform,
-    source_report: PULL_SOURCE_REPORT
+    source_reports: pullSourceReports,
+    metric_sources: metricSources
   };
 
   const existingPullRows = await chQuery<PullAggregateDailyRow>(
@@ -360,7 +372,7 @@ async function replacePullDailySlice(
       WHERE date = toDate({date:String})
         AND app_key = {app_key:String}
         AND lowerUTF8(platform) = {platform:String}
-        AND source_report = {source_report:String}`,
+        AND has({source_reports:Array(String)}, source_report)`,
     mutationParams
   );
   const existingMetricRows = await chQuery<DailyMetricRow>(
@@ -369,7 +381,7 @@ async function replacePullDailySlice(
       WHERE date = toDate({date:String})
         AND app_key = {app_key:String}
         AND lowerUTF8(platform) = {platform:String}
-        AND source = {source_report:String}`,
+        AND has({metric_sources:Array(String)}, source)`,
     mutationParams
   );
 
@@ -378,7 +390,7 @@ async function replacePullDailySlice(
       DELETE WHERE date = toDate({date:String})
         AND app_key = {app_key:String}
         AND lowerUTF8(platform) = {platform:String}
-        AND source_report = {source_report:String}
+        AND has({source_reports:Array(String)}, source_report)
       SETTINGS mutations_sync = 2`,
     mutationParams
   );
@@ -388,7 +400,7 @@ async function replacePullDailySlice(
       DELETE WHERE date = toDate({date:String})
         AND app_key = {app_key:String}
         AND lowerUTF8(platform) = {platform:String}
-        AND source = {source_report:String}
+        AND has({metric_sources:Array(String)}, source)
       SETTINGS mutations_sync = 2`,
     mutationParams
   );
@@ -547,8 +559,63 @@ function toPullRows(params: {
   });
 }
 
-function toDailyMetricRows(rows: PullAggregateDailyRow[], version: number): DailyMetricRow[] {
-  const source = 'pull_daily_report_v5';
+function toMetabasePullRows(params: {
+  appKey: string;
+  date: string;
+  platform: string;
+  rows: MetabaseAdsMetricRow[];
+}): PullAggregateDailyRow[] {
+  const ingestTime = new Date().toISOString().slice(0, 19).replace('T', ' ');
+
+  return params.rows.map((row) => {
+    const installs = Number(row.installs || 0);
+    const cost = Number(row.cost || 0);
+    const impressions = Number(row.impressions || 0);
+    const clicks = Number(row.clicks || 0);
+    return {
+      date: row.date || params.date,
+      app_key: params.appKey,
+      platform: (row.platform || params.platform || 'unknown').toLowerCase(),
+      media_source: row.media_source || 'unknown',
+      country: row.country || 'unknown',
+      campaign: row.campaign || 'unknown',
+      agency_pmd: '',
+      impressions,
+      clicks,
+      ctr: impressions > 0 ? clicks / impressions : 0,
+      installs,
+      conversion_rate: clicks > 0 ? installs / clicks : 0,
+      sessions: 0,
+      loyal_users: 0,
+      loyal_users_installs_ratio: 0,
+      total_cost: cost,
+      average_ecpi: installs > 0 ? cost / installs : 0,
+      source_report: METABASE_DAILY_SOURCE_REPORT,
+      pull_window_from: params.date,
+      pull_window_to: params.date,
+      revenue: 0,
+      events: 0,
+      raw_json: JSON.stringify({
+        ...row.raw_json,
+        source_api: row.source_api,
+        paid_users: row.paid_users,
+        adset: row.adset,
+        ad: row.ad,
+        d0_roas: row.d0_roas,
+        d7_roas: row.d7_roas,
+        d14_roas: row.d14_roas,
+        d30_roas: row.d30_roas
+      }),
+      ingest_time: ingestTime
+    };
+  });
+}
+
+function toDailyMetricRows(
+  rows: PullAggregateDailyRow[],
+  version: number,
+  source = PULL_DAILY_METRIC_SOURCE
+): DailyMetricRow[] {
   const aggregate = new Map<string, DailyMetricRow>();
 
   for (const row of rows) {
@@ -877,7 +944,351 @@ async function executePullAttempt(params: {
   }
 }
 
+async function executeMetabasePullAttempt(params: {
+  appKey: string;
+  appId: string;
+  date: string;
+  platform: string;
+}): Promise<PullAttemptResult> {
+  const guard = await getPullContentGuard(params.appKey, params.platform, params.date, METABASE_DAILY_SOURCE_REPORT);
+
+  try {
+    const metabaseRows = await fetchMetabaseCampaignMetrics({
+      appKey: params.appKey,
+      platform: params.platform,
+      date: params.date
+    });
+    const pullRows = toMetabasePullRows({
+      appKey: params.appKey,
+      date: params.date,
+      platform: params.platform,
+      rows: metabaseRows
+    });
+    const signature = buildPullContentSignature(pullRows);
+    const sourceApi = metabaseRows[0]?.source_api ?? 'metabase_saved_card';
+
+    if (guard?.content_signature && guard.content_signature === signature) {
+      const nextAllowedAt = nextAllowedAtForReportDate(params.date);
+      await upsertPullContentGuard({
+        app_key: params.appKey,
+        platform: params.platform,
+        report_date: params.date,
+        source_report: METABASE_DAILY_SOURCE_REPORT,
+        content_signature: signature,
+        last_status: 'skipped_same_content_cooldown',
+        last_error: null,
+        next_allowed_at: nextAllowedAt
+      });
+      await recordMetabaseOfficialSnapshot({
+        appKey: params.appKey,
+        platform: params.platform,
+        appId: params.appId,
+        date: params.date,
+        rowCount: pullRows.length,
+        rows: metabaseRows,
+        sourceApi
+      });
+      return {
+        ok: true,
+        status: 'skipped_same_content_cooldown',
+        rows: 0,
+        metricsRows: 0,
+        immediateRetryable: false,
+        scheduledRetryable: false,
+        rateLimited: false
+      };
+    }
+
+    const metricRows = toDailyMetricRows(pullRows, Date.now(), METABASE_DAILY_SOURCE_REPORT);
+    await replacePullDailySlice(
+      {
+        appKey: params.appKey,
+        date: params.date,
+        platform: params.platform,
+        pullSourceReports: [PULL_SOURCE_REPORT, METABASE_DAILY_SOURCE_REPORT],
+        metricSources: [PULL_DAILY_METRIC_SOURCE, PULL_SOURCE_REPORT, METABASE_DAILY_SOURCE_REPORT]
+      },
+      pullRows,
+      metricRows
+    );
+    await recordMetabaseOfficialSnapshot({
+      appKey: params.appKey,
+      platform: params.platform,
+      appId: params.appId,
+      date: params.date,
+      rowCount: pullRows.length,
+      rows: metabaseRows,
+      sourceApi
+    });
+    await upsertPullContentGuard({
+      app_key: params.appKey,
+      platform: params.platform,
+      report_date: params.date,
+      source_report: METABASE_DAILY_SOURCE_REPORT,
+      content_signature: signature,
+      last_status: 'ok',
+      last_error: null,
+      next_allowed_at: nextAllowedAtForReportDate(params.date)
+    });
+
+    return {
+      ok: true,
+      status: 'ok',
+      rows: pullRows.length,
+      metricsRows: metricRows.length,
+      immediateRetryable: false,
+      scheduledRetryable: false,
+      rateLimited: false
+    };
+  } catch (error) {
+    const errorText = error instanceof Error ? error.message : String(error);
+    await upsertPullContentGuard({
+      app_key: params.appKey,
+      platform: params.platform,
+      report_date: params.date,
+      source_report: METABASE_DAILY_SOURCE_REPORT,
+      content_signature: guard?.content_signature ?? '',
+      last_status: 'failed',
+      last_error: errorText,
+      next_allowed_at: null
+    });
+    await recordMetabaseOfficialSnapshot({
+      appKey: params.appKey,
+      platform: params.platform,
+      appId: params.appId,
+      date: params.date,
+      rowCount: 0,
+      rows: [],
+      sourceApi: env.metabase.accessMode === 'bigquery' ? 'bigquery_warehouse' : 'metabase_saved_card',
+      status: 'failed',
+      error: errorText
+    }).catch(() => undefined);
+    return {
+      ok: false,
+      status: 'ok',
+      rows: 0,
+      metricsRows: 0,
+      error: errorText,
+      failureKind: 'unknown',
+      immediateRetryable: true,
+      scheduledRetryable: true,
+      rateLimited: false
+    };
+  }
+}
+
+async function runMetabasePullCycle(backfillDays: number, logger?: PullLogger): Promise<PullCycleResult> {
+  const startedAt = new Date();
+  const startedAtIso = startedAt.toISOString();
+  const safeBackfillDays = Math.max(1, Math.floor(backfillDays));
+  const apps = await listApps();
+  const dates = buildDateList(safeBackfillDays);
+  const details: PullCycleDetail[] = [];
+  const lockOwnerId = crypto.randomUUID();
+  const expectedTargets = apps.reduce((sum, app) => sum + buildPullTargets(app).length, 0);
+
+  const lockAcquired = await tryAcquirePullCycleLock(PULL_CYCLE_LOCK_NAME, lockOwnerId, env.pullerLockTtlMs);
+  if (!lockAcquired) {
+    const endedAt = new Date();
+    return {
+      started_at: startedAt.toISOString(),
+      ended_at: endedAt.toISOString(),
+      duration_ms: endedAt.getTime() - startedAt.getTime(),
+      backfill_days: safeBackfillDays,
+      dates,
+      apps: apps.length,
+      success_count: 0,
+      failed_count: 0,
+      retryable_failed_count: 0,
+      terminal_failed_count: 0,
+      skipped_count: 1,
+      details: [
+        {
+          app_key: '*',
+          date: '-',
+          platform: 'unknown',
+          status: 'skipped_cycle_locked',
+          rows: 0,
+          metrics_rows: 0,
+          error: 'pull_cycle_running'
+        }
+      ]
+    };
+  }
+
+  try {
+    await markPullReadinessPending(dates, expectedTargets, startedAtIso);
+    logInfo(logger, 'metabase_puller_cycle_started', {
+      apps: apps.length,
+      backfill_days: safeBackfillDays,
+      dates,
+      access_mode: env.metabase.accessMode
+    });
+
+    for (const app of apps) {
+      const targets = buildPullTargets(app);
+      if (targets.length === 0) {
+        details.push({
+          app_key: app.app_key,
+          date: '-',
+          status: 'skipped_missing_pull_app_id',
+          rows: 0,
+          metrics_rows: 0,
+          error: 'missing_pull_app_id'
+        });
+        continue;
+      }
+
+      for (const target of targets) {
+        const platform = normalizePlatform(target.platform);
+        for (const date of dates) {
+          const guard = await getPullContentGuard(app.app_key, platform, date, METABASE_DAILY_SOURCE_REPORT);
+          if (guard && isCooldownActive(guard.next_allowed_at)) {
+            const status =
+              guard.last_status === 'skipped_same_content_cooldown'
+                ? 'skipped_same_content_cooldown'
+                : 'skipped_recently_pulled';
+            details.push({
+              app_key: app.app_key,
+              date,
+              platform,
+              status,
+              rows: 0,
+              metrics_rows: 0,
+              error:
+                status === 'skipped_same_content_cooldown'
+                  ? `same_content_cooldown_until=${guard.next_allowed_at}`
+                  : `recently_pulled_until=${guard.next_allowed_at}`,
+              attempts: 0,
+              recovered_by_retry: false
+            });
+            continue;
+          }
+
+          const attempt = await executeMetabasePullAttempt({
+            appKey: app.app_key,
+            appId: target.pullAppId,
+            date,
+            platform
+          });
+
+          if (attempt.ok) {
+            details.push({
+              app_key: app.app_key,
+              date,
+              platform,
+              status: attempt.status === 'skipped_same_content_cooldown' ? 'skipped_same_content_cooldown' : 'ok',
+              rows: attempt.rows,
+              metrics_rows: attempt.metricsRows,
+              error:
+                attempt.status === 'skipped_same_content_cooldown'
+                  ? `same_content_cooldown_until=${nextAllowedAtForReportDate(date)}`
+                  : undefined,
+              attempts: 1,
+              recovered_by_retry: false
+            });
+            logInfo(logger, 'metabase_puller_ingested', {
+              app_key: app.app_key,
+              date,
+              platform,
+              rows: attempt.rows,
+              metrics_rows: attempt.metricsRows,
+              source: METABASE_DAILY_SOURCE_REPORT
+            });
+          } else {
+            details.push({
+              app_key: app.app_key,
+              date,
+              platform,
+              status: 'failed',
+              rows: 0,
+              metrics_rows: 0,
+              error: attempt.error,
+              failure_kind: attempt.failureKind,
+              retryable: attempt.scheduledRetryable,
+              attempts: 1,
+              recovered_by_retry: false
+            });
+            logError(logger, 'metabase_puller_app_day_failed', {
+              app_key: app.app_key,
+              date,
+              platform,
+              error: attempt.error
+            });
+          }
+
+          await sleepMs(env.pullerRequestIntervalMs);
+        }
+      }
+    }
+
+    const endedAt = new Date();
+    const endedAtIso = endedAt.toISOString();
+    const successCount = details.filter((item) => item.status === 'ok').length;
+    const failedCount = details.filter((item) => item.status === 'failed').length;
+    const retryableFailedCount = details.filter((item) => item.status === 'failed' && item.retryable).length;
+    const terminalFailedCount = details.filter((item) => item.status === 'failed' && item.retryable !== true).length;
+    const skippedCount = details.filter((item) => item.status.startsWith('skipped_')).length;
+
+    await finalizePullReadiness(dates, details, expectedTargets, startedAtIso, endedAtIso);
+
+    const summary: PullCycleResult = {
+      started_at: startedAtIso,
+      ended_at: endedAtIso,
+      duration_ms: endedAt.getTime() - startedAt.getTime(),
+      backfill_days: safeBackfillDays,
+      dates,
+      apps: apps.length,
+      success_count: successCount,
+      failed_count: failedCount,
+      retryable_failed_count: retryableFailedCount,
+      terminal_failed_count: terminalFailedCount,
+      skipped_count: skippedCount,
+      details
+    };
+
+    logInfo(logger, 'metabase_puller_cycle_finished', {
+      apps: apps.length,
+      backfill_days: safeBackfillDays,
+      dates,
+      success_count: successCount,
+      failed_count: failedCount,
+      retryable_failed_count: retryableFailedCount,
+      terminal_failed_count: terminalFailedCount,
+      skipped_count: skippedCount,
+      duration_ms: summary.duration_ms
+    });
+
+    return summary;
+  } catch (error) {
+    const endedAtIso = new Date().toISOString();
+    const errorText = error instanceof Error ? error.message : String(error);
+    await Promise.all(
+      dates.map((date) =>
+        upsertPullReportReadiness({
+          report_date: date,
+          source_report: PULL_SOURCE_REPORT,
+          status: 'blocked',
+          expected_targets: expectedTargets,
+          ok_targets: 0,
+          blocked_targets: expectedTargets,
+          last_cycle_started_at: startedAtIso,
+          last_cycle_finished_at: endedAtIso,
+          last_error_summary: errorText
+        })
+      )
+    );
+    throw error;
+  } finally {
+    await releasePullCycleLock(PULL_CYCLE_LOCK_NAME, lockOwnerId);
+  }
+}
+
 export async function runPullCycle(backfillDays: number, logger?: PullLogger): Promise<PullCycleResult> {
+  if (env.adsDailySource === 'metabase') {
+    return runMetabasePullCycle(backfillDays, logger);
+  }
+
   const startedAt = new Date();
   const startedAtIso = startedAt.toISOString();
   const safeBackfillDays = Math.max(1, Math.floor(backfillDays));

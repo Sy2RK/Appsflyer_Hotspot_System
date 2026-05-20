@@ -202,7 +202,7 @@ export type BudgetExecutionActionCode =
   | 'scale_gradually';
 export type BudgetExecutionActionSource = 'scenario' | 'policy';
 export type RoasDataStatus = 'complete' | 'partial' | 'partial_low' | 'pending' | 'unavailable';
-export type RoasPrimarySource = 'af_cohort' | 'local_fallback';
+export type RoasPrimarySource = 'af_cohort';
 export type RoasWarningCode = 'none' | 'af_missing' | 'af_vs_local_mismatch' | 'af_grain_unavailable';
 
 export interface RecommendationThresholdTargets {

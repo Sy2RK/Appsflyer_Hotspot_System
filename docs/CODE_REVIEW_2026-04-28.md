@@ -51,7 +51,7 @@ hotspot-system/
 2. **调度状态持久化** — `scheduled_worker_runs` 表记录每次运行的 attempt/cooldown/completion
 3. **Pull Readiness Gate** — 下游 worker 通过 `pull_report_readiness` 表等待上游数据就绪
 4. **两层去重** — ClickHouse 实时查询 + PostgreSQL `ingest_dedup_keys` 表双重保障
-5. **ROAS 成熟窗口** — 统一 D7 ROAS 计算口径，含覆盖率分级 (complete/partial/pending/unavailable)
+5. **AF Dashboard D7 ROAS** — 统一 D7 ROAS 计算口径，含覆盖率分级 (complete/partial/pending/unavailable)
 6. **优雅降级** — ASA keywords 允许部分切片失败后以「降级完成」继续下游链路
 
 ---
@@ -73,7 +73,7 @@ hotspot-system/
 - **日志结构化**: 所有日志使用 `logger.info/warn/error(message, context)` 模式，带 `request_id` 追踪
 
 #### 数据处理
-- **ROAS 计算严谨**: [`roasWindow.ts`](packages/shared/utils/roasWindow.ts) 中成熟窗口、覆盖率、偏差检测逻辑完整
+- **ROAS 计算严谨**: [`roasWindow.ts`](packages/shared/utils/roasWindow.ts) 中官方 D7 rolling window、覆盖率、偏差检测逻辑完整
 - **去重策略可靠**: ingest 链路同时使用 ClickHouse 实时查重 + PostgreSQL dedup keys 表，防止竞态
 - **内容签名去重**: Pull 链路通过 `pull_content_guard` 的 content_signature 避免重复拉取相同数据
 

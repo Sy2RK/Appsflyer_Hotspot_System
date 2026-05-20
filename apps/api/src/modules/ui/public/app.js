@@ -2686,7 +2686,7 @@ function metricModeLabel(mode, roasDataStatus) {
   if (roasDataStatus === 'pending' || mode === 'roas_pending_revenue') return '收入数据待补齐';
   if (roasDataStatus === 'partial') return '覆盖率达阈值（按已覆盖成本计算）';
   if (roasDataStatus === 'partial_low') return '覆盖率偏低（仅供参考）';
-  if (roasDataStatus === 'unavailable') return '暂无成熟数据';
+  if (roasDataStatus === 'unavailable') return '暂无 AF Cohort ROAS 快照';
   return '当前生效';
 }
 
@@ -6334,7 +6334,7 @@ function openBudgetDetail(row) {
           ? `覆盖率偏低（仅供参考）｜${budgetRoasSourceMeta}`
           : `${formatRoasPercent(row.current_roas)}（覆盖率偏低，仅供参考）｜${budgetRoasSourceMeta}`
       : row.roas_data_status === 'unavailable'
-        ? `暂无成熟数据｜${budgetRoasSourceMeta}`
+        ? `暂无 AF Cohort ROAS 快照｜${budgetRoasSourceMeta}`
         : row.current_roas == null
           ? '-'
           : `${formatRoasPercent(row.current_roas)}｜${budgetRoasSourceMeta}`;
@@ -6505,10 +6505,6 @@ function asaHasSpendWithoutInstalls(totalCost, installs) {
   return Number(totalCost || 0) > 0 && Number(installs || 0) <= 0;
 }
 
-function asaHasCostWithoutD7Revenue(totalCost, revenueD7) {
-  return Number(totalCost || 0) > 0 && Number(revenueD7 || 0) <= 0;
-}
-
 function normalizeRoasDataStatus(value) {
   const status = String(value || '').trim().toLowerCase();
   if (status === 'complete' || status === 'partial' || status === 'partial_low' || status === 'pending' || status === 'unavailable') {
@@ -6530,28 +6526,37 @@ function normalizeRoasCoverageRatio(value, roasDataStatus) {
   return normalizeRoasDataStatus(roasDataStatus) === 'complete' ? 1 : 0;
 }
 
+function resolveAfCohortRoasWarning(explicitWarningCode, hasAfCohortRoas) {
+  const warning = String(explicitWarningCode || '').trim();
+  if (!hasAfCohortRoas) {
+    return warning && warning !== 'none' ? warning : 'af_missing';
+  }
+  return warning || 'none';
+}
+
 function isStrictAsaRoasValueVisible(primarySource, warningCode) {
-  return String(primarySource || '') === 'af_cohort';
+  const warning = String(warningCode || '').trim();
+  return String(primarySource || '') === 'af_cohort' && warning !== 'af_missing' && warning !== 'af_grain_unavailable';
 }
 
 function hiddenAsaRoasReason(primarySource, warningCode) {
-  if (String(primarySource || '') !== 'af_cohort') {
-    return 'AF 官方成熟窗口 D7 ROAS 缺失，当前不展示回退值';
+  if (!isStrictAsaRoasValueVisible(primarySource, warningCode)) {
+    return 'AF Cohort ROAS 暂无官方快照';
   }
   return '';
 }
 
 function formatRoasPrimarySourceLabel(source) {
-  return String(source || '') === 'af_cohort' ? 'AF Cohort 主口径' : '本地回退口径';
+  return 'AF Cohort 官方口径';
 }
 
 function formatRoasWarningLabel(code) {
   const value = String(code || '').trim();
   if (value === 'af_missing') {
-    return 'AF 缺失，当前为本地派生';
+    return 'AF Cohort ROAS 暂无官方快照';
   }
   if (value === 'af_vs_local_mismatch') {
-    return 'AF 与本地派生偏差较大';
+    return 'AF 官方 ROAS 诊断异常';
   }
   if (value === 'af_grain_unavailable') {
     return '当前粒度无 AF 官方 ROAS';
@@ -6575,7 +6580,7 @@ function formatAsaCoverageMeta(roasDataStatus, coverageRatio) {
   if (status === 'partial_low') return '覆盖偏低';
   if (status === 'pending') return '待补齐';
   if (status === 'complete') return '覆盖 100%';
-  return '暂无成熟数据';
+  return '暂无官方 ROAS 快照';
 }
 
 function buildAsaCoverageTitle(roasDataStatus, coverageRatio) {
@@ -6594,7 +6599,7 @@ function buildAsaCoverageTitle(roasDataStatus, coverageRatio) {
   if (status === 'pending') {
     return ratioText ? `${ratioText}，数据仍在补齐，当前值暂不展示` : 'Cohort 源数据仍在补齐，当前值暂不展示';
   }
-  return ratioText ? `${ratioText}，覆盖仍偏低，当前值暂不展示` : '当前没有可用的成熟窗口 D7 数据';
+  return ratioText ? `${ratioText}，覆盖仍偏低，当前值暂不展示` : '当前没有可用的 AF Cohort D7 ROAS 快照';
 }
 
 function buildAsaMetricStackHtml(metaText, valueText) {
@@ -6611,24 +6616,12 @@ function buildAsaMetricDisplaySource(source = {}) {
   const explicitPrimarySource = String(source.roas_primary_source || '').trim();
   const explicitWarningCode = String(source.roas_warning_code || '').trim();
   const afCohortMissing = Number(source.af_cohort_roas_missing || 0) === 1;
-  const localMissing = Number(source.roas_source_missing || 0) === 1;
   const hasAfCohortRoas = source.af_cohort_roas != null && !afCohortMissing && Number.isFinite(Number(source.af_cohort_roas));
-  const hasLocalDerivedRoas =
-    (source.local_derived_roas ?? source.d7_roas ?? source.current_d7_roas) != null &&
-    !localMissing &&
-    Number.isFinite(Number(source.local_derived_roas ?? source.d7_roas ?? source.current_d7_roas));
   const roasPrimarySource =
-    explicitPrimarySource || (hasAfCohortRoas ? 'af_cohort' : 'local_fallback');
-  const roasWarningCode =
-    explicitWarningCode || (!hasAfCohortRoas && hasLocalDerivedRoas ? 'af_missing' : 'none');
+    explicitPrimarySource || 'af_cohort';
+  const roasWarningCode = resolveAfCohortRoasWarning(explicitWarningCode, hasAfCohortRoas);
   const afCohortRoas = hasAfCohortRoas ? Number(source.af_cohort_roas) : 0;
-  const localDerivedRoas = hasLocalDerivedRoas
-    ? Number(source.local_derived_roas ?? source.d7_roas ?? source.current_d7_roas)
-    : 0;
-  const d7Roas =
-    roasPrimarySource === 'af_cohort'
-      ? (hasAfCohortRoas ? afCohortRoas : Number((source.d7_roas ?? source.current_d7_roas) || 0))
-      : localDerivedRoas;
+  const d7Roas = hasAfCohortRoas ? afCohortRoas : 0;
   return {
     roasDataStatus,
     roasDisplayable: isAsaRoasDisplayableStatus(roasDataStatus),
@@ -6653,18 +6646,11 @@ function buildAsaTrendMetricDisplaySource(source = {}) {
   const purchaseCount = Number(source.purchase_count || 0);
   const revenueD7 = Number(source.revenue_d7 || 0);
   const hasAfCohortRoas = source.af_cohort_roas != null && !afCohortMissing && Number.isFinite(Number(source.af_cohort_roas));
-  const hasLocalDerivedRoas = source.d7_roas != null && !localMissing && Number.isFinite(Number(source.d7_roas));
-  const roasPrimarySource = explicitPrimarySource || (hasAfCohortRoas ? 'af_cohort' : 'local_fallback');
-  const roasWarningCode =
-    explicitWarningCode || (!hasAfCohortRoas && hasLocalDerivedRoas ? 'af_missing' : 'none');
-  const d7Roas =
-    roasPrimarySource === 'af_cohort'
-      ? (hasAfCohortRoas ? Number(source.af_cohort_roas) : hasLocalDerivedRoas ? Number(source.d7_roas) : 0)
-      : hasLocalDerivedRoas
-        ? Number(source.d7_roas)
-        : 0;
+  const roasPrimarySource = explicitPrimarySource || 'af_cohort';
+  const roasWarningCode = resolveAfCohortRoasWarning(explicitWarningCode, hasAfCohortRoas);
+  const d7Roas = hasAfCohortRoas ? Number(source.af_cohort_roas) : 0;
   const roasStatus =
-    totalCost <= 0 ? 'unavailable' : hasAfCohortRoas || hasLocalDerivedRoas ? 'complete' : 'pending';
+    totalCost <= 0 ? 'unavailable' : hasAfCohortRoas ? 'complete' : 'pending';
   const cppStatus = totalCost <= 0 ? 'unavailable' : localMissing ? 'pending' : 'complete';
   return {
     roasPrimarySource,
@@ -6696,9 +6682,6 @@ function buildAsaD7RoasMetricTitle(source = {}) {
   if (!metric.roasVisibleAsAfValue) {
     const hiddenReason = hiddenAsaRoasReason(metric.roasPrimarySource, metric.roasWarningCode);
     title = title ? `${title}；${hiddenReason}` : hiddenReason;
-  }
-  if (metric.roasDisplayable && metric.totalCost > 0 && metric.revenueD7 <= 0) {
-    title = title ? `${title}；覆盖窗口内未观察到 D7 收入` : '覆盖窗口内未观察到 D7 收入';
   }
   const sourceMeta = buildRoasSourceMetaText(metric.roasPrimarySource, metric.roasWarningCode);
   title = title ? `${title}；${sourceMeta}` : sourceMeta;
@@ -6762,21 +6745,21 @@ function formatAsaCppDisplay(value, totalCost, purchaseCount, roasDataStatus) {
   }
   if (status === 'partial') {
     if (Number(purchaseCount || 0) <= 0) {
-      return Number(totalCost || 0) > 0 ? '—（覆盖率达阈值，但成熟窗口无购买）' : '-';
+      return Number(totalCost || 0) > 0 ? '—（覆盖率达阈值，但官方 D7 窗口无购买）' : '-';
     }
     return `$${toFixed2(value || 0)}（按已覆盖成本计算）`;
   }
   if (status === 'partial_low') {
     if (Number(purchaseCount || 0) <= 0) {
-      return Number(totalCost || 0) > 0 ? '—（覆盖率偏低，成熟窗口无购买）' : '-';
+      return Number(totalCost || 0) > 0 ? '—（覆盖率偏低，但官方 D7 窗口无购买）' : '-';
     }
     return `$${toFixed2(value || 0)}（覆盖率偏低，仅供参考）`;
   }
   if (status === 'unavailable') {
-    return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
+    return Number(totalCost || 0) > 0 ? '暂无 AF Cohort ROAS 快照' : '-';
   }
   if (Number(purchaseCount || 0) <= 0) {
-    return Number(totalCost || 0) > 0 ? '—（成熟窗口无购买）' : '-';
+    return Number(totalCost || 0) > 0 ? '—（官方 D7 窗口无购买）' : '-';
   }
   return `$${toFixed2(value || 0)}`;
 }
@@ -6790,36 +6773,36 @@ function formatAsaD7RoasDisplay(value, totalCost, revenueD7, roasDataStatus, sou
   const hiddenReason = hiddenAsaRoasReason(primarySource, warningCode);
   if (status === 'pending') {
     if (strictVisible && Number(totalCost || 0) > 0) {
-      return `${formatRoasPercent(value)}（覆盖率较低，数据仍在补齐${warningCode === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : ''}）`;
+      return `${formatRoasPercent(value)}（AF Cohort 快照仍在补齐）`;
     }
-    return '待补齐（AF 成熟窗口数据缺失）';
+    return 'AF Cohort ROAS 暂无官方快照';
   }
   if (status === 'partial') {
     if (Number(totalCost || 0) <= 0) {
       return '-';
     }
     if (!strictVisible) {
-      return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
+      return hiddenReason || 'AF Cohort ROAS 暂无官方快照';
     }
-    return `${formatRoasPercent(value)}（按已覆盖成本计算${warningCode === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : ''}）`;
+    return `${formatRoasPercent(value)}（AF Cohort 官方快照部分覆盖）`;
   }
   if (status === 'partial_low') {
     if (Number(totalCost || 0) <= 0) {
       return '-';
     }
     if (!strictVisible) {
-      return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
+      return hiddenReason || 'AF Cohort ROAS 暂无官方快照';
     }
-    return `${formatRoasPercent(value)}（覆盖率偏低，仅供参考${warningCode === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : ''}）`;
+    return `${formatRoasPercent(value)}（AF Cohort 覆盖率偏低，仅供参考）`;
   }
   if (status === 'unavailable') {
-    return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
+    return Number(totalCost || 0) > 0 ? 'AF Cohort ROAS 暂无官方快照' : '-';
   }
   if (Number(totalCost || 0) <= 0) {
     return '-';
   }
   if (!strictVisible) {
-    return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
+    return hiddenReason || 'AF Cohort ROAS 暂无官方快照';
   }
   return `${formatRoasPercent(value)}${sourceText ? `｜${sourceText}` : ''}`;
 }
@@ -6833,48 +6816,42 @@ function formatAsaD7RoasDisplayWithReason(value, totalCost, revenueD7, roasDataS
   const hiddenReason = hiddenAsaRoasReason(primarySource, warningCode);
   if (status === 'pending') {
     if (strictVisible && Number(totalCost || 0) > 0) {
-      const base = `${formatRoasPercent(value)}（覆盖率较低，数据仍在补齐${warningCode === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : ''}）${sourceText ? `｜${sourceText}` : ''}`;
-      return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
-        ? `${base}（成熟窗口未观察到D7收入）`
-        : base;
+      const base = `${formatRoasPercent(value)}（AF Cohort 快照仍在补齐）${sourceText ? `｜${sourceText}` : ''}`;
+      return base;
     }
-    return '待补齐（AF 成熟窗口数据缺失）';
+    return 'AF Cohort ROAS 暂无官方快照';
   }
   if (status === 'partial') {
     if (Number(totalCost || 0) <= 0) {
       return '-';
     }
     if (!strictVisible) {
-      return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
+      return hiddenReason || 'AF Cohort ROAS 暂无官方快照';
     }
-    const base = `${formatRoasPercent(value)}（按已覆盖成本计算${warningCode === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : ''}）${sourceText ? `｜${sourceText}` : ''}`;
-    return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
-      ? `${base}（成熟窗口未观察到D7收入）`
-      : base;
+    const base = `${formatRoasPercent(value)}（AF Cohort 官方快照部分覆盖）${sourceText ? `｜${sourceText}` : ''}`;
+    return base;
   }
   if (status === 'partial_low') {
     if (Number(totalCost || 0) <= 0) {
       return '-';
     }
     if (!strictVisible) {
-      return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
+      return hiddenReason || 'AF Cohort ROAS 暂无官方快照';
     }
-    const base = `${formatRoasPercent(value)}（覆盖率偏低，仅供参考${warningCode === 'af_vs_local_mismatch' ? '；AF 与本地派生偏差较大，以 AF 官方为准' : ''}）${sourceText ? `｜${sourceText}` : ''}`;
-    return asaHasCostWithoutD7Revenue(totalCost, revenueD7)
-      ? `${base}（成熟窗口未观察到D7收入）`
-      : base;
+    const base = `${formatRoasPercent(value)}（AF Cohort 覆盖率偏低，仅供参考）${sourceText ? `｜${sourceText}` : ''}`;
+    return base;
   }
   if (status === 'unavailable') {
-    return Number(totalCost || 0) > 0 ? '暂无成熟数据' : '-';
+    return Number(totalCost || 0) > 0 ? 'AF Cohort ROAS 暂无官方快照' : '-';
   }
   if (Number(totalCost || 0) <= 0) {
     return '-';
   }
   if (!strictVisible) {
-    return hiddenReason || 'AF 官方成熟窗口 D7 ROAS 当前不可展示';
+    return hiddenReason || 'AF Cohort ROAS 暂无官方快照';
   }
   const base = `${formatRoasPercent(value)}${sourceText ? `｜${sourceText}` : ''}`;
-  return asaHasCostWithoutD7Revenue(totalCost, revenueD7) ? `${base}（成熟窗口未观察到D7收入）` : base;
+  return base;
 }
 
 function resolveAsaTrendRoasStatus(source = {}) {
@@ -7057,7 +7034,7 @@ async function openAsaKeywordDetail(row) {
         action_items: actionItems,
         scenario_tags: llmSummary.scenario_tags || []
       },
-      note: 'ASA 关键词成本来自 AppsFlyer 的关键词级成本接口。eCPI 显示为“—”表示有花费但没有安装；D7 ROAS 显示“待补齐/暂无成熟数据”表示 Cohort 源数据尚未完整。',
+      note: 'ASA 关键词成本来自 AppsFlyer 的关键词级成本接口。eCPI 显示为“—”表示有花费但没有安装；D7 ROAS 显示“待补齐/暂无官方快照”表示 AF Cohort API roas KPI 尚未完整。',
       trend: trendRows
     },
     null,
@@ -7099,8 +7076,8 @@ async function triggerAsaKeywordRecompute() {
 function asaBriefSummaryItems(report) {
   const summary = report.summary || {};
   const summaryWindow = report.summary_window || null;
-  const cppLabel = summaryWindow ? '每次购买成本（CPP，成熟窗口）' : '每次购买成本（CPP）';
-  const roasLabel = summaryWindow ? '7 日回收率（D7 ROAS，成熟窗口）' : '7 日回收率（D7 ROAS）';
+  const cppLabel = summaryWindow ? '每次购买成本（CPP，官方 D7 窗口）' : '每次购买成本（CPP）';
+  const roasLabel = summaryWindow ? 'AF面板 D7 ROAS' : '7 日回收率（D7 ROAS）';
   return [
     { label: '当前阶段', value: asaStageLabel(report.current_stage) },
     { label: '关键词数', value: String(summary.keyword_count || 0) },
@@ -7136,7 +7113,7 @@ function renderAsaBriefModal(payload, mode) {
     .join('');
   el.asaBriefJudgment.textContent =
     `仅覆盖已配置 iOS 端的产品。详细关键词级建议、执行状态跟踪、人工反馈与七天后数据，统一下沉到 ASA 专属多维表格。` +
-    (summaryWindow ? ` 成熟窗口：${summaryWindow.from} 至 ${summaryWindow.to}。` : '');
+    (summaryWindow ? ` 官方 D7 ROAS 窗口：${summaryWindow.from} 至 ${summaryWindow.to}。` : '');
   el.asaBriefActions.innerHTML = productOverviewRows.length
     ? productOverviewRows
         .map((row) => {
@@ -7149,7 +7126,7 @@ function renderAsaBriefModal(payload, mode) {
               </div>
               <p>关键词 ${escapeHtml(String(row.keyword_count || 0))} 个 ｜ 待处理执行项 ${escapeHtml(String(row.pending_action_count || 0))}</p>
               <p>近7日安装 ${escapeHtml(toFixed2(row.installs))} ｜ 近7日成本 $${escapeHtml(toFixed2(row.total_cost))} ｜ 近7日 eCPI ${escapeHtml(formatAsaEcpiDisplay(row.ecpi, row.total_cost, row.installs))}</p>
-              <p>成熟窗口 D7 ROAS ${escapeHtml(formatAsaD7RoasDisplay(row.d7_roas, matureRoasCost, row.revenue_d7, row.roas_data_status, row))}</p>
+              <p>AF面板 D7 ROAS ${escapeHtml(formatAsaD7RoasDisplay(row.d7_roas, matureRoasCost, row.revenue_d7, row.roas_data_status, row))}</p>
             </article>
           `;
         })

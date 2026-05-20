@@ -52,7 +52,7 @@ cp .env.example .env
 # Qwen（OpenAI兼容）
 # QWEN_BASE_URL=
 # QWEN_API_KEY=
-# QWEN_MODEL=qwen3.6-plus
+# QWEN_MODEL=qwen/qwen3.6-plus
 # QWEN_THINKING_ENABLED=true
 # Guru Ads Agent 可选模型
 # OPENROUTER_API_KEY=
@@ -113,14 +113,14 @@ Web UI 新增能力:
   - 切换核心指标时，不再适用的隐藏阈值会自动清理，避免“界面看不到但规则仍生效”
 - ASA 关键词管理页面（真实 ASA keyword、阶段配置、专项简报 / 建议发送）
 - `keyword-engine` 的 `D7 ROAS` 价值回收直接使用 AppsFlyer cohort API 源数据，并在事实表中记录 `revenue_source_missing`
-- 预算建议、ASA 看板、ASA 简报、多维表中的 `D7 ROAS / CPP` 统一按成熟窗口读取
-  - 默认至少排除最近 7 天，再按策略 `decision_window_days` 聚合
+- 预算建议、ASA 看板、ASA 简报、多维表中的 `D7 ROAS` 统一按 AF Cohort API `roas` KPI 读取
+  - 对报告日 `D` 使用官方 rolling window `D-6` 至 `D`
   - 同时显式输出 `roas_window_from / roas_window_to / roas_data_status`
-  - `roas_data_status=complete`：成熟窗口 Cohort 源数据完整
-  - `roas_data_status=partial`：成熟窗口仍有 Cohort 缺口，但覆盖率已达到可采纳阈值（当前 80%）；`ROAS / CPP` 按已覆盖成本计算
-  - `roas_data_status=partial_low`：成熟窗口覆盖率偏低但仍有部分 Cohort 数据；当前值仅供参考，不直接驱动动作
-  - `roas_data_status=pending`：成熟窗口内存在 Cohort 缺口且覆盖率低于 80%，显示“待补齐”
-  - `roas_data_status=unavailable`：当前还没有可用于判断的成熟窗口，显示“暂无成熟数据”
+  - `roas_data_status=complete`：官方 D7 窗口 Cohort ROAS 数据完整
+  - `roas_data_status=partial`：官方 D7 窗口仍有 Cohort ROAS 缺口，但覆盖率已达到可采纳阈值（当前 80%）
+  - `roas_data_status=partial_low`：官方 D7 窗口覆盖率偏低但仍有部分 Cohort ROAS 数据；当前值仅供参考，不直接驱动动作
+  - `roas_data_status=pending`：官方 D7 窗口内存在 Cohort ROAS 缺口且覆盖率低于 80%，显示“待补齐”
+  - `roas_data_status=unavailable`：当前还没有可用于判断的 AF Cohort 官方快照，显示“暂无官方快照”
 - 每日报告页面（结构化预览、飞书 `interactive` 卡片发送、阈值说明）
 - 投放执行表推送页面（通用投放建议 + ASA 关键词建议 -> 同一 Base 内按日期归档执行表 + 群通知）
 - 操作日志页面（查看手动操作与定时任务执行记录）
@@ -291,7 +291,7 @@ docker compose logs --tail=50 api mcp-server
   - 每日简报 / 预算建议场景应带 `scope=budget`
   - ASA 简报 / ASA 看板场景应带 `scope=asa`
   - 返回内容应带 `reportDate` 与 `roasWindow.from / to`
-  - 若未指定 `platform` 且同一应用跨平台成熟窗口不同，Agent 可能返回分平台结果而不是单一 ROAS
+  - 若未指定 `platform` 且同一应用跨平台官方 D7 窗口不同，Agent 可能返回分平台结果而不是单一 ROAS
   - 若手动附加 `roas_summary` 上下文包并指定 `reportDate`，最终查询也应保持同一个报告日，不应静默回退到默认“昨天”
 
 ---
@@ -457,18 +457,18 @@ curl -s "http://localhost:8123/?query=SELECT%20install_date,app_key,platform,med
 - 预算 / ASA 的 `D7 ROAS` 不再把 `revenue_source_missing=1` 显示成 `0.00`
 - 需要结合 `roas_data_status` 判断：
   - `complete`：可作为真实 D7 ROAS 使用
-  - `partial`：成熟窗口仍有缺口，但覆盖率已达到可采纳阈值；`ROAS / CPP / 收入 / 购买数` 按已覆盖成本计算
-  - `partial_low`：成熟窗口覆盖率偏低；`ROAS / CPP / 收入 / 购买数` 仅供参考，不直接驱动动作
-  - `pending`：成熟窗口内仍有 Cohort 源数据缺口，且覆盖率低于 80%
-  - `unavailable`：当前没有成熟窗口数据
+  - `partial`：官方 D7 窗口仍有缺口，但覆盖率已达到可采纳阈值
+  - `partial_low`：官方 D7 窗口覆盖率偏低；当前值仅供参考，不直接驱动动作
+  - `pending`：官方 D7 窗口内仍有 Cohort ROAS 缺口，且覆盖率低于 80%
+  - `unavailable`：当前没有 AF Cohort 官方快照
 - `d7_roas` 只在 `revenue_d7` 与 `total_cost` 都具备时有意义
 - ASA 页面摘要卡会直接复用这套口径
-  - 若成熟窗口覆盖率未达到 80%，即使部分 keyword 已有 Cohort 收入，`CPP / D7 ROAS` 仍会整体显示为“待补齐（源数据缺失）”
+  - 若官方 D7 ROAS 覆盖率未达到 80%，即使部分 keyword 已有事件收入，`D7 ROAS` 仍会显示为“待补齐（源数据缺失）”
 - Guru Ads Agent 中与简报对齐的 ROAS 问答默认也复用这套价值事实
   - 工具名：`roas.get_summary`
   - `scope=budget` 对齐每日简报 / 预算建议；`scope=asa` 对齐 ASA 简报 / 看板
-  - `reportDate` 只是报告锚点，真正用于计算的是策略成熟窗口 `from ~ to`
-  - 若跨平台成熟窗口不一致，Agent 应按平台拆开回答，不应硬拼一个总 ROAS
+  - `reportDate` 是官方 D7 rolling window 的锚点，窗口为 `D-6 ~ D`
+  - 若跨平台官方 D7 窗口不一致，Agent 应按平台拆开回答，不应硬拼一个总 ROAS
 
 如果大量行都为 `revenue_source_missing=1`：
 - 先检查 `APPSFLYER_COHORT_*` 配置
@@ -866,7 +866,7 @@ WebUI 路径：
 排障说明：
 - 如果 Raw Data 的 `cost_value` 仍为 0，但 Master API 关键词成本可返回，系统属于正常状态
 - 当前 ASA 专项以 Master API 作为唯一成本主来源，不再依赖 Raw Data `cost_value`
-- 当前 ASA 摘要与简报中的 `CPP / D7 ROAS` 取自 `asa_keyword_daily_metrics_v2` 的成熟窗口汇总，而不是最新单日值
+- 当前 ASA 摘要与简报中的 `D7 ROAS` 取自 AF Cohort API `roas` KPI 的官方 D7 rolling window
 - 若页面显示“待补齐（源数据缺失）”，优先看 `roas_source_missing` 覆盖率，而不是只看单个 keyword 是否已有收入
 
 ---

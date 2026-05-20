@@ -25,6 +25,20 @@ function optionalNumber(name: string, fallback: number): number {
   return parsed;
 }
 
+type AdsDailySource = 'appsflyer' | 'metabase';
+type MetabaseAccessMode = 'saved_card' | 'bigquery' | 'auto';
+
+function optionalEnum<T extends string>(name: string, allowed: readonly T[], fallback: T): T {
+  const raw = (process.env[name] ?? '').trim();
+  if (!raw) {
+    return fallback;
+  }
+  if ((allowed as readonly string[]).includes(raw)) {
+    return raw as T;
+  }
+  throw new Error(`Invalid enum env ${name}: ${raw}; allowed=${allowed.join('|')}`);
+}
+
 export const env = {
   nodeEnv,
   port: optionalNumber('PORT', 3000),
@@ -79,6 +93,24 @@ export const env = {
     'https://hq1.appsflyer.com/api/cohorts/v1/data/app/{app_id}',
   appsflyerEgressRelayUrl: process.env.APPSFLYER_EGRESS_RELAY_URL?.trim() ?? '',
   appsflyerEgressRelayToken: process.env.APPSFLYER_EGRESS_RELAY_TOKEN ?? '',
+
+  adsDailySource: optionalEnum<AdsDailySource>('ADS_DAILY_SOURCE', ['appsflyer', 'metabase'], 'appsflyer'),
+  metabase: {
+    accessMode: optionalEnum<MetabaseAccessMode>(
+      'METABASE_ACCESS_MODE',
+      ['saved_card', 'bigquery', 'auto'],
+      'saved_card'
+    ),
+    baseUrl: process.env.METABASE_BASE_URL?.trim().replace(/\/+$/, '') ?? '',
+    apiKey: process.env.METABASE_API_KEY ?? '',
+    username: process.env.METABASE_USERNAME ?? '',
+    password: process.env.METABASE_PASSWORD ?? '',
+    bigqueryProject: process.env.METABASE_BIGQUERY_PROJECT ?? 'guru-data-warehouse',
+    bigqueryCredentialsPath: process.env.METABASE_BIGQUERY_CREDENTIALS_PATH ?? '',
+    productConfigJson: process.env.METABASE_PRODUCT_CONFIG_JSON ?? '',
+    mediaSourceMapJson: process.env.METABASE_MEDIA_SOURCE_MAP_JSON ?? '',
+    asaKeywordRequired: (process.env.METABASE_ASA_KEYWORD_REQUIRED ?? 'true').toLowerCase() !== 'false'
+  },
 
   aggregatorLookbackHours: optionalNumber('AGGREGATOR_LOOKBACK_HOURS', 6),
   aggregatorIntervalMs: optionalNumber('AGGREGATOR_INTERVAL_MS', 5 * 60 * 1000),
@@ -145,7 +177,7 @@ export const env = {
   qwen: {
     baseUrl: process.env.QWEN_BASE_URL ?? '',
     apiKey: process.env.QWEN_API_KEY ?? '',
-    model: process.env.QWEN_MODEL ?? 'qwen3.6-plus',
+    model: process.env.QWEN_MODEL ?? 'qwen/qwen3.6-plus',
     thinkingEnabled: (process.env.QWEN_THINKING_ENABLED ?? 'true').toLowerCase() !== 'false',
     timeoutMs: optionalNumber('QWEN_TIMEOUT_MS', 15000),
     maxTokens: optionalNumber('QWEN_MAX_TOKENS', 1200)
@@ -196,6 +228,29 @@ function validateEnv(): void {
   pushMissing(missing, 'CLICKHOUSE_USER', env.clickhouse.user);
   pushMissing(missing, 'CLICKHOUSE_PASSWORD', env.clickhouse.password);
   pushMissing(missing, 'CLICKHOUSE_DB', env.clickhouse.database);
+
+  if (env.adsDailySource === 'metabase') {
+    const hasMetabaseAuth =
+      hasValue(env.metabase.baseUrl) &&
+      (hasValue(env.metabase.apiKey) || (hasValue(env.metabase.username) && hasValue(env.metabase.password)));
+    const hasBigQueryAuth = hasValue(env.metabase.bigqueryProject) && hasValue(env.metabase.bigqueryCredentialsPath);
+    if (env.metabase.accessMode === 'saved_card' || (env.metabase.accessMode === 'auto' && !hasBigQueryAuth)) {
+      pushMissing(missing, 'METABASE_BASE_URL', env.metabase.baseUrl);
+      if (!hasValue(env.metabase.apiKey)) {
+        pushMissing(missing, 'METABASE_USERNAME', env.metabase.username);
+        pushMissing(missing, 'METABASE_PASSWORD', env.metabase.password);
+      }
+    }
+    if (env.metabase.accessMode === 'bigquery') {
+      pushMissing(missing, 'METABASE_BIGQUERY_PROJECT', env.metabase.bigqueryProject);
+      pushMissing(missing, 'METABASE_BIGQUERY_CREDENTIALS_PATH', env.metabase.bigqueryCredentialsPath);
+    } else if (env.metabase.accessMode === 'auto' && hasValue(env.metabase.bigqueryCredentialsPath)) {
+      pushMissing(missing, 'METABASE_BIGQUERY_PROJECT', env.metabase.bigqueryProject);
+    }
+    if (env.metabase.accessMode === 'auto' && !hasMetabaseAuth && !hasBigQueryAuth) {
+      missing.push('METABASE_BASE_URL or METABASE_BIGQUERY_CREDENTIALS_PATH');
+    }
+  }
 
   const hasGlobalFeishuAppId = hasValue(env.feishuAppId);
   const hasGlobalFeishuAppSecret = hasValue(env.feishuAppSecret);

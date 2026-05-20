@@ -22,6 +22,7 @@ export type AiContextPackTemplateId =
   | 'media_source'
   | 'country'
   | 'campaign'
+  | 'dashboard_d7_roas'
   | 'mature_window'
   | 'platform_media_source'
   | 'action_status'
@@ -144,7 +145,7 @@ export interface AiChatResult {
 }
 
 export type AiChatModelId = 'qwen' | 'openrouter_kimi_k25' | 'openai_gpt54';
-type AiChatProviderId = 'dashscope' | 'openrouter' | 'openai';
+type AiChatProviderId = 'openrouter' | 'openai';
 
 export interface AiChatModelOption {
   id: AiChatModelId;
@@ -252,7 +253,6 @@ const AI_CHAT_MODEL_LABELS: Record<AiChatModelId, string> = {
   openai_gpt54: 'GPT-5.4 (OpenAI)'
 };
 const AI_CHAT_PROVIDER_LABELS: Record<AiChatProviderId, string> = {
-  dashscope: 'DashScope',
   openrouter: 'OpenRouter',
   openai: 'OpenAI'
 };
@@ -315,7 +315,7 @@ const AI_CHAT_TOOL_DEFINITIONS: AiChatCanonicalToolDefinition[] = [
     function: {
       name: GURU_MCP_TOOL_NAMES.roasGetSummary,
       description:
-        '查询指定简报口径的成熟窗口 D7 ROAS 摘要。适用于 ROAS、回收、成熟窗口、日报口径对齐问题；回答时必须说明时间窗口。',
+        '查询 AF Dashboard D7 ROAS 摘要。适用于 ROAS、回收、D7 ROAS、日报口径对齐问题；回答时必须说明报告日期和 D-6 至 D 时间窗口。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -324,8 +324,8 @@ const AI_CHAT_TOOL_DEFINITIONS: AiChatCanonicalToolDefinition[] = [
           appKey: { type: 'string', description: '应用 appKey' },
           templateId: {
             type: 'string',
-            enum: ['mature_window'],
-            description: '固定为 mature_window，可不填'
+            enum: ['dashboard_d7_roas', 'mature_window'],
+            description: '默认 dashboard_d7_roas；mature_window 仅作为旧别名兼容'
           },
           scope: {
             type: 'string',
@@ -443,7 +443,7 @@ export function buildAiChatToolDefinitionsForModel(
   definitions: AiChatToolDefinition[] | AiChatCanonicalToolDefinition[] = AI_CHAT_TOOL_DEFINITIONS
 ): AiChatToolDefinition[] {
   const provider: AiChatProviderId =
-    modelId === 'openai_gpt54' ? 'openai' : modelId === 'openrouter_kimi_k25' ? 'openrouter' : 'dashscope';
+    modelId === 'openai_gpt54' ? 'openai' : 'openrouter';
   return definitions.map((item) => ({
     ...item,
     function: {
@@ -500,8 +500,8 @@ export function listAvailableAiChatModels(): AiChatModelOption[] {
     items.push({
       id: 'qwen',
       label: getAiChatModelLabel('qwen'),
-      provider: 'dashscope',
-      provider_label: getAiChatProviderLabel('dashscope'),
+      provider: 'openrouter',
+      provider_label: getAiChatProviderLabel('openrouter'),
       model: env.qwen.model,
       supports_images: true,
       supports_thinking: env.qwen.thinkingEnabled
@@ -553,8 +553,8 @@ function resolveAiChatProviderConfig(modelId: AiChatModelId): AiChatProviderConf
     return {
       id: 'qwen',
       label: getAiChatModelLabel('qwen'),
-      provider: 'dashscope',
-      providerLabel: getAiChatProviderLabel('dashscope'),
+      provider: 'openrouter',
+      providerLabel: getAiChatProviderLabel('openrouter'),
       baseUrl: env.qwen.baseUrl,
       apiKey: env.qwen.apiKey,
       model: env.qwen.model,
@@ -862,8 +862,9 @@ function formatDimensionLabel(templateId: AiContextPackTemplateId): string {
       return '国家';
     case 'campaign':
       return '活动';
+    case 'dashboard_d7_roas':
     case 'mature_window':
-      return '成熟窗口';
+      return 'AF Dashboard D7 ROAS';
     case 'platform_media_source':
       return '平台 / 媒体源';
     case 'action_status':
@@ -1059,9 +1060,10 @@ async function buildMetricsTrendPack(spec: AiContextPackSpec): Promise<AiBuiltCo
 }
 
 async function buildRoasSummaryPack(spec: AiContextPackSpec): Promise<AiBuiltContextPack> {
-  if (spec.templateId !== 'mature_window') {
+  if (spec.templateId !== 'dashboard_d7_roas' && spec.templateId !== 'mature_window') {
     throw new Error('invalid_roas_template');
   }
+  const templateId = spec.templateId === 'mature_window' ? 'dashboard_d7_roas' : spec.templateId;
   const pack = await buildMatureRoasContextPack({
     appKey: spec.appKey,
     scope: normalizeRoasScope(spec.scope),
@@ -1070,7 +1072,7 @@ async function buildRoasSummaryPack(spec: AiContextPackSpec): Promise<AiBuiltCon
   });
   return {
     type: 'roas_summary',
-    templateId: spec.templateId,
+    templateId,
     title: pack.title,
     summaryMarkdown: pack.summaryMarkdown,
     structured: pack.structured,
@@ -1356,12 +1358,8 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         to_char(avg(current_ecpi), 'FM999999990.00') AS avg_ecpi,
         to_char(avg(current_cpp), 'FM999999990.00') AS avg_cpp,
         to_char(
-          coalesce(
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END), 0)
-          ),
+          sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
+            / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
           'FM999999990.00'
         ) AS avg_roas
       FROM asa_keyword_states
@@ -1378,12 +1376,8 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         to_char(sum(installs_7d), 'FM999999999999990.00') AS installs_7d,
         to_char(avg(current_ecpi), 'FM999999990.00') AS avg_ecpi,
         to_char(
-          coalesce(
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END), 0)
-          ),
+          sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
+            / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
           'FM999999990.00'
         ) AS avg_roas
       FROM asa_keyword_states
@@ -1399,12 +1393,8 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         to_char(sum(installs_7d), 'FM999999999999990.00') AS installs_7d,
         to_char(avg(current_ecpi), 'FM999999990.00') AS avg_ecpi,
         to_char(
-          coalesce(
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END), 0)
-          ),
+          sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
+            / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
           'FM999999990.00'
         ) AS avg_roas
       FROM asa_keyword_states
@@ -1420,12 +1410,8 @@ async function buildAsaKeywordPack(spec: AiContextPackSpec): Promise<AiBuiltCont
         to_char(sum(installs_7d), 'FM999999999999990.00') AS installs_7d,
         to_char(avg(current_ecpi), 'FM999999990.00') AS avg_ecpi,
         to_char(
-          coalesce(
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
-            sum(current_d7_roas * CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END)
-              / nullif(sum(CASE WHEN roas_primary_source = 'local_fallback' AND roas_warning_code IN ('af_missing', 'af_grain_unavailable') THEN total_cost_7d ELSE 0 END), 0)
-          ),
+          sum(current_d7_roas * CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END)
+            / nullif(sum(CASE WHEN roas_primary_source = 'af_cohort' AND roas_warning_code = 'none' THEN total_cost_7d ELSE 0 END), 0),
           'FM999999990.00'
         ) AS avg_roas
       FROM asa_keyword_states
@@ -1963,7 +1949,7 @@ function buildAiChatSystemPrompt(input: {
     '调用工具前，先判断是否已经有足够的手动上下文或历史工具结果；避免重复查询同一份数据。',
     '如果用户只写了“4.2”“4/2”“4月2日”这类未带年份的日期，优先沿用当前页面上下文里的年份；如果页面没有年份，再按当前业务年份理解。不要自行改成别的年份。',
     '使用 metrics.get_trend 时：installs/clicks/total_cost 必须走 pull；revenue/event_count/purchase_count 必须走 push。不要把 ROAS 当成可直接查询的 metric；若用户明确要实时/当日收入口径，请分别查询 cost 与 revenue 后再回答。',
-    '若用户询问 ROAS、回收、D7 ROAS，且诉求是与简报/日报口径对齐，优先使用 roas.get_summary。通用每日简报 / 预算建议场景用 scope=budget；ASA 简报 / ASA 看板场景用 scope=asa。使用 roas.get_summary 后，回答里必须明确写出“报告日期”和“成熟窗口 from 至 to”，并说明这不是当日实时 ROAS。',
+    '若用户询问 ROAS、回收、D7 ROAS，且诉求是与 AF 面板 / 简报 / 日报口径对齐，优先使用 roas.get_summary。通用每日简报 / 预算建议场景用 scope=budget；ASA 简报 / ASA 看板场景用 scope=asa。使用 roas.get_summary 后，回答里必须明确写出“报告日期”和“官方 D7 ROAS 窗口 from 至 to”，并说明这是 Metabase / AF Dashboard D7 ROI 口径。',
     '如果工具结果写明“暂无聚合记录/暂无可用数据”，要把它理解为数据缺失或未回传，而不是数值等于 0；此时不要直接下结论说收入为 0 或 ROAS 为 0%。',
     '最终回答默认结构：先给结论，再给 2-4 条关键证据，最后给一个可继续追问的方向。',
     '回答请使用简洁 Markdown：允许短段落、加粗、列表、行内代码；不要使用 HTML、复杂表格、冗长标题或花哨格式。',
@@ -2025,7 +2011,7 @@ function findFallbackContextSpec(
       shiftDateString(getDateStringInTimezone(new Date(), env.timezone), -1);
     return {
       type: 'roas_summary',
-      templateId: 'mature_window',
+      templateId: 'dashboard_d7_roas',
       appKey: String(defaults?.appKey || '').trim(),
       scope: inferRoasScopeFromPageContext(pageContext),
       platform: defaults?.platform,
@@ -2103,7 +2089,7 @@ function resolveGuruToolArguments(input: {
   if (input.toolName === GURU_MCP_TOOL_NAMES.roasGetSummary) {
     const result = {
       appKey: readText('appKey') || '',
-      templateId: readText('templateId') || 'mature_window',
+      templateId: readText('templateId') || 'dashboard_d7_roas',
       scope: normalizeRoasScope(readText('scope')),
       platform: readText('platform'),
       reportDate: readText('reportDate')
@@ -2305,7 +2291,7 @@ async function requestAiChatCompletion(input: {
   } else {
     payload.max_tokens = maxOutputTokens;
   }
-  if (input.modelConfig.id === 'qwen') {
+  if (input.modelConfig.id === 'qwen' && !input.modelConfig.baseUrl.includes('openrouter.ai')) {
     payload.extra_body = {
       enable_thinking: input.thinkingEnabled
     };

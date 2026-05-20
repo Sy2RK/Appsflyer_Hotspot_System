@@ -14,7 +14,7 @@
 | `daily_push_d1` | Master/Pivot 或 Daily Report | 每日 10:00 推送和飞书多维表格 | 默认前一自然日，必须标注快照版本 |
 | `recent_unstable_window` | Master/Pivot + checksum | D-1 至 D-7 自动修正 | 10:00-18:00 每 30 分钟对账 |
 | `retro_window` | Master/Pivot | D-8 至 D-35 历史追溯 | 每日回刷，覆盖 7/14/30 日看板 |
-| `mature_d7_roas` | Cohort API | D7 ROAS / CPP 决策 | 默认排除最近 7 天未成熟 install date |
+| `dashboard_d7_roas` | Cohort API | AF Dashboard D7 ROAS / 决策 / 推送 | 对报告日 `D` 使用闭区间 `D-6` 至 `D`，`kpis=["roas"]` |
 | `raw_realtime_window` | Raw Data / Push API | 实时观测和事件补充 | 不承诺与 Dashboard 完全一致 |
 | `decision_window` | System derived | 投放建议 current eCPI/current cost | 只用于决策，不能命名为官方 Dashboard 指标 |
 
@@ -23,7 +23,7 @@
 - Dashboard 对齐使用 Master API: `groupings=pid,c,af_adset,af_keywords`，`kpis=cost,installs,average_ecpi`，`pid=Apple Search Ads`。
 - `cost / installs / average_ecpi` 来自 Master/Pivot；Raw Data 只补充 keyword、事件和收入。
 - 推荐系统的 `current_ecpi` 是决策窗口指标，默认不是当前 Dashboard 选择窗口。
-- D7 ROAS 只在成熟窗口展示；本地事件回退必须标为 fallback。
+- D7 ROAS 统一来自 AppsFlyer Cohort API `roas` KPI；缺官方快照时显示 unavailable/pending，不使用本地 revenue/cost 替代。
 
 ## 同步状态
 

@@ -146,6 +146,10 @@ interface DeliveryActionRow {
   match_type: string;
   stage: string;
   primary_metric: string;
+  current_roas?: number | null;
+  roas_window_from?: string | null;
+  roas_window_to?: string | null;
+  roas_data_status?: string | null;
   current_value: string;
   target_value: string;
   cost_reference: number;
@@ -999,33 +1003,34 @@ function formatRoasPercent(value: unknown): string {
 }
 
 function formatRoasSourceLabel(row: Record<string, unknown>): string {
-  return String(row.roas_primary_source || '') === 'af_cohort' ? 'AF Cohort 主口径' : '本地回退口径';
+  return 'AF Cohort 官方口径';
 }
 
 function formatRoasWarningLabel(row: Record<string, unknown>): string {
   const warningCode = String(row.roas_warning_code || '');
   if (warningCode === 'af_missing') {
-    return 'AF 缺失，当前为本地派生，仅供参考';
+    return 'AF Cohort ROAS 暂无官方快照';
   }
   if (warningCode === 'af_vs_local_mismatch') {
-    return 'AF 与本地派生偏差较大，已禁止自动动作';
+    return 'AF 官方 ROAS 诊断异常，主口径仍以 Metabase / AF Dashboard 口径为准';
   }
   if (warningCode === 'af_grain_unavailable') {
-    return '当前粒度无 AF 官方 ROAS，已回退本地派生';
+    return '当前粒度无 AF 官方 ROAS';
   }
   return '';
 }
 
 function canDisplayStrictAsaRoas(row: Record<string, unknown>): boolean {
-  return String(row.roas_primary_source || '') === 'af_cohort' && String(row.roas_warning_code || '') !== 'af_vs_local_mismatch';
+  const warningCode = String(row.roas_warning_code || '');
+  return String(row.roas_primary_source || '') === 'af_cohort' && warningCode !== 'af_missing' && warningCode !== 'af_grain_unavailable';
 }
 
 function hiddenAsaRoasLabel(row: Record<string, unknown>): string {
   if (String(row.roas_warning_code || '') === 'af_vs_local_mismatch') {
-    return 'AF 官方成熟窗口 ROAS 与本地派生偏差较大，当前不展示数值';
+    return 'AF 官方 D7 ROAS 当前不可展示';
   }
   if (String(row.roas_primary_source || '') !== 'af_cohort') {
-    return 'AF 官方成熟窗口 ROAS 缺失，当前不展示回退值';
+    return 'AF Cohort ROAS 暂无官方快照';
   }
   return 'ROAS 当前不可展示';
 }
@@ -1036,19 +1041,23 @@ function formatBudgetCurrentValue(row: Record<string, unknown>): string {
     const currentEcpi = Number(row.current_ecpi || 0);
     const roasStatus = String(row.roas_data_status || '');
     const sourceSuffix = ` / ${formatRoasSourceLabel(row)}${formatRoasWarningLabel(row) ? `（${formatRoasWarningLabel(row)}）` : ''}`;
+    const windowLabel =
+      row.roas_window_from && row.roas_window_to
+        ? `${String(row.roas_window_from)} 至 ${String(row.roas_window_to)}`
+        : '官方 D7 窗口';
     if (roasStatus === 'pending' || String(row.metric_mode || '') === 'roas_pending_revenue') {
-      return `成熟窗口 ROAS 回流中 / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
+      return `AF面板 D7 ROAS 回流中（${windowLabel}） / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
     }
     if (roasStatus === 'partial') {
-      return `成熟窗口 ROAS ${formatRoasPercent(currentRoas)}（按已覆盖成本计算） / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
+      return `AF面板 D7 ROAS ${formatRoasPercent(currentRoas)}（${windowLabel} / Metabase / AF Dashboard 口径，部分覆盖） / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
     }
     if (roasStatus === 'partial_low') {
-      return `成熟窗口 ROAS ${formatRoasPercent(currentRoas)}（覆盖率偏低，仅供参考） / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
+      return `AF面板 D7 ROAS ${formatRoasPercent(currentRoas)}（${windowLabel} / Metabase / AF Dashboard 口径，覆盖率偏低） / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
     }
     if (roasStatus === 'unavailable') {
-      return `成熟窗口 ROAS 暂无数据 / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
+      return `AF Cohort ROAS 暂无官方快照（${windowLabel}） / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
     }
-    return `成熟窗口 ROAS ${formatRoasPercent(currentRoas)} / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
+    return `AF面板 D7 ROAS ${formatRoasPercent(currentRoas)}（${windowLabel} / Metabase / AF Dashboard 口径） / 近7日 eCPI $${currentEcpi.toFixed(2)}${sourceSuffix}`;
   }
   return `eCPI $${Number(row.current_ecpi || 0).toFixed(2)}`;
 }
@@ -1058,6 +1067,10 @@ function formatAfDashboardCurrentValue(params: {
   metric: AfDashboardCampaignMetric | null;
   decisionReference: string;
   primaryMetric: string;
+  officialRoas?: number | null;
+  roasWindowFrom?: string | null;
+  roasWindowTo?: string | null;
+  roasStatus?: string | null;
 }): string {
   const windowLabel = `${params.reportDate} 至 ${params.reportDate}`;
   if (!params.metric) {
@@ -1071,12 +1084,18 @@ function formatAfDashboardCurrentValue(params: {
     `eCPI $${params.metric.ecpi.toFixed(2)}`
   ].join(' / ');
 
-  // AppsFlyer daily_report_v5 is aligned with the dashboard cost/eCPI rows, but it does
-  // not expose the dashboard-only D0/D7 ROAS-Tool columns shown in AppsFlyer UI.
-  // Until a same-surface ROAS-Tool snapshot is ingested, never substitute mature Cohort ROAS
-  // as the official dashboard ROAS value.
+  // eCPI follows AppsFlyer's User Acquisition dashboard: Cost / Attributions.
+  // D7 ROAS follows the Metabase / AF Dashboard D7 ROI for the rolling D-6..D window.
   if (params.primaryMetric === 'roas') {
-    return `${base} / D0/D7 ROAS-Tool 待接入官方面板快照 / 决策参考：${params.decisionReference}`;
+    const roasWindow =
+      params.roasWindowFrom && params.roasWindowTo
+        ? `${params.roasWindowFrom} 至 ${params.roasWindowTo}`
+        : '官方 D7 窗口';
+    const hasRoas = params.officialRoas != null && Number.isFinite(Number(params.officialRoas));
+    const roasText = hasRoas
+      ? `AF面板 D7 ROAS ${formatRoasPercent(params.officialRoas)}（${roasWindow} / Metabase / AF Dashboard 口径）`
+      : `AF Cohort ROAS 暂无官方快照（${roasWindow}）`;
+    return `${base} / ${roasText} / 决策参考：${params.decisionReference}`;
   }
   return `${base} / 决策参考：${params.decisionReference}`;
 }
@@ -1114,7 +1133,11 @@ async function alignBudgetRowsToAfDashboard(
         reportDate,
         metric,
         decisionReference: row.current_value,
-        primaryMetric: row.primary_metric.startsWith('ROAS') ? 'roas' : 'ecpi'
+        primaryMetric: row.primary_metric.startsWith('ROAS') ? 'roas' : 'ecpi',
+        officialRoas: row.current_roas == null ? null : Number(row.current_roas),
+        roasWindowFrom: row.roas_window_from == null ? null : String(row.roas_window_from),
+        roasWindowTo: row.roas_window_to == null ? null : String(row.roas_window_to),
+        roasStatus: row.roas_data_status == null ? null : String(row.roas_data_status)
       }),
       cost_reference: metric ? metric.cost : row.cost_reference,
       volume_reference: metric
@@ -1157,28 +1180,32 @@ function formatAsaCurrentValue(row: Record<string, unknown>): string {
     const roasStatus = String(row.roas_data_status || '');
     const sourceSuffix = ` / ${formatRoasSourceLabel(row)}${formatRoasWarningLabel(row) ? `（${formatRoasWarningLabel(row)}）` : ''}`;
     const strictRoasDisplay = canDisplayStrictAsaRoas(row);
+    const windowLabel =
+      row.roas_window_from && row.roas_window_to
+        ? `${String(row.roas_window_from)} 至 ${String(row.roas_window_to)}`
+        : '官方 D7 窗口';
     if (roasStatus === 'pending') {
-      return `ROAS 待补齐 / CPP 待补齐${sourceSuffix}`;
+      return `AF Cohort ROAS 暂无官方快照（${windowLabel}） / CPP 待补齐${sourceSuffix}`;
     }
     if (roasStatus === 'partial') {
       if (!strictRoasDisplay) {
         return `${hiddenAsaRoasLabel(row)} / CPP $${Number(row.current_cpp || 0).toFixed(2)}（按已覆盖成本计算）${sourceSuffix}`;
       }
-      return `ROAS ${formatRoasPercent(row.current_d7_roas)}（按已覆盖成本计算） / CPP $${Number(row.current_cpp || 0).toFixed(2)}（按已覆盖成本计算）${sourceSuffix}`;
+      return `AF面板 D7 ROAS ${formatRoasPercent(row.current_d7_roas)}（${windowLabel} / Metabase / AF Dashboard 口径，部分覆盖） / CPP $${Number(row.current_cpp || 0).toFixed(2)}${sourceSuffix}`;
     }
     if (roasStatus === 'partial_low') {
       if (!strictRoasDisplay) {
         return `${hiddenAsaRoasLabel(row)} / CPP $${Number(row.current_cpp || 0).toFixed(2)}（覆盖率偏低，仅供参考）${sourceSuffix}`;
       }
-      return `ROAS ${formatRoasPercent(row.current_d7_roas)}（覆盖率偏低，仅供参考） / CPP $${Number(row.current_cpp || 0).toFixed(2)}（覆盖率偏低，仅供参考）${sourceSuffix}`;
+      return `AF面板 D7 ROAS ${formatRoasPercent(row.current_d7_roas)}（${windowLabel} / Metabase / AF Dashboard 口径，覆盖率偏低） / CPP $${Number(row.current_cpp || 0).toFixed(2)}${sourceSuffix}`;
     }
     if (roasStatus === 'unavailable') {
-      return `ROAS 暂无成熟数据 / CPP 暂无成熟数据${sourceSuffix}`;
+      return `AF Cohort ROAS 暂无官方快照（${windowLabel}） / CPP 暂无数据${sourceSuffix}`;
     }
     if (!strictRoasDisplay) {
       return `${hiddenAsaRoasLabel(row)} / CPP $${Number(row.current_cpp || 0).toFixed(2)}${sourceSuffix}`;
     }
-    return `ROAS ${formatRoasPercent(row.current_d7_roas)} / CPP $${Number(row.current_cpp || 0).toFixed(2)}${sourceSuffix}`;
+    return `AF面板 D7 ROAS ${formatRoasPercent(row.current_d7_roas)}（${windowLabel} / Metabase / AF Dashboard 口径） / CPP $${Number(row.current_cpp || 0).toFixed(2)}${sourceSuffix}`;
   }
   const ecpi = Number(row.current_ecpi || 0);
   return ecpi > 0 ? `eCPI $${ecpi.toFixed(2)}` : 'eCPI —（有花费无安装）';

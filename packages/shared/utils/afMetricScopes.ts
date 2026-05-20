@@ -3,10 +3,10 @@ import { getDateStringInTimezone, shiftDateString } from './businessDate.js';
 
 export type AfMetricScope =
   | 'dashboard_selected_window'
+  | 'dashboard_d7_roas'
   | 'daily_push_d1'
   | 'recent_unstable_window'
   | 'retro_window'
-  | 'mature_d7_roas'
   | 'raw_realtime_window'
   | 'decision_window';
 
@@ -14,6 +14,7 @@ export type AfSourceSurface =
   | 'master_pivot'
   | 'daily_report'
   | 'cohort_api'
+  | 'metabase_dashboard'
   | 'raw_realtime'
   | 'system_derived';
 
@@ -39,15 +40,23 @@ export interface AfMetricScopeMeta {
 // AppsFlyer dashboard parity baseline, confirmed from the current UI screenshots:
 // View type = User Acquisition, date = the selected inclusive dashboard window,
 // Campaign = the row campaign, Media source/Geo/Adset = All unless the operator
-// explicitly filters them. Dashboard eCPI is Cost / Attributions. Mature Cohort
-// ROAS and recommendation 3/7-day eCPI are decision metrics and must not be
-// presented as this dashboard-selected current performance.
+// explicitly filters them. Dashboard eCPI is Cost / Attributions. Dashboard
+// D7 ROAS is sourced from the AF Dashboard-compatible D7 ROI surface. In
+// AppsFlyer mode that is Cohort API roas KPI; in Metabase mode it is the
+// Metabase/BigQuery Dashboard D7 ROI metric. Local revenue/cost is diagnostic.
 export const AF_METRIC_SCOPE_REGISTRY: Record<AfMetricScope, AfMetricScopeDefinition> = {
   dashboard_selected_window: {
     scope: 'dashboard_selected_window',
     source_surface: 'master_pivot',
     purpose: 'AppsFlyer dashboard or Pivot comparable reporting for the selected date range.',
     window_policy: 'Use the exact selected inclusive date range in the app preferred timezone and currency.',
+    dashboard_comparable: true
+  },
+  dashboard_d7_roas: {
+    scope: 'dashboard_d7_roas',
+    source_surface: 'cohort_api',
+    purpose: 'AF Dashboard-compatible D7 ROAS reporting from the configured official source.',
+    window_policy: 'Use the selected report date D with the inclusive rolling D-6 through D attribution window.',
     dashboard_comparable: true
   },
   daily_push_d1: {
@@ -70,13 +79,6 @@ export const AF_METRIC_SCOPE_REGISTRY: Record<AfMetricScope, AfMetricScopeDefini
     purpose: 'Historical restatement coverage for dashboard lookbacks such as 7/14/30 days.',
     window_policy: 'D-8 through D-35 should be refreshed daily at low traffic hours.',
     dashboard_comparable: true
-  },
-  mature_d7_roas: {
-    scope: 'mature_d7_roas',
-    source_surface: 'cohort_api',
-    purpose: 'Mature D7 ROAS and CPP decisioning.',
-    window_policy: 'Use mature install dates only; exclude the latest 7 days by default.',
-    dashboard_comparable: false
   },
   raw_realtime_window: {
     scope: 'raw_realtime_window',
