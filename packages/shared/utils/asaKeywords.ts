@@ -2860,20 +2860,23 @@ async function runAsaKeywordMetabaseCycle(backfillDays: number, logger?: LoggerL
             continue;
           } catch (fallbackError) {
             const fallbackErrorText = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+            const requestError = normalizeAsaRequestError(fallbackError);
             sliceFailures.push({
               app_key: target.app.app_key,
               platform: target.platform,
               date,
               error: `metabase_primary_failed=${errorText}; af_fallback_failed=${fallbackErrorText}`,
-              failure_kind: 'unknown',
-              retryable: false
+              failure_kind: requestError.kind,
+              retryable: requestError.scheduledRetryable || env.metabase.asaKeywordRequired
             });
             logError(logger, 'asa_keyword_af_fallback_slice_failed', {
               app_key: target.app.app_key,
               date,
               platform: target.platform,
               primary_error: errorText,
-              fallback_error: fallbackErrorText
+              fallback_error: fallbackErrorText,
+              fallback_failure_kind: requestError.kind,
+              retryable: requestError.scheduledRetryable || env.metabase.asaKeywordRequired
             });
             continue;
           }

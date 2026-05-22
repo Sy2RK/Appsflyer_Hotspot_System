@@ -493,6 +493,47 @@ async function replacePullDailySlice(
   }
 }
 
+async function clearMetabasePullDailySlice(params: {
+  appKey: string;
+  date: string;
+  platform: string;
+}): Promise<void> {
+  await replacePullDailySlice(
+    {
+      appKey: params.appKey,
+      date: params.date,
+      platform: params.platform,
+      pullSourceReports: [METABASE_DAILY_SOURCE_REPORT],
+      metricSources: [METABASE_DAILY_SOURCE_REPORT]
+    },
+    [],
+    []
+  );
+}
+
+async function countExistingPullDailyRows(params: {
+  appKey: string;
+  date: string;
+  platform: string;
+  sourceReport: string;
+}): Promise<number> {
+  const rows = await chQuery<{ rows: string | number }>(
+    `SELECT count() AS rows
+       FROM pull_aggregate_daily
+      WHERE date = toDate({date:String})
+        AND app_key = {app_key:String}
+        AND lowerUTF8(platform) = {platform:String}
+        AND source_report = {source_report:String}`,
+    {
+      date: params.date,
+      app_key: params.appKey,
+      platform: params.platform,
+      source_report: params.sourceReport
+    }
+  );
+  return Number(rows[0]?.rows ?? 0);
+}
+
 function parseCsv(csv: string): CsvRow[] {
   const rows = parseCsvRows(csv);
   if (rows.length <= 1) {
@@ -1175,6 +1216,49 @@ async function executeMetabasePullAttemptWithFallback(params: {
       primarySource: METABASE_DAILY_SOURCE_REPORT,
       finalSource: METABASE_DAILY_SOURCE_REPORT
     };
+  }
+
+  const afGuard = await getPullContentGuard(params.appKey, params.platform, params.date, PULL_SOURCE_REPORT);
+  if (
+    afGuard?.content_signature &&
+    afGuard.last_status !== 'failed' &&
+    isCooldownActive(afGuard.next_allowed_at)
+  ) {
+    const existingAfRows = await countExistingPullDailyRows({
+      appKey: params.appKey,
+      date: params.date,
+      platform: params.platform,
+      sourceReport: PULL_SOURCE_REPORT
+    });
+    if (existingAfRows > 0) {
+      await clearMetabasePullDailySlice({
+        appKey: params.appKey,
+        date: params.date,
+        platform: params.platform
+      });
+      logInfo(params.logger, 'metabase_puller_slice_reused_af_cache', {
+        app_key: params.appKey,
+        date: params.date,
+        platform: params.platform,
+        primary_source: METABASE_DAILY_SOURCE_REPORT,
+        final_source: PULL_SOURCE_REPORT,
+        fallback_reason: fallbackReason,
+        af_next_allowed_at: afGuard.next_allowed_at,
+        af_cached_rows: existingAfRows
+      });
+      return {
+        ok: true,
+        status: 'ok',
+        rows: existingAfRows,
+        metricsRows: 0,
+        immediateRetryable: false,
+        scheduledRetryable: false,
+        rateLimited: false,
+        primarySource: METABASE_DAILY_SOURCE_REPORT,
+        finalSource: PULL_SOURCE_REPORT,
+        fallbackReason: `${fallbackReason}; af_cache_reused_until=${afGuard.next_allowed_at ?? 'unknown'}`
+      };
+    }
   }
 
   logWarn(params.logger, 'metabase_puller_slice_fallback_to_af', {

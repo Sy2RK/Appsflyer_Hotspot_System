@@ -8,7 +8,7 @@ x-host-gateway-extra-hosts: &host-gateway-extra-hosts
   - 'host.docker.internal:host-gateway'
 
 x-metabase-bigquery-credentials-volume: &metabase-bigquery-credentials-volume
-  - ${METABASE_BIGQUERY_CREDENTIALS_HOST_PATH:-/dev/null}:${METABASE_BIGQUERY_CREDENTIALS_PATH:-/run/secrets/metabase_bigquery_credentials.json}:ro
+  - ${METABASE_BIGQUERY_CREDENTIALS_HOST_PATH:?set METABASE_BIGQUERY_CREDENTIALS_HOST_PATH in infra/.env or shell}:${METABASE_BIGQUERY_CREDENTIALS_PATH:-/run/secrets/metabase_bigquery_credentials.json}:ro
 
 services:
   clickhouse:

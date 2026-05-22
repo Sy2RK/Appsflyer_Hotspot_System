@@ -3116,6 +3116,9 @@ async function main(): Promise<void> {
   assert.match(pullerScript, /export function buildMetabasePullTargets/);
   assert.match(pullerScript, /ADS_DAILY_AF_FALLBACK_ENABLED|adsDailyAfFallbackEnabled/);
   assert.match(pullerScript, /metabase_empty_slice:\$\{params\.appKey\}/);
+  assert.match(pullerScript, /metabase_puller_slice_reused_af_cache/);
+  assert.match(pullerScript, /clearMetabasePullDailySlice/);
+  assert.match(pullerScript, /getPullContentGuard\(params\.appKey, params\.platform, params\.date, PULL_SOURCE_REPORT\)/);
   assert.match(pullerScript, /forceReplaceOnSameContent: true/);
   assert.match(pullerScript, /pullSourceReports: \[PULL_SOURCE_REPORT, METABASE_DAILY_SOURCE_REPORT\]/);
 
@@ -3130,7 +3133,8 @@ async function main(): Promise<void> {
 
   const composeScript = readFileSync('infra/docker-compose.yml', 'utf8');
   assert.match(composeScript, /x-metabase-bigquery-credentials-volume/);
-  assert.match(composeScript, /\$\{METABASE_BIGQUERY_CREDENTIALS_HOST_PATH:-\/dev\/null\}/);
+  assert.match(composeScript, /\$\{METABASE_BIGQUERY_CREDENTIALS_HOST_PATH:\?set METABASE_BIGQUERY_CREDENTIALS_HOST_PATH/);
+  assert.doesNotMatch(composeScript, /METABASE_BIGQUERY_CREDENTIALS_HOST_PATH:-\/dev\/null/);
 
   const metabaseAdsScript = readFileSync('packages/shared/utils/metabaseAds.ts', 'utf8');
   assert.match(metabaseAdsScript, /COUNTIF\(d7_tch_roas_001 IS NOT NULL\)/);
@@ -3173,6 +3177,7 @@ async function main(): Promise<void> {
   assert.match(asaKeywordsScript, /env\.asaKeywordSource === 'metabase'/);
   assert.doesNotMatch(asaKeywordsScript, /env\.adsDailySource === 'metabase'[\s\S]{0,160}runAsaKeywordMetabaseCycle/);
   assert.match(asaKeywordsScript, /asa_keyword_metabase_fallback_to_af/);
+  assert.match(asaKeywordsScript, /retryable: requestError\.scheduledRetryable \|\| env\.metabase\.asaKeywordRequired/);
   assert.doesNotMatch(asaKeywordsScript, /app\.pull_app_id\)\s*\{/);
   assert.match(asaKeywordsScript, /roas_covered_cost: coveredRoasCost/);
   assert.match(asaKeywordsScript, /current\.roas_covered_cost \+= Number\(row\.roas_covered_cost \|\| 0\);/);
