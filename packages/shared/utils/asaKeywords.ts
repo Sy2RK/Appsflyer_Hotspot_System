@@ -194,6 +194,12 @@ interface AsaKeywordCountryMetricInsertRow {
   version: number;
 }
 
+interface AsaTarget {
+  app: AppConfigRecord;
+  platform: string;
+  appId: string;
+}
+
 interface AsaKeywordAccumulator {
   date: string;
   app_key: string;
@@ -1035,8 +1041,8 @@ function toClickHouseDateTime(raw: string, fallback?: string): string {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
-function asaTargets(apps: AppConfigRecord[]): Array<{ app: AppConfigRecord; platform: string; appId: string }> {
-  const targets: Array<{ app: AppConfigRecord; platform: string; appId: string }> = [];
+function asaTargets(apps: AppConfigRecord[]): AsaTarget[] {
+  const targets: AsaTarget[] = [];
   for (const app of apps) {
     const iosPullAppId = String(app.ios_pull_app_id || '').trim();
     if (hasAsaIosIntegration(app) && iosPullAppId) {
@@ -1044,6 +1050,40 @@ function asaTargets(apps: AppConfigRecord[]): Array<{ app: AppConfigRecord; plat
     }
   }
   return targets;
+}
+
+async function configuredAsaTargets(apps: AppConfigRecord[]): Promise<AsaTarget[]> {
+  const routes = await listEnabledAsaKeywordRoutes();
+  if (routes.length === 0) {
+    return asaTargets(apps);
+  }
+  const appByKey = new Map(apps.map((app) => [app.app_key, app]));
+  const targets = new Map<string, AsaTarget>();
+  const addTarget = (app: AppConfigRecord): void => {
+    const appId = String(app.ios_pull_app_id || '').trim();
+    if (!hasAsaIosIntegration(app) || !appId) {
+      return;
+    }
+    targets.set(`${app.app_key}|ios`, { app, platform: 'ios', appId });
+  };
+  for (const route of routes) {
+    const platform = String(route.platform || 'ios').trim().toLowerCase() || 'ios';
+    if (platform !== 'ios') {
+      continue;
+    }
+    const appKey = String(route.app_key || '').trim();
+    if (appKey) {
+      const app = appByKey.get(appKey);
+      if (app) {
+        addTarget(app);
+      }
+      continue;
+    }
+    for (const app of apps) {
+      addTarget(app);
+    }
+  }
+  return Array.from(targets.values());
 }
 
 function hasAsaIosIntegration(app: AppConfigRecord | null | undefined): boolean {
@@ -1229,7 +1269,7 @@ async function recordAsaMasterOfficialSnapshot(input: {
 }
 
 async function fetchAsaSliceInputsWithRetry(
-  target: { app: AppConfigRecord; platform: string; appId: string },
+  target: AsaTarget,
   date: string,
   logger?: LoggerLike
 ): Promise<{
@@ -2670,13 +2710,85 @@ function buildMetabaseAsaCountryMetricRows(
   return Array.from(aggregate.values());
 }
 
+async function ingestAfAsaSlice(
+  target: AsaTarget,
+  date: string,
+  logger?: LoggerLike
+): Promise<{
+  installRows: number;
+  eventRows: number;
+  metricRows: number;
+  recoveredByRetry: boolean;
+}> {
+  const payload = await fetchAsaSliceInputsWithRetry(target, date, logger);
+  const installRows = toAsaInstallRows(target.app, target.platform, payload.installsCsv);
+  const eventRows = toAsaEventRows(target.app, target.platform, payload.eventsCsv);
+  const metricRows = aggregateDailyMetrics(installRows, eventRows, payload.masterMetrics, payload.cohortMetrics);
+  const countryMetricRows = aggregateAsaCountryMetrics(installRows);
+  const snapshotId = createAsaSnapshotId();
+  await replaceAsaSlice({
+    appKey: target.app.app_key,
+    platform: target.platform,
+    date,
+    snapshotId,
+    installRows,
+    eventRows,
+    metricRows,
+    countryMetricRows,
+    logger
+  });
+  await recordAsaMasterOfficialSnapshot({
+    app: target.app,
+    platform: target.platform,
+    appId: target.appId,
+    date,
+    snapshotId,
+    masterMetrics: payload.masterMetrics,
+    metricRows,
+    logger
+  });
+  return {
+    installRows: installRows.length,
+    eventRows: eventRows.length,
+    metricRows: metricRows.length,
+    recoveredByRetry: payload.recoveredByRetry
+  };
+}
+
 async function runAsaKeywordMetabaseCycle(backfillDays: number, logger?: LoggerLike): Promise<AsaCycleResult> {
   const startedAt = new Date();
   const dates = buildDateList(backfillDays);
   const apps = await listApps();
-  const targets = asaTargets(apps);
+  const targets = await configuredAsaTargets(apps);
+  let installRowCount = 0;
+  let eventRowCount = 0;
   let metricRowCount = 0;
+  let recoveredSliceCount = 0;
   const sliceFailures: AsaSliceFetchFailure[] = [];
+
+  if (targets.length === 0) {
+    const endedAt = new Date();
+    logWarn(logger, 'asa_keyword_metabase_no_configured_ios_routes', {
+      backfill_days: backfillDays,
+      dates
+    });
+    return {
+      started_at: startedAt.toISOString(),
+      ended_at: endedAt.toISOString(),
+      duration_ms: endedAt.getTime() - startedAt.getTime(),
+      backfill_days: backfillDays,
+      install_rows: 0,
+      event_rows: 0,
+      metric_rows: 0,
+      state_rows: 0,
+      recommendation_rows: 0,
+      app_targets: 0,
+      failed_slice_count: 0,
+      retryable_failed_slice_count: 0,
+      terminal_failed_slice_count: 0,
+      recovered_slice_count: 0
+    };
+  }
 
   for (const target of targets) {
     for (const date of dates) {
@@ -2686,6 +2798,9 @@ async function runAsaKeywordMetabaseCycle(backfillDays: number, logger?: LoggerL
           platform: target.platform,
           date
         });
+        if (metabaseRows.length === 0) {
+          throw new Error(`metabase_asa_keyword_grain_unavailable:${target.app.app_key}:empty_keyword_metrics`);
+        }
         const snapshotId = createAsaSnapshotId();
         const metricRows = buildMetabaseAsaDailyMetricRows(metabaseRows, snapshotId);
         const countryMetricRows = buildMetabaseAsaCountryMetricRows(metabaseRows, snapshotId);
@@ -2722,6 +2837,47 @@ async function runAsaKeywordMetabaseCycle(backfillDays: number, logger?: LoggerL
         }
       } catch (error) {
         const errorText = error instanceof Error ? error.message : String(error);
+        if (env.adsDailyAfFallbackEnabled) {
+          try {
+            logWarn(logger, 'asa_keyword_metabase_fallback_to_af', {
+              app_key: target.app.app_key,
+              date,
+              platform: target.platform,
+              primary_source: 'metabase_dashboard',
+              fallback_source: 'appsflyer_raw_master_cohort',
+              fallback_reason: errorText
+            });
+            const fallback = await ingestAfAsaSlice(target, date, logger);
+            installRowCount += fallback.installRows;
+            eventRowCount += fallback.eventRows;
+            metricRowCount += fallback.metricRows;
+            if (fallback.recoveredByRetry) {
+              recoveredSliceCount += 1;
+            }
+            if (env.asaKeywordRequestIntervalMs > 0 || env.asaMasterApiRequestIntervalMs > 0) {
+              await sleep(Math.max(env.asaKeywordRequestIntervalMs, env.asaMasterApiRequestIntervalMs));
+            }
+            continue;
+          } catch (fallbackError) {
+            const fallbackErrorText = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+            sliceFailures.push({
+              app_key: target.app.app_key,
+              platform: target.platform,
+              date,
+              error: `metabase_primary_failed=${errorText}; af_fallback_failed=${fallbackErrorText}`,
+              failure_kind: 'unknown',
+              retryable: false
+            });
+            logError(logger, 'asa_keyword_af_fallback_slice_failed', {
+              app_key: target.app.app_key,
+              date,
+              platform: target.platform,
+              primary_error: errorText,
+              fallback_error: fallbackErrorText
+            });
+            continue;
+          }
+        }
         sliceFailures.push({
           app_key: target.app.app_key,
           platform: target.platform,
@@ -2741,13 +2897,6 @@ async function runAsaKeywordMetabaseCycle(backfillDays: number, logger?: LoggerL
     }
   }
 
-  if (env.metabase.asaKeywordRequired && sliceFailures.length > 0) {
-    const first = sliceFailures[0];
-    throw new Error(
-      `metabase_asa_keyword_blocked:${first.app_key}/${first.platform}/${first.date}:${first.error}`
-    );
-  }
-
   const { stateRows, recommendationRows } = await rebuildAsaKeywordStatesAndRecommendations(backfillDays, logger);
   const endedAt = new Date();
   return {
@@ -2755,8 +2904,8 @@ async function runAsaKeywordMetabaseCycle(backfillDays: number, logger?: LoggerL
     ended_at: endedAt.toISOString(),
     duration_ms: endedAt.getTime() - startedAt.getTime(),
     backfill_days: backfillDays,
-    install_rows: 0,
-    event_rows: 0,
+    install_rows: installRowCount,
+    event_rows: eventRowCount,
     metric_rows: metricRowCount,
     state_rows: stateRows,
     recommendation_rows: recommendationRows,
@@ -2764,13 +2913,13 @@ async function runAsaKeywordMetabaseCycle(backfillDays: number, logger?: LoggerL
     failed_slice_count: sliceFailures.length,
     retryable_failed_slice_count: sliceFailures.filter((item) => item.retryable).length,
     terminal_failed_slice_count: sliceFailures.filter((item) => !item.retryable).length,
-    recovered_slice_count: 0
+    recovered_slice_count: recoveredSliceCount
   };
 }
 
 export async function runAsaKeywordCycle(backfillDays: number, logger?: LoggerLike): Promise<AsaCycleResult> {
   await ensureAsaKeywordMetricsSchema();
-  if (env.adsDailySource === 'metabase') {
+  if (env.asaKeywordSource === 'metabase') {
     return runAsaKeywordMetabaseCycle(backfillDays, logger);
   }
 
@@ -3507,10 +3656,13 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
       to: filters.reportDate,
       page: 1,
       pageSize: 500
-      }),
-      listApps()
-    ]);
+    }),
+    listApps()
+  ]);
   const summaryWindow = result.summary_window ?? buildAsaRoasWindow(filters.reportDate, null);
+  const eligibleTargets = env.asaKeywordSource === 'metabase' ? await configuredAsaTargets(apps) : asaTargets(apps);
+  const eligibleAppKeys = new Set(eligibleTargets.map((target) => target.app.app_key));
+  const snapshotApps = apps.filter((app) => eligibleAppKeys.has(app.app_key));
   const metricScope = buildAfMetricScopeMeta({
     metricScope: 'daily_push_d1',
     sourceSurface: 'master_pivot',
@@ -3521,23 +3673,22 @@ export async function buildAsaKeywordBriefPreview(filters: AsaBriefFilters): Pro
   });
   const officialSnapshot = await buildAfOfficialBatchSnapshot({
 	    metricScope: 'daily_push_d1',
-	    sourceSurface: 'master_pivot',
-	    windowFrom: filters.reportDate,
-	    windowTo: filters.reportDate,
-	    timezone: 'preferred',
-	    currency: 'preferred',
-	    appKey: filters.appKey,
-	    platform: filters.platform || 'ios',
-	    expectedComponents: buildAsaMasterExpectedComponents(apps, {
-	      from: filters.reportDate,
-	      to: filters.reportDate,
-	      appKey: filters.appKey,
-	      platform: filters.platform || 'ios'
-	    })
-	  });
-	  const briefSummary: AsaKeywordSummary = result.summary;
+    sourceSurface: 'master_pivot',
+    windowFrom: filters.reportDate,
+    windowTo: filters.reportDate,
+    timezone: 'preferred',
+    currency: 'preferred',
+    appKey: filters.appKey,
+    platform: filters.platform || 'ios',
+    expectedComponents: buildAsaMasterExpectedComponents(snapshotApps, {
+      from: filters.reportDate,
+      to: filters.reportDate,
+      appKey: filters.appKey,
+      platform: filters.platform || 'ios'
+    })
+  });
+  const briefSummary: AsaKeywordSummary = result.summary;
   const appByKey = new Map(apps.map((app) => [app.app_key, app]));
-  const eligibleAppKeys = new Set(asaTargets(apps).map((target) => target.app.app_key));
   const rows = result.rows.filter((row) => eligibleAppKeys.has(row.app_key));
   const actionRows = (
     await queryAllAsaKeywordRecommendationsForBrief({

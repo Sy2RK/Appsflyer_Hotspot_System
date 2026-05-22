@@ -13,6 +13,7 @@ import { getDateStringInTimezone, getPreviousDateString, shiftDateString } from 
 import { normalizeAfCohortRoasRate, parseAfCohortD7RoasRate } from './roasWindow.js';
 import { isAfWindowProvisional } from './afMetricScopes.js';
 import { upsertAfOfficialSnapshot } from './appsflyerOfficialSnapshots.js';
+import { getMetabaseProductPlatforms } from './metabaseAds.js';
 
 export interface KeywordEngineLogger {
   info: (message: string, context?: Record<string, unknown>) => void;
@@ -129,6 +130,15 @@ interface KeywordValueFactRow {
   version: number;
 }
 
+interface KeywordFactMutationScope {
+  appKey: string;
+  from: string;
+  to: string;
+  platforms: string[];
+  valueFrom?: string;
+  valueTo?: string;
+}
+
 export interface KeywordEngineCycleDetail {
   app_key: string;
   keyword_rows: number;
@@ -170,6 +180,61 @@ async function ensureKeywordValueFactSchema(): Promise<void> {
     });
   }
   await ensureKeywordValueFactSchemaPromise;
+}
+
+function uniquePlatformsFromPullRows(rows: PullAggRow[]): string[] {
+  return Array.from(
+    new Set(
+      rows
+        .map((row) => String(row.platform || 'unknown').trim().toLowerCase() || 'unknown')
+        .filter((platform) => platform.length > 0)
+    )
+  );
+}
+
+function resolveKeywordFactMutationPlatforms(appKey: string, rawRows: PullAggRow[], valueRows: PullAggRow[]): string[] {
+  const rowPlatforms = Array.from(
+    new Set([...uniquePlatformsFromPullRows(rawRows), ...uniquePlatformsFromPullRows(valueRows)])
+  );
+  if (rowPlatforms.length > 0) {
+    return rowPlatforms;
+  }
+  return getMetabaseProductPlatforms(appKey);
+}
+
+async function clearKeywordFactSlices(scope: KeywordFactMutationScope): Promise<void> {
+  if (scope.platforms.length === 0) {
+    return;
+  }
+  const platforms = scope.platforms;
+  const valueFrom = scope.valueFrom ?? scope.from;
+  const valueTo = scope.valueTo ?? scope.to;
+  const queryParams = {
+    app_key: scope.appKey,
+    from: scope.from,
+    to: scope.to,
+    value_from: valueFrom,
+    value_to: valueTo,
+    platforms
+  };
+  await chExec(
+    `ALTER TABLE keyword_daily_metrics
+      DELETE WHERE app_key = {app_key:String}
+        AND date >= toDate({from:String})
+        AND date <= toDate({to:String})
+        AND has({platforms:Array(String)}, lowerUTF8(platform))
+      SETTINGS mutations_sync = 2`,
+    queryParams
+  );
+  await chExec(
+    `ALTER TABLE keyword_value_daily_metrics
+      DELETE WHERE app_key = {app_key:String}
+        AND install_date >= toDate({value_from:String})
+        AND install_date <= toDate({value_to:String})
+        AND has({platforms:Array(String)}, lowerUTF8(platform))
+      SETTINGS mutations_sync = 2`,
+    queryParams
+  );
 }
 
 function logInfo(
@@ -594,6 +659,43 @@ function buildMetabaseKeywordValueRevenueRows(rows: PullAggRow[]): KeywordValueR
     revenue_source_complete: item.coveredCost > 0 && item.missingCost === 0,
     af_cohort_roas_complete: item.coveredCost > 0 && item.missingCost === 0
   }));
+}
+
+function keywordValueRevenueExactKey(row: Pick<KeywordValueRevenueAggRow, 'install_date' | 'platform' | 'media_source' | 'country' | 'campaign'>): string {
+  return buildKeywordValueSourceKey({
+    install_date: row.install_date,
+    platform: row.platform,
+    media_source: row.media_source,
+    country: row.country,
+    campaign: row.campaign
+  });
+}
+
+function mergeMetabaseKeywordValueWithAfFallback(
+  metabaseRows: KeywordValueRevenueAggRow[],
+  afFallbackRows: KeywordValueRevenueAggRow[]
+): KeywordValueRevenueAggRow[] {
+  const merged = new Map<string, KeywordValueRevenueAggRow>();
+  for (const row of metabaseRows) {
+    merged.set(keywordValueRevenueExactKey(row), { ...row });
+  }
+  for (const fallbackRow of afFallbackRows) {
+    const key = keywordValueRevenueExactKey(fallbackRow);
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, { ...fallbackRow });
+      continue;
+    }
+    if (!existing.af_cohort_roas_complete && fallbackRow.af_cohort_roas_complete) {
+      existing.raw_event_count = fallbackRow.raw_event_count;
+      existing.purchase_count = fallbackRow.purchase_count;
+      existing.revenue_d7 = fallbackRow.revenue_d7;
+      existing.af_cohort_roas = fallbackRow.af_cohort_roas;
+      existing.revenue_source_complete = fallbackRow.revenue_source_complete;
+      existing.af_cohort_roas_complete = true;
+    }
+  }
+  return Array.from(merged.values());
 }
 
 function parseKeywordValueCohortRows(
@@ -1269,6 +1371,16 @@ export async function runKeywordEngineCycle(
         requiresWideValueWindow ? queryPullRows(app.app_key, valueFrom, valueTo) : Promise.resolve([])
       ]);
       const valuePullRows = requiresWideValueWindow ? valueWindowPullRows : rawRows;
+      if (env.adsDailySource === 'metabase') {
+        await clearKeywordFactSlices({
+          appKey: app.app_key,
+          from,
+          to,
+          valueFrom,
+          valueTo,
+          platforms: resolveKeywordFactMutationPlatforms(app.app_key, rawRows, valuePullRows)
+        });
+      }
       if (rawRows.length === 0 && valuePullRows.length === 0) {
         details.push({
           app_key: app.app_key,
@@ -1293,11 +1405,46 @@ export async function runKeywordEngineCycle(
         }
       }
 
-      const cohortValueRows: KeywordValueRevenueAggRow[] = [];
+      let cohortValueRows: KeywordValueRevenueAggRow[] = [];
       if (env.adsDailySource === 'metabase') {
         // Metabase mode already writes AF Dashboard-compatible D7 ROI into
-        // pull_aggregate_daily.raw_json; do not call AppsFlyer Cohort API.
-        cohortValueRows.push(...buildMetabaseKeywordValueRevenueRows(valuePullRows));
+        // pull_aggregate_daily.raw_json. Only missing Dashboard D7 ROI slices
+        // are filled from the legacy AppsFlyer Cohort API fallback.
+        const metabaseValueRows = buildMetabaseKeywordValueRevenueRows(valuePullRows);
+        cohortValueRows = metabaseValueRows;
+        if (env.adsDailyAfFallbackEnabled && metabaseValueRows.some((row) => !row.af_cohort_roas_complete)) {
+          const cohortWindows = buildKeywordValueCohortWindows(valueFrom, valueTo, to);
+          const missingPlatforms = new Set(
+            metabaseValueRows
+              .filter((row) => !row.af_cohort_roas_complete)
+              .map((row) => String(row.platform || 'unknown').toLowerCase())
+          );
+          const cohortTargets: Array<{ platform: string; appId: string }> = [];
+          if (app.ios_pull_app_id && missingPlatforms.has('ios')) {
+            cohortTargets.push({ platform: 'ios', appId: app.ios_pull_app_id });
+          }
+          if (app.android_pull_app_id && missingPlatforms.has('android')) {
+            cohortTargets.push({ platform: 'android', appId: app.android_pull_app_id });
+          }
+          const afFallbackRows: KeywordValueRevenueAggRow[] = [];
+          for (const target of cohortTargets) {
+            try {
+              afFallbackRows.push(...(await queryKeywordValueCohortRows(app, target.platform, target.appId, cohortWindows, logger)));
+            } catch (error) {
+              logWarn(logger, 'keyword_engine_value_metrics_af_fallback_failed', {
+                app_key: app.app_key,
+                platform: target.platform,
+                app_id: target.appId,
+                value_from: valueFrom,
+                value_to: valueTo,
+                error: error instanceof Error ? error.message : String(error)
+              });
+            }
+          }
+          if (afFallbackRows.length > 0) {
+            cohortValueRows = mergeMetabaseKeywordValueWithAfFallback(metabaseValueRows, afFallbackRows);
+          }
+        }
       } else {
         const cohortWindows = buildKeywordValueCohortWindows(valueFrom, valueTo, to);
         const valuePlatforms = new Set(valuePullRows.map((row) => String(row.platform || 'unknown').toLowerCase()));

@@ -616,6 +616,17 @@ function resolveAiChatMaxOutputTokens(modelConfig: AiChatProviderConfig): number
   return Math.max(900, modelConfig.maxTokens);
 }
 
+function usesOpenRouterEndpoint(modelConfig: AiChatProviderConfig): boolean {
+  return modelConfig.baseUrl.toLowerCase().includes('openrouter.ai');
+}
+
+function supportsCustomTemperature(modelConfig: AiChatProviderConfig): boolean {
+  if (modelConfig.id !== 'openai_gpt54') {
+    return true;
+  }
+  return !/^gpt-5(?:[.\-]|$)/i.test(modelConfig.model.trim());
+}
+
 function hasText(value: unknown): boolean {
   return String(value ?? '').trim().length > 0;
 }
@@ -2283,13 +2294,20 @@ async function requestAiChatCompletion(input: {
   const maxOutputTokens = resolveAiChatMaxOutputTokens(input.modelConfig);
   const payload: Record<string, unknown> = {
     model: input.modelConfig.model,
-    temperature: 0.3,
     messages: input.messages
   };
+  if (supportsCustomTemperature(input.modelConfig)) {
+    payload.temperature = 0.3;
+  }
   if (input.modelConfig.id === 'openai_gpt54') {
     payload.max_completion_tokens = maxOutputTokens;
   } else {
     payload.max_tokens = maxOutputTokens;
+  }
+  if (input.modelConfig.id === 'qwen' && usesOpenRouterEndpoint(input.modelConfig)) {
+    // OpenRouter Qwen thinking models can spend the whole response budget on
+    // reasoning for tool-heavy agent prompts, yielding an empty assistant reply.
+    payload.reasoning = { enabled: false, exclude: true };
   }
   if (input.modelConfig.id === 'qwen' && !input.modelConfig.baseUrl.includes('openrouter.ai')) {
     payload.extra_body = {

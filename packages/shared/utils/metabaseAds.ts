@@ -11,6 +11,7 @@ export type MetabaseAccessSourceApi = 'metabase_saved_card' | 'bigquery_warehous
 export interface MetabaseProductConfig {
   appKey: string;
   schema: string;
+  platforms?: string[];
   dashboardId?: number;
   campaignDashcardId?: number;
   campaignCardId?: number;
@@ -185,6 +186,8 @@ const DEFAULT_MEDIA_SOURCE_MAP: Record<string, string> = {
   'facebook owner': 'Facebook Ads'
 };
 
+const DEFAULT_METABASE_PLATFORMS = ['ios', 'android'];
+
 let productConfigCache: Record<string, MetabaseProductConfig> | null = null;
 let mediaSourceMapCache: Record<string, string> | null = null;
 let metabaseSessionPromise: Promise<Record<string, string>> | null = null;
@@ -217,6 +220,18 @@ function stringFromConfig(value: unknown): string | undefined {
   return text ? text : undefined;
 }
 
+function stringArrayFromConfig(value: unknown): string[] | undefined {
+  const rawItems = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(',')
+      : [];
+  const items = Array.from(
+    new Set(rawItems.map((item) => normalizePlatform(String(item || ''))).filter((item) => item.length > 0))
+  );
+  return items.length > 0 ? items : undefined;
+}
+
 function normalizeProductConfig(appKey: string, value: unknown): Partial<MetabaseProductConfig> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -225,6 +240,7 @@ function normalizeProductConfig(appKey: string, value: unknown): Partial<Metabas
   const normalized: Partial<MetabaseProductConfig> = {
     appKey,
     schema: stringFromConfig(row.schema ?? row.dataset),
+    platforms: stringArrayFromConfig(row.platforms ?? row.platform),
     dashboardId: numberFromConfig(row.dashboardId ?? row.dashboard_id),
     campaignDashcardId: numberFromConfig(row.campaignDashcardId ?? row.campaign_dashcard_id),
     campaignCardId: numberFromConfig(row.campaignCardId ?? row.campaign_card_id),
@@ -266,6 +282,15 @@ export function getMetabaseProductConfigs(): Record<string, MetabaseProductConfi
 
 export function getMetabaseProductConfig(appKey: string): MetabaseProductConfig | null {
   return getMetabaseProductConfigs()[appKey] ?? null;
+}
+
+export function getMetabaseProductPlatforms(appKey: string): string[] {
+  const config = getMetabaseProductConfig(appKey);
+  if (!config) {
+    return [];
+  }
+  const platforms = config.platforms?.map((item) => normalizePlatform(item)).filter((item) => item.length > 0) ?? [];
+  return platforms.length > 0 ? Array.from(new Set(platforms)) : [...DEFAULT_METABASE_PLATFORMS];
 }
 
 function normalizeKey(value: string): string {
@@ -842,10 +867,10 @@ async function fetchCampaignRowsFromBigQuery(config: MetabaseProductConfig, inpu
        SUM(COALESCE(paid_users_cost, 0)) AS cost,
        SUM(COALESCE(impression, 0)) AS impressions,
        SUM(COALESCE(click, 0)) AS clicks,
-       SAFE_DIVIDE(SUM(COALESCE(d0_tch_roas_001, 0)), SUM(COALESCE(paid_users_cost, 0))) AS d0_roas,
-       SAFE_DIVIDE(SUM(COALESCE(d7_tch_roas_001, 0)), SUM(COALESCE(paid_users_cost, 0))) AS d7_roas,
-       SAFE_DIVIDE(SUM(COALESCE(d14_tch_roas_001, 0)), SUM(COALESCE(paid_users_cost, 0))) AS d14_roas,
-       SAFE_DIVIDE(SUM(COALESCE(d30_tch_roas_001, 0)), SUM(COALESCE(paid_users_cost, 0))) AS d30_roas
+	       IF(COUNTIF(d0_tch_roas_001 IS NOT NULL) > 0, SAFE_DIVIDE(SUM(COALESCE(d0_tch_roas_001, 0)), SUM(COALESCE(paid_users_cost, 0))), NULL) AS d0_roas,
+	       IF(COUNTIF(d7_tch_roas_001 IS NOT NULL) > 0, SAFE_DIVIDE(SUM(COALESCE(d7_tch_roas_001, 0)), SUM(COALESCE(paid_users_cost, 0))), NULL) AS d7_roas,
+	       IF(COUNTIF(d14_tch_roas_001 IS NOT NULL) > 0, SAFE_DIVIDE(SUM(COALESCE(d14_tch_roas_001, 0)), SUM(COALESCE(paid_users_cost, 0))), NULL) AS d14_roas,
+	       IF(COUNTIF(d30_tch_roas_001 IS NOT NULL) > 0, SAFE_DIVIDE(SUM(COALESCE(d30_tch_roas_001, 0)), SUM(COALESCE(paid_users_cost, 0))), NULL) AS d30_roas
      FROM ${table}
      WHERE create_dt = @date
        AND LOWER(CAST(platform AS STRING)) = @platform
@@ -906,8 +931,8 @@ async function fetchAsaKeywordRowsFromBigQuery(
        SUM(COALESCE(new_users, 0)) AS installs,
        SUM(COALESCE(paid_users, 0)) AS paid_users,
        SUM(COALESCE(paid_users_cost, 0)) AS cost,
-       SUM(COALESCE(d7_tch_roas_001, 0)) AS revenue_d7,
-       SAFE_DIVIDE(SUM(COALESCE(d7_tch_roas_001, 0)), SUM(COALESCE(paid_users_cost, 0))) AS d7_roas
+	       IF(COUNTIF(d7_tch_roas_001 IS NOT NULL) > 0, SUM(COALESCE(d7_tch_roas_001, 0)), NULL) AS revenue_d7,
+	       IF(COUNTIF(d7_tch_roas_001 IS NOT NULL) > 0, SAFE_DIVIDE(SUM(COALESCE(d7_tch_roas_001, 0)), SUM(COALESCE(paid_users_cost, 0))), NULL) AS d7_roas
      FROM ${table}
      WHERE create_dt = @date
        AND LOWER(CAST(platform AS STRING)) = @platform

@@ -56,6 +56,7 @@ import {
   buildKeywordValueRows,
   mergeKeywordValueRevenueRows
 } from '../packages/shared/utils/keywordEngine.js';
+import { buildMetabasePullTargets } from '../packages/shared/utils/puller.js';
 import {
   defaultRecommendationPolicyRule,
   evaluateSpendScenarios,
@@ -1263,6 +1264,19 @@ async function main(): Promise<void> {
   assert.equal(normalizeGuruToolName('budget_get_summary'), GURU_MCP_TOOL_NAMES.budgetGetSummary);
   assert.equal(normalizeGuruToolName('roas_get_summary'), GURU_MCP_TOOL_NAMES.roasGetSummary);
   assert.equal(normalizeGuruToolName('metrics.get_trend'), GURU_MCP_TOOL_NAMES.metricsGetTrend);
+
+  const metabaseTargets = buildMetabasePullTargets({
+    app_key: 'ai-seek',
+    ios_pull_app_id: 'ios-app-id',
+    android_pull_app_id: '',
+    pull_app_id: ''
+  });
+  assert.deepEqual(
+    metabaseTargets.map((target) => target.platform),
+    ['ios', 'android']
+  );
+  assert.equal(metabaseTargets.find((target) => target.platform === 'ios')?.fallbackPullAppId, 'ios-app-id');
+  assert.equal(metabaseTargets.find((target) => target.platform === 'android')?.fallbackPullAppId, '');
 
   const toolCallsCaptured: Array<{ toolName: string; args: Record<string, unknown> }> = [];
   const completionToolNamesCaptured: string[][] = [];
@@ -3099,6 +3113,37 @@ async function main(): Promise<void> {
   const pullerScript = readFileSync('packages/shared/utils/puller.ts', 'utf8');
   assert.match(pullerScript, /url\.searchParams\.set\('timezone', String\(timezone \|\| env\.timezone\)\.trim\(\) \|\| env\.timezone\);/);
   assert.match(pullerScript, /buildPullUrl\(params\.appKey, params\.pullAppId, params\.date, params\.timezone\)/);
+  assert.match(pullerScript, /export function buildMetabasePullTargets/);
+  assert.match(pullerScript, /ADS_DAILY_AF_FALLBACK_ENABLED|adsDailyAfFallbackEnabled/);
+  assert.match(pullerScript, /metabase_empty_slice:\$\{params\.appKey\}/);
+  assert.match(pullerScript, /forceReplaceOnSameContent: true/);
+  assert.match(pullerScript, /pullSourceReports: \[PULL_SOURCE_REPORT, METABASE_DAILY_SOURCE_REPORT\]/);
+
+  const envScript = readFileSync('packages/shared/config/env.ts', 'utf8');
+  assert.match(envScript, /type AsaKeywordSource = 'appsflyer' \| 'metabase';/);
+  assert.match(envScript, /asaKeywordSource: optionalEnum<AsaKeywordSource>\('ASA_KEYWORD_SOURCE'/);
+  assert.match(envScript, /env\.adsDailySource === 'metabase' \|\| env\.asaKeywordSource === 'metabase'/);
+
+  const envExample = readFileSync('.env.example', 'utf8');
+  assert.match(envExample, /^ASA_KEYWORD_SOURCE=appsflyer$/m);
+  assert.match(envExample, /^METABASE_BIGQUERY_CREDENTIALS_HOST_PATH=$/m);
+
+  const composeScript = readFileSync('infra/docker-compose.yml', 'utf8');
+  assert.match(composeScript, /x-metabase-bigquery-credentials-volume/);
+  assert.match(composeScript, /\$\{METABASE_BIGQUERY_CREDENTIALS_HOST_PATH:-\/dev\/null\}/);
+
+  const metabaseAdsScript = readFileSync('packages/shared/utils/metabaseAds.ts', 'utf8');
+  assert.match(metabaseAdsScript, /COUNTIF\(d7_tch_roas_001 IS NOT NULL\)/);
+  assert.match(metabaseAdsScript, /getMetabaseProductPlatforms/);
+
+  assert.match(aiChatScript, /supportsCustomTemperature/);
+  assert.match(aiChatScript, /payload\.reasoning = \{ enabled: false, exclude: true \}/);
+
+  const keywordEngineScript = readFileSync('packages/shared/utils/keywordEngine.ts', 'utf8');
+  assert.match(keywordEngineScript, /async function clearKeywordFactSlices/);
+  assert.match(keywordEngineScript, /ALTER TABLE keyword_daily_metrics\s+DELETE WHERE app_key/);
+  assert.match(keywordEngineScript, /ALTER TABLE keyword_value_daily_metrics\s+DELETE WHERE app_key/);
+  assert.match(keywordEngineScript, /if \(env\.adsDailySource === 'metabase'\)[\s\S]*clearKeywordFactSlices/);
 
   const pullerWorkerScript = readFileSync('workers/puller/src/index.ts', 'utf8');
   assert.match(pullerWorkerScript, /const backfillDays = Math\.max\(1, Math\.floor\(env\.pullerBackfillDays\)\);/);
@@ -3123,6 +3168,11 @@ async function main(): Promise<void> {
   assert.match(recommendationFeedbackScript, /ref\.source_type IN \('\$\{BUDGET_FEEDBACK_SOURCE_TYPE\}', '\$\{LEGACY_SOURCE_TYPE\}'\)/);
 
   assert.match(asaKeywordsScript, /return Boolean\(String\(app\?\.ios_pull_app_id \|\| ''\)\.trim\(\)\);/);
+  assert.match(asaKeywordsScript, /async function configuredAsaTargets/);
+  assert.match(asaKeywordsScript, /if \(routes\.length === 0\) \{\s*return asaTargets\(apps\);/);
+  assert.match(asaKeywordsScript, /env\.asaKeywordSource === 'metabase'/);
+  assert.doesNotMatch(asaKeywordsScript, /env\.adsDailySource === 'metabase'[\s\S]{0,160}runAsaKeywordMetabaseCycle/);
+  assert.match(asaKeywordsScript, /asa_keyword_metabase_fallback_to_af/);
   assert.doesNotMatch(asaKeywordsScript, /app\.pull_app_id\)\s*\{/);
   assert.match(asaKeywordsScript, /roas_covered_cost: coveredRoasCost/);
   assert.match(asaKeywordsScript, /current\.roas_covered_cost \+= Number\(row\.roas_covered_cost \|\| 0\);/);

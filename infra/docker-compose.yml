@@ -7,6 +7,9 @@ x-default-logging: &default-logging
 x-host-gateway-extra-hosts: &host-gateway-extra-hosts
   - 'host.docker.internal:host-gateway'
 
+x-metabase-bigquery-credentials-volume: &metabase-bigquery-credentials-volume
+  - ${METABASE_BIGQUERY_CREDENTIALS_HOST_PATH:-/dev/null}:${METABASE_BIGQUERY_CREDENTIALS_PATH:-/run/secrets/metabase_bigquery_credentials.json}:ro
+
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
@@ -79,6 +82,7 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     extra_hosts: *host-gateway-extra-hosts
+    volumes: *metabase-bigquery-credentials-volume
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -186,6 +190,7 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     extra_hosts: *host-gateway-extra-hosts
+    volumes: *metabase-bigquery-credentials-volume
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -270,6 +275,7 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     extra_hosts: *host-gateway-extra-hosts
+    volumes: *metabase-bigquery-credentials-volume
     depends_on:
       clickhouse:
         condition: service_healthy

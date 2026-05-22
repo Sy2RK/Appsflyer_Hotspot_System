@@ -26,6 +26,7 @@ function optionalNumber(name: string, fallback: number): number {
 }
 
 type AdsDailySource = 'appsflyer' | 'metabase';
+type AsaKeywordSource = 'appsflyer' | 'metabase';
 type MetabaseAccessMode = 'saved_card' | 'bigquery' | 'auto';
 
 function optionalEnum<T extends string>(name: string, allowed: readonly T[], fallback: T): T {
@@ -95,6 +96,7 @@ export const env = {
   appsflyerEgressRelayToken: process.env.APPSFLYER_EGRESS_RELAY_TOKEN ?? '',
 
   adsDailySource: optionalEnum<AdsDailySource>('ADS_DAILY_SOURCE', ['appsflyer', 'metabase'], 'appsflyer'),
+  adsDailyAfFallbackEnabled: (process.env.ADS_DAILY_AF_FALLBACK_ENABLED ?? 'true').toLowerCase() !== 'false',
   metabase: {
     accessMode: optionalEnum<MetabaseAccessMode>(
       'METABASE_ACCESS_MODE',
@@ -146,6 +148,7 @@ export const env = {
   keywordEngineRollingBackfillDays: optionalNumber('KEYWORD_ENGINE_ROLLING_BACKFILL_DAYS', 3),
   budgetAdvisorIntervalMs: optionalNumber('BUDGET_ADVISOR_INTERVAL_MS', 24 * 60 * 60 * 1000),
   budgetAdvisorLookbackDays: optionalNumber('BUDGET_ADVISOR_LOOKBACK_DAYS', 30),
+  asaKeywordSource: optionalEnum<AsaKeywordSource>('ASA_KEYWORD_SOURCE', ['appsflyer', 'metabase'], 'appsflyer'),
   asaKeywordIntervalMs: optionalNumber('ASA_KEYWORD_INTERVAL_MS', 24 * 60 * 60 * 1000),
   asaKeywordReportHour: optionalNumber('ASA_KEYWORD_REPORT_HOUR', 9),
 	  asaKeywordBackfillDays: optionalNumber('ASA_KEYWORD_BACKFILL_DAYS', 35),
@@ -229,7 +232,8 @@ function validateEnv(): void {
   pushMissing(missing, 'CLICKHOUSE_PASSWORD', env.clickhouse.password);
   pushMissing(missing, 'CLICKHOUSE_DB', env.clickhouse.database);
 
-  if (env.adsDailySource === 'metabase') {
+  const requiresMetabaseAccess = env.adsDailySource === 'metabase' || env.asaKeywordSource === 'metabase';
+  if (requiresMetabaseAccess) {
     const hasMetabaseAuth =
       hasValue(env.metabase.baseUrl) &&
       (hasValue(env.metabase.apiKey) || (hasValue(env.metabase.username) && hasValue(env.metabase.password)));

@@ -20,6 +20,7 @@ import { classifyAfSyncScope, isAfWindowProvisional } from './afMetricScopes.js'
 import { upsertAfOfficialSnapshot } from './appsflyerOfficialSnapshots.js';
 import {
   fetchMetabaseCampaignMetrics,
+  getMetabaseProductPlatforms,
   METABASE_DAILY_SOURCE_REPORT,
   recordMetabaseOfficialSnapshot,
   type MetabaseAdsMetricRow
@@ -91,6 +92,9 @@ export interface PullCycleDetail {
   retryable?: boolean;
   attempts?: number;
   recovered_by_retry?: boolean;
+  primary_source?: string;
+  final_source?: string;
+  fallback_reason?: string;
 }
 
 export interface PullCycleResult {
@@ -135,6 +139,9 @@ interface PullAttemptResult {
   immediateRetryable: boolean;
   scheduledRetryable: boolean;
   rateLimited: boolean;
+  primarySource?: string;
+  finalSource?: string;
+  fallbackReason?: string;
 }
 
 interface PullReviewCandidate {
@@ -154,12 +161,22 @@ interface PullSliceScope {
   metricSources?: string[];
 }
 
+interface PullAppTarget {
+  pullAppId: string;
+  platform: string;
+}
+
+export interface MetabasePullTarget {
+  platform: string;
+  fallbackPullAppId: string;
+}
+
 function buildPullTargets(app: {
   ios_pull_app_id: string;
   android_pull_app_id: string;
   pull_app_id: string;
-}): Array<{ pullAppId: string; platform: string }> {
-  const targets: Array<{ pullAppId: string; platform: string }> = [];
+}): PullAppTarget[] {
+  const targets: PullAppTarget[] = [];
   if (app.ios_pull_app_id) {
     targets.push({ pullAppId: app.ios_pull_app_id, platform: 'ios' });
   }
@@ -170,6 +187,33 @@ function buildPullTargets(app: {
     targets.push({ pullAppId: app.pull_app_id, platform: 'unknown' });
   }
   return targets;
+}
+
+function fallbackPullAppIdForPlatform(app: {
+  ios_pull_app_id: string;
+  android_pull_app_id: string;
+  pull_app_id: string;
+}, platform: string): string {
+  const normalized = normalizePlatform(platform);
+  if (normalized === 'ios') {
+    return String(app.ios_pull_app_id || app.pull_app_id || '').trim();
+  }
+  if (normalized === 'android') {
+    return String(app.android_pull_app_id || app.pull_app_id || '').trim();
+  }
+  return String(app.pull_app_id || app.ios_pull_app_id || app.android_pull_app_id || '').trim();
+}
+
+export function buildMetabasePullTargets(app: {
+  app_key: string;
+  ios_pull_app_id: string;
+  android_pull_app_id: string;
+  pull_app_id: string;
+}): MetabasePullTarget[] {
+  return getMetabaseProductPlatforms(app.app_key).map((platform) => ({
+    platform: normalizePlatform(platform),
+    fallbackPullAppId: fallbackPullAppIdForPlatform(app, platform)
+  }));
 }
 
 function buildPullReadinessErrorSummary(details: PullCycleDetail[]): string | null {
@@ -806,6 +850,9 @@ async function executePullAttempt(params: {
   date: string;
   platform: string;
   timezone: string;
+  forceReplaceOnSameContent?: boolean;
+  pullSourceReports?: string[];
+  metricSources?: string[];
 }): Promise<PullAttemptResult> {
   const guard = await getPullContentGuard(params.appKey, params.platform, params.date, PULL_SOURCE_REPORT);
   const url = buildPullUrl(params.appKey, params.pullAppId, params.date, params.timezone);
@@ -828,7 +875,7 @@ async function executePullAttempt(params: {
     const signature = buildPullContentSignature(pullRows);
     const metricRows = toDailyMetricRows(pullRows, Date.now());
 
-	    if (guard?.content_signature && guard.content_signature === signature) {
+	    if (guard?.content_signature && guard.content_signature === signature && !params.forceReplaceOnSameContent) {
 	      const nextAllowedAt = nextAllowedAtForReportDate(params.date);
 	      await upsertPullContentGuard({
         app_key: params.appKey,
@@ -852,20 +899,24 @@ async function executePullAttempt(params: {
 	      return {
         ok: true,
         status: 'skipped_same_content_cooldown',
-        rows: 0,
-        metricsRows: 0,
-        immediateRetryable: false,
-        scheduledRetryable: false,
-        rateLimited: false
-      };
+	      rows: 0,
+	      metricsRows: 0,
+	      immediateRetryable: false,
+	      scheduledRetryable: false,
+	      rateLimited: false,
+		      primarySource: PULL_SOURCE_REPORT,
+		      finalSource: PULL_SOURCE_REPORT
+	    };
     }
 
-	    await replacePullDailySlice(
-	      {
-	        appKey: params.appKey,
-	        date: params.date,
-	        platform: params.platform
-	      },
+		    await replacePullDailySlice(
+		      {
+		        appKey: params.appKey,
+		        date: params.date,
+		        platform: params.platform,
+		        pullSourceReports: params.pullSourceReports,
+		        metricSources: params.metricSources
+		      },
 	      pullRows,
 	      metricRows
 	    );
@@ -949,6 +1000,7 @@ async function executeMetabasePullAttempt(params: {
   appId: string;
   date: string;
   platform: string;
+  forceReplaceOnSameContent?: boolean;
 }): Promise<PullAttemptResult> {
   const guard = await getPullContentGuard(params.appKey, params.platform, params.date, METABASE_DAILY_SOURCE_REPORT);
 
@@ -958,6 +1010,9 @@ async function executeMetabasePullAttempt(params: {
       platform: params.platform,
       date: params.date
     });
+    if (metabaseRows.length === 0) {
+      throw new Error(`metabase_empty_slice:${params.appKey}/${params.platform}/${params.date}`);
+    }
     const pullRows = toMetabasePullRows({
       appKey: params.appKey,
       date: params.date,
@@ -967,7 +1022,7 @@ async function executeMetabasePullAttempt(params: {
     const signature = buildPullContentSignature(pullRows);
     const sourceApi = metabaseRows[0]?.source_api ?? 'metabase_saved_card';
 
-    if (guard?.content_signature && guard.content_signature === signature) {
+    if (guard?.content_signature && guard.content_signature === signature && !params.forceReplaceOnSameContent) {
       const nextAllowedAt = nextAllowedAtForReportDate(params.date);
       await upsertPullContentGuard({
         app_key: params.appKey,
@@ -992,11 +1047,13 @@ async function executeMetabasePullAttempt(params: {
         ok: true,
         status: 'skipped_same_content_cooldown',
         rows: 0,
-        metricsRows: 0,
-        immediateRetryable: false,
-        scheduledRetryable: false,
-        rateLimited: false
-      };
+	        metricsRows: 0,
+	        immediateRetryable: false,
+	        scheduledRetryable: false,
+	        rateLimited: false,
+	        primarySource: METABASE_DAILY_SOURCE_REPORT,
+	        finalSource: METABASE_DAILY_SOURCE_REPORT
+	      };
     }
 
     const metricRows = toDailyMetricRows(pullRows, Date.now(), METABASE_DAILY_SOURCE_REPORT);
@@ -1031,15 +1088,17 @@ async function executeMetabasePullAttempt(params: {
       next_allowed_at: nextAllowedAtForReportDate(params.date)
     });
 
-    return {
-      ok: true,
-      status: 'ok',
-      rows: pullRows.length,
-      metricsRows: metricRows.length,
-      immediateRetryable: false,
-      scheduledRetryable: false,
-      rateLimited: false
-    };
+	    return {
+	      ok: true,
+	      status: 'ok',
+	      rows: pullRows.length,
+	      metricsRows: metricRows.length,
+	      immediateRetryable: false,
+	      scheduledRetryable: false,
+	      rateLimited: false,
+	      primarySource: METABASE_DAILY_SOURCE_REPORT,
+	      finalSource: METABASE_DAILY_SOURCE_REPORT
+	    };
   } catch (error) {
     const errorText = error instanceof Error ? error.message : String(error);
     await upsertPullContentGuard({
@@ -1063,18 +1122,89 @@ async function executeMetabasePullAttempt(params: {
       status: 'failed',
       error: errorText
     }).catch(() => undefined);
+	    return {
+	      ok: false,
+	      status: 'ok',
+	      rows: 0,
+	      metricsRows: 0,
+	      error: errorText,
+	      failureKind: 'unknown',
+	      immediateRetryable: true,
+	      scheduledRetryable: true,
+	      rateLimited: false,
+	      primarySource: METABASE_DAILY_SOURCE_REPORT,
+	      finalSource: METABASE_DAILY_SOURCE_REPORT
+	    };
+	  }
+	}
+
+async function executeMetabasePullAttemptWithFallback(params: {
+  appKey: string;
+  fallbackPullAppId: string;
+  date: string;
+  platform: string;
+  timezone: string;
+  logger?: PullLogger;
+}): Promise<PullAttemptResult> {
+  const primaryAttempt = await executeMetabasePullAttempt({
+    appKey: params.appKey,
+    appId: params.fallbackPullAppId,
+    date: params.date,
+    platform: params.platform,
+    forceReplaceOnSameContent: true
+  });
+  if (primaryAttempt.ok || !env.adsDailyAfFallbackEnabled) {
+    return primaryAttempt;
+  }
+
+  const fallbackReason = primaryAttempt.error || 'metabase_primary_failed';
+  if (!params.fallbackPullAppId) {
     return {
-      ok: false,
-      status: 'ok',
-      rows: 0,
-      metricsRows: 0,
-      error: errorText,
-      failureKind: 'unknown',
-      immediateRetryable: true,
-      scheduledRetryable: true,
-      rateLimited: false
+      ...primaryAttempt,
+      error: `${fallbackReason}; af_fallback_missing_pull_app_id`,
+      fallbackReason,
+      primarySource: METABASE_DAILY_SOURCE_REPORT,
+      finalSource: METABASE_DAILY_SOURCE_REPORT
     };
   }
+  if (!env.pullToken) {
+    return {
+      ...primaryAttempt,
+      error: `${fallbackReason}; af_fallback_missing_pull_token`,
+      fallbackReason,
+      primarySource: METABASE_DAILY_SOURCE_REPORT,
+      finalSource: METABASE_DAILY_SOURCE_REPORT
+    };
+  }
+
+  logWarn(params.logger, 'metabase_puller_slice_fallback_to_af', {
+    app_key: params.appKey,
+    date: params.date,
+    platform: params.platform,
+    primary_source: METABASE_DAILY_SOURCE_REPORT,
+    fallback_source: PULL_SOURCE_REPORT,
+    fallback_reason: fallbackReason
+  });
+
+  const fallbackAttempt = await executePullAttempt({
+    appKey: params.appKey,
+    pullAppId: params.fallbackPullAppId,
+    date: params.date,
+    platform: params.platform,
+    timezone: params.timezone,
+    forceReplaceOnSameContent: true,
+    pullSourceReports: [PULL_SOURCE_REPORT, METABASE_DAILY_SOURCE_REPORT],
+    metricSources: [PULL_DAILY_METRIC_SOURCE, PULL_SOURCE_REPORT, METABASE_DAILY_SOURCE_REPORT]
+  });
+  return {
+    ...fallbackAttempt,
+    error: fallbackAttempt.ok
+      ? undefined
+      : `metabase_primary_failed=${fallbackReason}; af_fallback_failed=${fallbackAttempt.error || 'unknown'}`,
+    primarySource: METABASE_DAILY_SOURCE_REPORT,
+    finalSource: fallbackAttempt.ok ? PULL_SOURCE_REPORT : METABASE_DAILY_SOURCE_REPORT,
+    fallbackReason
+  };
 }
 
 async function runMetabasePullCycle(backfillDays: number, logger?: PullLogger): Promise<PullCycleResult> {
@@ -1085,7 +1215,7 @@ async function runMetabasePullCycle(backfillDays: number, logger?: PullLogger): 
   const dates = buildDateList(safeBackfillDays);
   const details: PullCycleDetail[] = [];
   const lockOwnerId = crypto.randomUUID();
-  const expectedTargets = apps.reduce((sum, app) => sum + buildPullTargets(app).length, 0);
+  const expectedTargets = apps.reduce((sum, app) => sum + buildMetabasePullTargets(app).length, 0);
 
   const lockAcquired = await tryAcquirePullCycleLock(PULL_CYCLE_LOCK_NAME, lockOwnerId, env.pullerLockTtlMs);
   if (!lockAcquired) {
@@ -1122,11 +1252,13 @@ async function runMetabasePullCycle(backfillDays: number, logger?: PullLogger): 
       apps: apps.length,
       backfill_days: safeBackfillDays,
       dates,
-      access_mode: env.metabase.accessMode
+      access_mode: env.metabase.accessMode,
+      af_fallback_enabled: env.adsDailyAfFallbackEnabled
     });
 
     for (const app of apps) {
-      const targets = buildPullTargets(app);
+      const targets = buildMetabasePullTargets(app);
+      const appTimezone = String(app.timezone || env.timezone).trim() || env.timezone;
       if (targets.length === 0) {
         details.push({
           app_key: app.app_key,
@@ -1165,11 +1297,13 @@ async function runMetabasePullCycle(backfillDays: number, logger?: PullLogger): 
             continue;
           }
 
-          const attempt = await executeMetabasePullAttempt({
+          const attempt = await executeMetabasePullAttemptWithFallback({
             appKey: app.app_key,
-            appId: target.pullAppId,
+            fallbackPullAppId: target.fallbackPullAppId,
             date,
-            platform
+            platform,
+            timezone: appTimezone,
+            logger
           });
 
           if (attempt.ok) {
@@ -1185,7 +1319,10 @@ async function runMetabasePullCycle(backfillDays: number, logger?: PullLogger): 
                   ? `same_content_cooldown_until=${nextAllowedAtForReportDate(date)}`
                   : undefined,
               attempts: 1,
-              recovered_by_retry: false
+              recovered_by_retry: attempt.finalSource === PULL_SOURCE_REPORT,
+              primary_source: attempt.primarySource,
+              final_source: attempt.finalSource,
+              fallback_reason: attempt.fallbackReason
             });
             logInfo(logger, 'metabase_puller_ingested', {
               app_key: app.app_key,
@@ -1193,7 +1330,9 @@ async function runMetabasePullCycle(backfillDays: number, logger?: PullLogger): 
               platform,
               rows: attempt.rows,
               metrics_rows: attempt.metricsRows,
-              source: METABASE_DAILY_SOURCE_REPORT
+              primary_source: attempt.primarySource ?? METABASE_DAILY_SOURCE_REPORT,
+              final_source: attempt.finalSource ?? METABASE_DAILY_SOURCE_REPORT,
+              fallback_reason: attempt.fallbackReason
             });
           } else {
             details.push({
@@ -1207,13 +1346,19 @@ async function runMetabasePullCycle(backfillDays: number, logger?: PullLogger): 
               failure_kind: attempt.failureKind,
               retryable: attempt.scheduledRetryable,
               attempts: 1,
-              recovered_by_retry: false
+              recovered_by_retry: false,
+              primary_source: attempt.primarySource,
+              final_source: attempt.finalSource,
+              fallback_reason: attempt.fallbackReason
             });
             logError(logger, 'metabase_puller_app_day_failed', {
               app_key: app.app_key,
               date,
               platform,
-              error: attempt.error
+              error: attempt.error,
+              primary_source: attempt.primarySource ?? METABASE_DAILY_SOURCE_REPORT,
+              final_source: attempt.finalSource ?? METABASE_DAILY_SOURCE_REPORT,
+              fallback_reason: attempt.fallbackReason
             });
           }
 
